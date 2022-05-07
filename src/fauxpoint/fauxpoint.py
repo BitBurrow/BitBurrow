@@ -13,8 +13,65 @@ from fastapi import FastAPI, Form, responses, Depends, Request, Response, HTTPEx
 import slowapi  # https://slowapi.readthedocs.io/en/latest/
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 import sqlalchemy
+import uvicorn  # https://www.uvicorn.org/
 
-assert sys.version_info >= (3, 8)  # we use Python 3.8-specific features
+assert sys.version_info >= (3, 8)
+
+### command-line interface
+
+
+def cli():
+    import argparse  # https://docs.python.org/3/library/argparse.html
+
+    formatter_class = lambda prog: argparse.HelpFormatter(
+        prog,
+        max_help_position=33,
+    )
+    parser = argparse.ArgumentParser(
+        prog=app_name(),
+        formatter_class=formatter_class,
+    )
+    parser.add_argument(
+        "-l",
+        "--logfile",
+        type=str,
+        default='-',
+        help="path for log file (default: write to STDERR)",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action='append_const',
+        const=-1,
+        dest="verbose",  # mapping:  "-q"->ERROR / ""->WARNING / "-v"->INFO / "-vv"->DEBUG
+        help="silence warning messages",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action='append_const',
+        const=1,
+        help="increase verbosity",
+    )
+    args = parser.parse_args()
+    args.log_level = 2 + (0 if args.verbose is None else sum(args.verbose))
+    del args.verbose
+    uvicorn.run(
+        f'{app_name()}:app',
+        host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
+        port=8000,
+        workers=1,  # FIXME: keep at 1 until 3 startup() methods are made to run just once;
+        # ... possible solution: https://stackoverflow.com/a/64521239
+        log_level='info',
+        # FIXME: generate self-signed TLS cert based on IP address:
+        #     mkdir -p ../.ssl/private ../.ssl/certs
+        #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
+        #     openssl req -new -x509 -nodes -days 3650 -newkey rsa:2048 -keyout ../.ssl/private/fastapiselfsigned.key -out ../.ssl/certs/fastapiselfsigned.crt -subj "/C=  /ST=  /L=   /O=   /OU=   /CN=$IP"
+        # enable TLS in uvicorn.run():
+        #     ssl_keyfile='../.ssl/private/fastapiselfsigned.key',
+        #     ssl_certfile='../.ssl/certs/fastapiselfsigned.crt',
+    )
+
 
 ### DB table 'dev' - WireGuard interfaces (often just a single interface)
 
@@ -22,6 +79,10 @@ wg_dev_map = list()  # map Dev.id to wgX WireGuard device
 ipv4_map = list()  # map Dev.id to ipv4_base
 ipv6_map = list()  # map Dev.id to ipv6_base
 reserved_ips = 38
+
+
+def app_name():
+    return os.path.splitext(os.path.basename(__file__))[0]
 
 
 class Dev(SQLModel, table=True):
@@ -211,7 +272,7 @@ class Client(SQLModel, table=True):
         with Session(engine) as session:
             statement = select(Client)
             results = session.exec(statement)
-            for c in results:
+            for c in results:  # let wg know about each valid peer
                 c.set_peer()
 
 
@@ -305,7 +366,7 @@ def on_shutdown():
     Dev.shutdown()
 
 
-### API
+### web API
 
 
 @app.get('/pubkeys/{account}')
@@ -364,3 +425,7 @@ def new_account(request: Request, master_account: str = Form(...), comment: str 
 @app.get('/raise_error')
 def get_pubkeys():
     raise HTTPException(status_code=404, detail="Test exception from /raise_error")
+
+
+if __name__ == "__main__":
+    cli()
