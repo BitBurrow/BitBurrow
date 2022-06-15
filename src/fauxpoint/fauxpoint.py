@@ -197,13 +197,17 @@ class Netif(SQLModel, table=True):
 
 ### DB table 'user' - person managing VPN clients
 
+# account code, e.g. 'L7V2BCMM3PRKVF2'
+#     → log(28^15)÷log(2) ≈ 72 bits of entropy
+# 6 words from 4000-word dictionary, e.g. 'OstrichPrecipiceWeldLinkRoastedLeopard'
+#     → log(4000^6)÷log(2) ≈ 72 bits of entropy
 base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
 
 
 class User(SQLModel, table=True):
     __table_args__ = (sqlalchemy.UniqueConstraint('account'),)  # must have a unique account code
     id: Optional[int] = Field(primary_key=True, default=None)
-    account: str = Field(  # e.g. 'L7V2BCMM3PRKVF2'
+    account: str = Field(  # e.g. 'L7V2BCMM3PRKVF2';  sometimes called "account code"
         index=True,
         default_factory=lambda: ''.join(secrets.choice(base28_digits) for i in range(15)),
     )
@@ -489,9 +493,9 @@ def new_account(request: Request, master_account: str = Form(...), comment: str 
         return account.account
 
 
-@app.get('/raise_error')
-def get_pubkeys():
-    raise HTTPException(status_code=404, detail="Test exception from /raise_error")
+@app.get('/raise_error/')
+def error_test():
+    raise HTTPException(status_code=404, detail="Test exception from /raise_error/")
 
 
 def entry_point():  # called from setup.cfg
