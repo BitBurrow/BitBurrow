@@ -173,7 +173,7 @@ class Netif(SQLModel, table=True):
         sudo_iptables(
             '--table nat'.split(' ')
             + '--append POSTROUTING'.split(' ')
-            + '--out-interface eth0'.split(' ')  # FIXME: find intrfc via 'method for local IP'
+            + ['--out-interface', ip_route_show('dev')]  # name of interface with default route
             + '--jump MASQUERADE'.split(' ')
         )
         return i
@@ -310,6 +310,14 @@ class Client(SQLModel, table=True):
 ### helper methods
 
 
+def ip_route_show(item: str):  # name of interface ('dev') or IP ('via') with default route
+    droute = ip(['route', 'show', 'to', '0.0.0.0/0'])
+    # example output: default via 192.168.8.1 dev wlp58s0 proto dhcp metric 600
+    dev_portion = re.search(r'\s' + item + r'\s(\S+)', droute)
+    assert dev_portion is not None, f"ip route returned: {droute}"
+    return dev_portion[1]
+
+
 def sudo_sysctl(args):
     arg_list = args if type(args) is list else [args]
     return run_external(['sudo', 'sysctl'] + arg_list)
@@ -332,6 +340,10 @@ def sudo_undo_iptables():
                 exec[i] = '--delete'
         run_external(exec)
     del sudo_iptables.log
+
+
+def ip(args):  # without `sudo`
+    return run_external(['ip'] + args)
 
 
 def sudo_ip(args):
