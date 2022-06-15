@@ -23,12 +23,14 @@ sql.expression.SelectOfScalar.inherit_cache = False
 ### command-line interface
 
 
-def cli():
+def cli(return_help_text=False):
     import argparse  # https://docs.python.org/3/library/argparse.html
 
+    help_width = 78 if return_help_text else None  # consistent width for README.py
     formatter_class = lambda prog: argparse.HelpFormatter(
         prog,
         max_help_position=33,
+        width=help_width,
     )
     parser = argparse.ArgumentParser(
         prog=app_name(),
@@ -63,6 +65,8 @@ def cli():
         const=1,
         help="increase verbosity",
     )
+    if return_help_text:  # used by README.py
+        return parser.format_help()
     args = parser.parse_args()
     args.log_level = 2 + (0 if args.verbose is None else sum(args.verbose))
     del args.verbose
