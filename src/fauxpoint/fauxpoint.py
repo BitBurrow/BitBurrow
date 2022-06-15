@@ -13,10 +13,12 @@ from typing import Optional, Final, final
 from unittest import result
 from fastapi import FastAPI, Form, responses, Depends, Request, Response, HTTPException
 import slowapi  # https://slowapi.readthedocs.io/en/latest/
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlmodel import Field, Session, SQLModel, create_engine, select, sql
 import sqlalchemy
 
 assert sys.version_info >= (3, 8)
+sql.expression.Select.inherit_cache = False  # https://github.com/tiangolo/sqlmodel/issues/189
+sql.expression.SelectOfScalar.inherit_cache = False
 
 ### command-line interface
 
