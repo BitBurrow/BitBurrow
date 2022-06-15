@@ -101,9 +101,7 @@ def cli(return_help_text=False):
 
 ### DB table 'dev' - WireGuard interfaces (often just a single interface)
 
-wg_dev_map = list()  # map Dev.id to wgX WireGuard device
-ipv4_map = list()  # map Dev.id to ipv4_base
-ipv6_map = list()  # map Dev.id to ipv6_base
+wgif_prefix = 'fdfb'
 reserved_ips = 38
 
 
@@ -124,14 +122,15 @@ class Dev(SQLModel, table=True):
         self.comment = ""
         # IPv4 base is 10. + random xx.xx. + 0
         self.ipv4_base = str(ipaddress.ip_address('10.0.0.0') + secrets.randbelow(2**16) * 2**8)
-        # IPv6 base is fdf9 (fauxpoint) + 2 random groups + 5 0000 groups
-        self.ipv6_base = str(ipaddress.ip_address('fdf9::') + secrets.randbelow(2**32) * 2**80)
+        # IPv6 base is prefix + 2 random groups + 5 0000 groups
+        seven_groups = secrets.randbelow(2**32) * 2**80
+        self.ipv6_base = str(ipaddress.ip_address(f'{wgif_prefix}::') + seven_groups)
         self.privkey = sudo_wg(['genkey'])
         self.pubkey = sudo_wg(['pubkey'], input=self.privkey)
         self.listening_port = 123
 
     def iface(self):
-        return f'wg{wg_dev_map[self.id]}'
+        return f'{wgif_prefix}{self.id}'  # interface device and Dev.id match
 
     def ipv4(self):
         # ending in '/32' feels cleaner but client can't ping, even if client uses
@@ -156,47 +155,44 @@ class Dev(SQLModel, table=True):
                 session.commit()
         with Session(engine) as session:
             statement = select(Dev)
-            results = session.exec(statement)
-            assert len(wg_dev_map) == 0
-            for i in results:  # initialize network for each WireGuard dev
-                next_unused_dev = 0 if len(wg_dev_map) == 0 else wg_dev_map[-1] + 1
-                while True:  # find next available wgX dev
-                    wg_dev = f'wg{next_unused_dev}'
-                    try:
-                        sudo_ip(['address', 'show', 'dev', wg_dev])
-                    except RuntimeError:  # assume error is: Device "wgX" does not exist.
-                        break
-                    next_unused_dev += 1
-                wg_dev_map.append(next_unused_dev)
-                ipv4_map.append(i.ipv4_base)
-                ipv6_map.append(i.ipv6_base)
-                assert len(wg_dev_map) == i.id  # wg_dev_map and Devs should be 1:1
-                # configure wgX; see `systemctl status wg-quick@wg0.service`
-                sudo_ip(['link', 'add', 'dev', wg_dev, 'type', 'wireguard'])
-                sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wg_dev])
-                sudo_ip(['-4', 'address', 'add', 'dev', wg_dev, i.ipv4()])
-                sudo_ip(['-6', 'address', 'add', 'dev', wg_dev, i.ipv6()])
-                sudo_wg(['set', wg_dev, 'private-key', f'!FILE!{i.privkey}'])
-                sudo_wg(['set', wg_dev, 'listen-port', str(i.listening_port)])
-                sudo_iptables(
-                    '--append FORWARD'.split(' ')
-                    + f'--in-interface {wg_dev}'.split(' ')
-                    + '--jump ACCEPT'.split(' ')
-                )
-                sudo_iptables(
-                    '--table nat'.split(' ')
-                    + '--append POSTROUTING'.split(' ')
-                    + '--out-interface eth0'.split(' ')  # FIXME: not necessarily eth0
-                    + '--jump MASQUERADE'.split(' ')
-                )
+            i = session.exec(statement).one_or_none()  # for the time being, support 1 wg interface
+        Dev.delete_our_wgif(logger)
+        wgif = i.iface()
+        # configure wgif; see `systemctl status wg-quick@wg0.service`
+        sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
+        sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wgif])
+        sudo_ip(['-4', 'address', 'add', 'dev', wgif, i.ipv4()])
+        sudo_ip(['-6', 'address', 'add', 'dev', wgif, i.ipv6()])
+        sudo_wg(['set', wgif, 'private-key', f'!FILE!{i.privkey}'])
+        sudo_wg(['set', wgif, 'listen-port', str(i.listening_port)])
+        sudo_iptables(
+            '--append FORWARD'.split(' ')
+            + f'--in-interface {wgif}'.split(' ')
+            + '--jump ACCEPT'.split(' ')
+        )
+        sudo_iptables(
+            '--table nat'.split(' ')
+            + '--append POSTROUTING'.split(' ')
+            + '--out-interface eth0'.split(' ')  # FIXME: find intrfc via 'method for local IP'
+            + '--jump MASQUERADE'.split(' ')
+        )
+        return i
+
+    @staticmethod
+    def delete_our_wgif(logger=None):  # clean up wg network interfaces
+        for s in re.split(r'(?:^|\n)interface:\s*', sudo_wg()):
+            if s == '' or s == '\n':
+                continue
+            if_name = re.match(r'\S+', s).group(0)
+            if if_name.startswith(wgif_prefix):  # if it was ours, it's safe to delete
+                if logger is not None:
+                    logger.warning(f"Removing abandoned wg device {if_name}")
+                sudo_ip(['link', 'del', 'dev', if_name])
 
     @staticmethod
     def shutdown():
-        global wg_dev_map
         sudo_undo_iptables()
-        for i in wg_dev_map:
-            sudo_ip(['link', 'del', 'dev', f'wg{i}'])
-        wg_dev_map = list()
+        Dev.delete_our_wgif()
 
 
 ### DB table 'user' - person managing VPN clients
@@ -270,22 +266,26 @@ class Client(SQLModel, table=True):
     # preshared_key: str
     # keepalive: int
 
-    def ip_list(self):  # calculate client's 2 IP addresses for allowed-ips
-        ipv4 = ipaddress.ip_address(ipv4_map[self.dev_id]) + (reserved_ips + self.id)
-        ipv6 = ipaddress.ip_address(ipv6_map[self.dev_id]) + (reserved_ips + self.id)
+    def ip_list(self, wgif: Dev=None):  # calculate client's 2 IP addresses for allowed-ips
+        if wgif is None:
+            with Session(engine) as session:
+                statement = select(Dev).where(Dev.id == self.dev_id)
+                wgif = session.exec(statement).one_or_none()
+        ipv4 = ipaddress.ip_address(wgif.ipv4_base) + (reserved_ips + self.id)
+        ipv6 = ipaddress.ip_address(wgif.ipv6_base) + (reserved_ips + self.id)
         return f'{ipv4}/32,{ipv6}/128'
 
-    def set_peer(self):
+    def set_peer(self, wgif: Dev=None):
         sudo_wg(  # see https://www.man7.org/linux/man-pages/man8/wg.8.html
             f'set {self.iface()}'.split(' ')
             + f'peer {self.pubkey}'.split(' ')
             # consider: + f'preshared-key !FILE!(self.preshared_key)}'  # see man page
             # consider: + f'persistent-keepalive {self.keepalive}'  # see man page
-            + f'allowed-ips {self.ip_list()}'.split(' ')
+            + f'allowed-ips {self.ip_list(wgif)}'.split(' ')
         )
 
     def iface(self):
-        return f'wg{wg_dev_map[self.dev_id]}'  # e.g.: 'wg0'
+        return f'{wgif_prefix}{self.dev_id}'  # interface device and Dev.id match
 
     @staticmethod
     def validate_pubkey(k):
@@ -295,12 +295,12 @@ class Client(SQLModel, table=True):
             raise HTTPException(status_code=422, detail="Invalid pubkey characters")
 
     @staticmethod
-    def startup():
+    def startup(wgif):
         with Session(engine) as session:
             statement = select(Client)
             results = session.exec(statement)
             for c in results:  # let wg know about each valid peer
-                c.set_peer()
+                c.set_peer(wgif)
 
 
 ### helper methods
@@ -334,7 +334,7 @@ def sudo_ip(args):
     return run_external(['sudo', 'ip'] + args)
 
 
-def sudo_wg(args, input=None):
+def sudo_wg(args=[], input=None):
     exec = ['sudo', 'wg'] + args
     to_delete = list()
     for i, a in enumerate(exec):  # replace '!FILE!...' args with a temp file
@@ -418,9 +418,9 @@ def on_startup():
     engine = create_engine(f'sqlite:///{db_file}', echo=(args.log_level >= 4))
     SQLModel.metadata.create_all(engine)
     try:
-        Dev.startup()  # configure wgX
+        wgif = Dev.startup()  # configure new WireGuard interface
         User.startup()  # add master account on first run
-        Client.startup()  # add peers to wgX
+        Client.startup(wgif)  # add peers to WireGuard interface
     except Exception as e:
         on_shutdown()
         raise e
@@ -466,7 +466,7 @@ def new_client(request: Request, account: str = Form(...), pubkey: str = Form(..
         client = Client(
             user_id=user.id,
             pubkey=pubkey,
-            dev_id=0,  # FIXME: figure out how to do multiple devs
+            dev_id=1,  # FIXME: figure out how to do multiple devs
         )
         session.add(client)
         session.commit()  # FIXME: possible race condition where user could exceed clients_max
