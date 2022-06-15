@@ -308,7 +308,7 @@ class Client(SQLModel, table=True):
 
 def sudo_sysctl(args):
     arg_list = args if type(args) is list else [args]
-    return run_external(['/usr/bin/sudo', '/usr/sbin/sysctl'] + arg_list)
+    return run_external(['sudo', 'sysctl'] + arg_list)
 
 
 sudo_iptables_log = list()
@@ -316,13 +316,13 @@ sudo_iptables_log = list()
 
 def sudo_iptables(args):
     sudo_iptables_log.append(args)
-    return run_external(['/usr/bin/sudo', '/usr/sbin/iptables'] + args)
+    return run_external(['sudo', 'iptables'] + args)
 
 
 def sudo_undo_iptables():
     global sudo_iptables_log
     for args in sudo_iptables_log:
-        exec = ['/usr/bin/sudo', '/usr/sbin/iptables'] + args
+        exec = ['sudo', 'iptables'] + args
         for i, a in enumerate(exec):  # invert '--append'
             if a == '--append' or a == '--insert' or a == '-A' or a == '-I':
                 exec[i] = '--delete'
@@ -331,11 +331,11 @@ def sudo_undo_iptables():
 
 
 def sudo_ip(args):
-    return run_external(['/usr/bin/sudo', '/bin/ip'] + args)
+    return run_external(['sudo', 'ip'] + args)
 
 
 def sudo_wg(args, input=None):
-    exec = ['/usr/bin/sudo', '/usr/bin/wg'] + args
+    exec = ['sudo', 'wg'] + args
     to_delete = list()
     for i, a in enumerate(exec):  # replace '!FILE!...' args with a temp file
         if a.startswith('!FILE!'):
@@ -357,6 +357,13 @@ def sudo_wg(args, input=None):
 def run_external(args, input=None):
     logger = logging.getLogger(app_name())
     logger.info(f"running: {' '.join(args)}")
+    exec_count = 2 if args[0] == 'sudo' else 1
+    for i, a in enumerate(args[:exec_count]):  # e.g. expand 'wg' to '/usr/bin/wg'
+        for p in '/usr/sbin:/usr/bin:/sbin:/bin'.split(':'):
+            joined = os.path.join(p, a)
+            if os.path.isfile(joined):
+                args[i] = joined
+                break
     proc = subprocess.run(
         args,
         input=None if input is None else input.encode(),
