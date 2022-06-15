@@ -1,6 +1,7 @@
 from asyncio import subprocess
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import ipaddress
+import logging
 import os
 import re
 import secrets
@@ -56,6 +57,15 @@ def cli():
     args = parser.parse_args()
     args.log_level = 2 + (0 if args.verbose is None else sum(args.verbose))
     del args.verbose
+    if args.log_level >= 3:  # info or debug
+        log_format = '%(asctime)s.%(msecs)03d %(levelname)s %(message)s'
+    else:
+        log_format = '%(message)s'
+    logging.basicConfig(
+        format=log_format,
+        datefmt='%H:%M:%S',
+        filename=args.logfile if args.logfile != '-' else None,
+        filemode='a',
     uvicorn.run(
         f'{app_name()}:app',
         host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
@@ -71,6 +81,22 @@ def cli():
         #     ssl_keyfile='../.ssl/private/fastapiselfsigned.key',
         #     ssl_certfile='../.ssl/certs/fastapiselfsigned.crt',
     )
+    logger = logging.getLogger(app_name())
+    log_levels = [
+        logging.CRITICAL,
+        logging.ERROR,
+        logging.WARNING,
+        logging.INFO,
+        logging.DEBUG,
+        logging.DEBUG,  # corresponds to 'trace' in uvicorn
+    ]
+    try:
+        logger.setLevel(log_levels[args.log_level])
+    except IndexError:
+        logger.setLevel(logging.WARNING)
+        error = "Invalid log level"
+        logger.error(error)
+        raise ValueError(error)
 
 
 ### DB table 'dev' - WireGuard interfaces (often just a single interface)
@@ -118,6 +144,7 @@ class Dev(SQLModel, table=True):
 
     @staticmethod
     def startup():
+        logger = logging.getLogger(app_name())
         sudo_sysctl('net.ipv4.ip_forward=1')
         sudo_sysctl('net.ipv6.conf.all.forwarding=1')
         with Session(engine) as session:
@@ -328,7 +355,8 @@ def sudo_wg(args, input=None):
 
 
 def run_external(args, input=None):
-    print(f"|  running: `{' '.join(args)}`")
+    logger = logging.getLogger(app_name())
+    logger.info(f"running: {' '.join(args)}")
     proc = subprocess.run(
         args,
         input=None if input is None else input.encode(),
