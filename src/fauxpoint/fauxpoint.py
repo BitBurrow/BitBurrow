@@ -311,23 +311,23 @@ def sudo_sysctl(args):
     return run_external(['sudo', 'sysctl'] + arg_list)
 
 
-sudo_iptables_log = list()
-
-
 def sudo_iptables(args):
-    sudo_iptables_log.append(args)
+    if not hasattr(sudo_iptables, 'log'):
+        sudo_iptables.log = list()
+    sudo_iptables.log.append(args)
     return run_external(['sudo', 'iptables'] + args)
 
 
 def sudo_undo_iptables():
-    global sudo_iptables_log
-    for args in sudo_iptables_log:
+    if not hasattr(sudo_iptables, 'log'):
+        return
+    for args in sudo_iptables.log:
         exec = ['sudo', 'iptables'] + args
         for i, a in enumerate(exec):  # invert '--append'
             if a == '--append' or a == '--insert' or a == '-A' or a == '-I':
                 exec[i] = '--delete'
         run_external(exec)
-    sudo_iptables_log = list()
+    del sudo_iptables.log
 
 
 def sudo_ip(args):
