@@ -3,6 +3,7 @@ from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as T
 import ipaddress
 import logging
 import os
+import platformdirs
 import re
 import secrets
 import subprocess
@@ -14,7 +15,6 @@ from fastapi import FastAPI, Form, responses, Depends, Request, Response, HTTPEx
 import slowapi  # https://slowapi.readthedocs.io/en/latest/
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 import sqlalchemy
-import uvicorn  # https://www.uvicorn.org/
 
 assert sys.version_info >= (3, 8)
 
@@ -31,6 +31,13 @@ def cli():
     parser = argparse.ArgumentParser(
         prog=app_name(),
         formatter_class=formatter_class,
+    )
+    db_file_display = db_pathname().replace(os.path.expanduser('~'), '~')
+    parser.add_argument(
+        "--dbfile",
+        type=str,
+        default='',  # need to call db_pathname() again later with create_dir=True
+        help=f"path for database file ('-' for memory-only; default: {db_file_display})",
     )
     parser.add_argument(
         "-l",
@@ -66,20 +73,6 @@ def cli():
         datefmt='%H:%M:%S',
         filename=args.logfile if args.logfile != '-' else None,
         filemode='a',
-    uvicorn.run(
-        f'{app_name()}:app',
-        host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
-        port=8000,
-        workers=1,  # FIXME: keep at 1 until 3 startup() methods are made to run just once;
-        # ... possible solution: https://stackoverflow.com/a/64521239
-        log_level='info',
-        # FIXME: generate self-signed TLS cert based on IP address:
-        #     mkdir -p ../.ssl/private ../.ssl/certs
-        #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
-        #     openssl req -new -x509 -nodes -days 3650 -newkey rsa:2048 -keyout ../.ssl/private/fastapiselfsigned.key -out ../.ssl/certs/fastapiselfsigned.crt -subj "/C=  /ST=  /L=   /O=   /OU=   /CN=$IP"
-        # enable TLS in uvicorn.run():
-        #     ssl_keyfile='../.ssl/private/fastapiselfsigned.key',
-        #     ssl_certfile='../.ssl/certs/fastapiselfsigned.crt',
     )
     logger = logging.getLogger(app_name())
     log_levels = [
@@ -97,6 +90,7 @@ def cli():
         error = "Invalid log level"
         logger.error(error)
         raise ValueError(error)
+    return args
 
 
 ### DB table 'dev' - WireGuard interfaces (often just a single interface)
@@ -370,7 +364,26 @@ def run_external(args, input=None):
 
 ### startup and shutdown
 
-engine = create_engine('sqlite:///db.sqlite', echo=True)
+
+def mkdir_r(path):  # like Linux `mkdir --parents`
+    if path == '':
+        return
+    base = os.path.dirname(path)
+    if not os.path.exists(base):
+        mkdir_r(base)
+    os.makedirs(path, exist_ok=True)
+    # except (PermissionError, FileNotFoundError, NotADirectoryError):
+    #     one of these will be raised if the directory cannot be created
+
+
+def db_pathname(create_dir=False):
+    config_dir = platformdirs.user_config_dir(app_name())
+    if create_dir:
+        mkdir_r(config_dir)
+    return os.path.join(config_dir, f'data.sqlite')
+
+
+engine = None
 app = FastAPI()
 limiter = slowapi.Limiter(key_func=slowapi.util.get_remote_address)
 app.state.limiter = limiter
@@ -379,14 +392,27 @@ app.add_exception_handler(slowapi.errors.RateLimitExceeded, slowapi._rate_limit_
 
 @app.on_event('startup')
 def on_startup():
+    args = cli()  # https://www.uvicorn.org/deployment/#running-programmatically
+    global engine
+    if engine:  # initialize once
+        return
+    if args.dbfile == '':  # use default location
+        db_file = db_pathname(create_dir=True)
+    elif args.dbfile == '-':
+        db_file = ':memory:'
+    else:
+        db_file = args.dbfile
+    engine = create_engine(f'sqlite:///{db_file}', echo=(args.log_level >= 4))
     SQLModel.metadata.create_all(engine)
     try:
         Dev.startup()  # configure wgX
         User.startup()  # add master account on first run
         Client.startup()  # add peers to wgX
-    except:
+    except Exception as e:
         on_shutdown()
-        raise
+        raise e
+    logger = logging.getLogger(app_name())
+    logger.debug(f"initialization complete")
 
 
 @app.on_event('shutdown')
@@ -455,5 +481,28 @@ def get_pubkeys():
     raise HTTPException(status_code=404, detail="Test exception from /raise_error")
 
 
-if __name__ == "__main__":
-    cli()
+def entry_point():  # called from setup.cfg
+    import uvicorn  # https://www.uvicorn.org/
+
+    try:
+        uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
+            f'{app_name()}:app',
+            host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
+            port=8000,
+            # workers=3,  # FIXME
+            workers=1,
+            log_level='debug'
+            # FIXME: generate self-signed TLS cert based on IP address:
+            #     mkdir -p ../.ssl/private ../.ssl/certs
+            #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
+            #     openssl req -new -x509 -nodes -days 3650 -newkey rsa:2048 -keyout ../.ssl/private/fastapiselfsigned.key -out ../.ssl/certs/fastapiselfsigned.crt -subj "/C=  /ST=  /L=   /O=   /OU=   /CN=$IP"
+            # enable TLS in uvicorn.run():
+            #     ssl_keyfile='../.ssl/private/fastapiselfsigned.key',
+            #     ssl_certfile='../.ssl/certs/fastapiselfsigned.crt',
+        )
+    except KeyboardInterrupt:
+        on_shutdown()
+        sys.exit()
+    except Exception as e:
+        on_shutdown()
+        raise e
