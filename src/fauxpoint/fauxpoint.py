@@ -99,7 +99,7 @@ def cli(return_help_text=False):
     return args
 
 
-### DB table 'dev' - WireGuard interfaces (often just a single interface)
+### DB table 'netif' - WireGuard network interfaces
 
 wgif_prefix = 'fdfb'
 reserved_ips = 38
@@ -109,7 +109,7 @@ def app_name():
     return os.path.splitext(os.path.basename(__file__))[0]
 
 
-class Dev(SQLModel, table=True):
+class Netif(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     comment: str
     ipv4_base: str
@@ -130,7 +130,7 @@ class Dev(SQLModel, table=True):
         self.listening_port = 123
 
     def iface(self):
-        return f'{wgif_prefix}{self.id}'  # interface device and Dev.id match
+        return f'{wgif_prefix}{self.id}'  # interface name and Netif.id match
 
     def ipv4(self):
         # ending in '/32' feels cleaner but client can't ping, even if client uses
@@ -147,16 +147,16 @@ class Dev(SQLModel, table=True):
         sudo_sysctl('net.ipv4.ip_forward=1')
         sudo_sysctl('net.ipv6.conf.all.forwarding=1')
         with Session(engine) as session:
-            dev_count = session.query(Dev).count()
-        if dev_count == 0:  # first run--need to define a WireGuard device
+            netif_count = session.query(Netif).count()
+        if netif_count == 0:  # first run--need to define a WireGuard interface
             with Session(engine) as session:
-                dev = Dev()
-                session.add(dev)
+                new_if = Netif()
+                session.add(new_if)
                 session.commit()
         with Session(engine) as session:
-            statement = select(Dev)
+            statement = select(Netif)
             i = session.exec(statement).one_or_none()  # for the time being, support 1 wg interface
-        Dev.delete_our_wgif(logger)
+        Netif.delete_our_wgif(logger)
         wgif = i.iface()
         # configure wgif; see `systemctl status wg-quick@wg0.service`
         sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
@@ -186,13 +186,13 @@ class Dev(SQLModel, table=True):
             if_name = re.match(r'\S+', s).group(0)
             if if_name.startswith(wgif_prefix):  # if it was ours, it's safe to delete
                 if logger is not None:
-                    logger.warning(f"Removing abandoned wg device {if_name}")
+                    logger.warning(f"Removing abandoned wg interface {if_name}")
                 sudo_ip(['link', 'del', 'dev', if_name])
 
     @staticmethod
     def shutdown():
         sudo_undo_iptables()
-        Dev.delete_our_wgif()
+        Netif.delete_our_wgif()
 
 
 ### DB table 'user' - person managing VPN clients
@@ -262,20 +262,20 @@ class Client(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     user_id: int = Field(index=True, foreign_key='user.id')
     pubkey: str
-    dev_id: int = Field(foreign_key='dev.id')
+    netif_id: int = Field(foreign_key='netif.id')
     # preshared_key: str
     # keepalive: int
 
-    def ip_list(self, wgif: Dev=None):  # calculate client's 2 IP addresses for allowed-ips
+    def ip_list(self, wgif: Netif = None):  # calculate client's 2 IP addresses for allowed-ips
         if wgif is None:
             with Session(engine) as session:
-                statement = select(Dev).where(Dev.id == self.dev_id)
+                statement = select(Netif).where(Netif.id == self.netif_id)
                 wgif = session.exec(statement).one_or_none()
         ipv4 = ipaddress.ip_address(wgif.ipv4_base) + (reserved_ips + self.id)
         ipv6 = ipaddress.ip_address(wgif.ipv6_base) + (reserved_ips + self.id)
         return f'{ipv4}/32,{ipv6}/128'
 
-    def set_peer(self, wgif: Dev=None):
+    def set_peer(self, wgif: Netif = None):
         sudo_wg(  # see https://www.man7.org/linux/man-pages/man8/wg.8.html
             f'set {self.iface()}'.split(' ')
             + f'peer {self.pubkey}'.split(' ')
@@ -285,7 +285,7 @@ class Client(SQLModel, table=True):
         )
 
     def iface(self):
-        return f'{wgif_prefix}{self.dev_id}'  # interface device and Dev.id match
+        return f'{wgif_prefix}{self.netif_id}'  # interface name and Netif.id match
 
     @staticmethod
     def validate_pubkey(k):
@@ -418,7 +418,7 @@ def on_startup():
     engine = create_engine(f'sqlite:///{db_file}', echo=(args.log_level >= 4))
     SQLModel.metadata.create_all(engine)
     try:
-        wgif = Dev.startup()  # configure new WireGuard interface
+        wgif = Netif.startup()  # configure new WireGuard interface
         User.startup()  # add master account on first run
         Client.startup(wgif)  # add peers to WireGuard interface
     except Exception as e:
@@ -430,7 +430,7 @@ def on_startup():
 
 @app.on_event('shutdown')
 def on_shutdown():
-    Dev.shutdown()
+    Netif.shutdown()
 
 
 ### web API
@@ -466,7 +466,7 @@ def new_client(request: Request, account: str = Form(...), pubkey: str = Form(..
         client = Client(
             user_id=user.id,
             pubkey=pubkey,
-            dev_id=1,  # FIXME: figure out how to do multiple devs
+            netif_id=1,  # FIXME: figure out how to do multiple interfaces
         )
         session.add(client)
         session.commit()  # FIXME: possible race condition where user could exceed clients_max
