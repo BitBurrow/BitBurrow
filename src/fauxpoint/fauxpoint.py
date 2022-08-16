@@ -107,20 +107,20 @@ def cli(return_help_text=False):
 
 
 ###
-### DB table 'user' - person managing VPN clients
+### DB table 'account' - person managing VPN clients
 ###
 
-# account code, e.g. 'L7V2BCMM3PRKVF2'
+# login key, e.g. 'L7V2BCMM3PRKVF2'
 #     → log(28^15)÷log(2) ≈ 72 bits of entropy
 # 6 words from 4000-word dictionary, e.g. 'OstrichPrecipiceWeldLinkRoastedLeopard'
 #     → log(4000^6)÷log(2) ≈ 72 bits of entropy
 base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
 
 
-class User(SQLModel, table=True):
-    __table_args__ = (sqlalchemy.UniqueConstraint('account'),)  # must have a unique account code
+class Account(SQLModel, table=True):
+    __table_args__ = (sqlalchemy.UniqueConstraint('login_key'),)  # must have a unique login key
     id: Optional[int] = Field(primary_key=True, default=None)
-    account: str = Field(  # e.g. 'L7V2BCMM3PRKVF2';  sometimes called "account code"
+    login_key: str = Field(  # e.g. 'L7V2BCMM3PRKVF2'
         index=True,
         default_factory=lambda: ''.join(secrets.choice(base28_digits) for i in range(15)),
     )
@@ -139,35 +139,35 @@ class User(SQLModel, table=True):
     )
     comment: str
 
-    def formatted_account(self):  # display version, e.g. 'L7V.2BC.MM3.PRK.VF2'
+    def formatted_login_key(self):  # display version, e.g. 'L7V.2BC.MM3.PRK.VF2'
         return '.'.join(self[i : i + 3] for i in range(0, 15, 3))
 
     @staticmethod
-    def validate_account(a):
+    def validate_login_key(a):
         if len(a) != 15:
-            raise HTTPException(status_code=422, detail="Account length must be 15")
+            raise HTTPException(status_code=422, detail="Login key length must be 15")
         if not set(base28_digits).issuperset(a):
-            raise HTTPException(status_code=422, detail="Invalid account characters")
+            raise HTTPException(status_code=422, detail="Invalid login key characters")
         with Session(engine) as session:
-            statement = select(User).where(User.account == a)
+            statement = select(Account).where(Account.login_key == a)
             result = session.exec(statement).one_or_none()
         if result is None:
-            raise HTTPException(status_code=422, detail="Account not found")
+            raise HTTPException(status_code=422, detail="Login key not found")
         if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise HTTPException(status_code=422, detail="Account expired")
+            raise HTTPException(status_code=422, detail="Login key expired")
         # FIXME: verify pubkey limit
         return result
 
     @staticmethod
     def startup():
         with Session(engine) as session:
-            user_count = session.query(User).count()
-        if user_count == 0:  # first run--need to define a master account
+            account_count = session.query(Account).count()
+        if account_count == 0:  # first run--need to define a master login key
             with Session(engine) as session:
-                user = User()
-                user.clients_max = 0  # reserve master account for account creation, not VPNs
-                user.comment = "master account"
-                session.add(user)
+                account = Account()
+                account.clients_max = 0  # reserve master login key for login key creation, not VPNs
+                account.comment = "master login key"
+                session.add(account)
                 session.commit()
 
 
@@ -273,7 +273,7 @@ class Netif(SQLModel, table=True):
 class Client(SQLModel, table=True):
     __table_args__ = (sqlalchemy.UniqueConstraint('pubkey'),)  # no 2 clients may share a key
     id: Optional[int] = Field(primary_key=True, default=None)
-    user_id: int = Field(index=True, foreign_key='user.id')
+    account_id: int = Field(index=True, foreign_key='account.id')
     pubkey: str
     netif_id: int = Field(foreign_key='netif.id')
     # preshared_key: str
@@ -419,7 +419,7 @@ def mkdir_r(path):  # like Linux `mkdir --parents`
 
 
 def db_pathname(create_dir=False):
-    config_dir = platformdirs.user_config_dir(app_name())
+    config_dir = platformdirs.account_config_dir(app_name())
     if create_dir:
         mkdir_r(config_dir)
     return os.path.join(config_dir, f'data.sqlite')
@@ -448,7 +448,7 @@ def on_startup():
     SQLModel.metadata.create_all(engine)
     try:
         wgif = Netif.startup()  # configure new WireGuard interface
-        User.startup()  # add master account on first run
+        Account.startup()  # add master login key on first run
         Client.startup(wgif)  # add peers to WireGuard interface
     except Exception as e:
         on_shutdown()
@@ -467,57 +467,57 @@ def on_shutdown():
 ###
 
 
-@app.get('/pubkeys/{account}')
-# @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing account harder
-def get_pubkeys(account: str):
-    user = User.validate_account(account)
+@app.get('/pubkeys/{login_key}')
+# @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
+def get_pubkeys(login_key: str):
+    account = Account.validate_login_key(login_key)
     with Session(engine) as session:
-        statement = select(Client).where(Client.user_id == user.id)
+        statement = select(Client).where(Client.account_id == account.id)
         results = session.exec(statement)
         return [c.pubkey for c in results]
 
 
 @app.post('/wg/', response_class=responses.PlainTextResponse)
 @limiter.limit('100/minute')  # FIXME: reduce to 10
-def new_client(request: Request, account: str = Form(...), pubkey: str = Form(...)):
-    user = User.validate_account(account)
+def new_client(request: Request, login_key: str = Form(...), pubkey: str = Form(...)):
+    account = Account.validate_login_key(login_key)
     with Session(engine) as session:
-        user_client_count = session.query(Client).filter(Client.user_id == user.id).count()
-    if user_client_count >= user.clients_max:
+        account_client_count = session.query(Client).filter(Client.account_id == account.id).count()
+    if account_client_count >= account.clients_max:
         raise HTTPException(status_code=422, detail="No additional clients are allowed")
     Client.validate_pubkey(pubkey)
     with Session(engine) as session:  # look for pubkey in database
         statement = select(Client).where(Client.pubkey == pubkey)
         first = session.exec(statement).first()
     if first is not None:
-        if first.user_id != user.id:  # different user already has this pubkey
+        if first.account_id != account.id:  # different account already has this pubkey
             raise HTTPException(status_code=422, detail="Public key already in use")
         return first.ip_list()  # return existing IPs for this pubkey
     with Session(engine) as session:
         client = Client(
-            user_id=user.id,
+            account_id=account.id,
             pubkey=pubkey,
             netif_id=1,  # FIXME: figure out how to do multiple interfaces
         )
         session.add(client)
-        session.commit()  # FIXME: possible race condition where user could exceed clients_max
+        session.commit()  # FIXME: possible race condition where account could exceed clients_max
         client.set_peer()  # configure WireGuard for this peer
         return client.ip_list()
 
 
-@app.post('/new_account/', response_class=responses.PlainTextResponse)
+@app.post('/new_login_key/', response_class=responses.PlainTextResponse)
 @limiter.limit('100/minute')  # FIXME: reduce to 10
-def new_account(request: Request, master_account: str = Form(...), comment: str = Form(...)):
-    master_user = User.validate_account(master_account)
-    if master_user.id != 1:
-        raise HTTPException(status_code=422, detail="Master account code required")
+def new_login_key(request: Request, master_login_key: str = Form(...), comment: str = Form(...)):
+    master_account = Account.validate_login_key(master_login_key)
+    if master_account.id != 1:
+        raise HTTPException(status_code=422, detail="Master login key required")
     if len(comment) > 99:
         raise HTTPException(status_code=422, detail="Comment too long")
     with Session(engine) as session:
-        account = User(comment=comment)
-        session.add(account)
+        login_key = Account(comment=comment)
+        session.add(login_key)
         session.commit()
-        return account.account
+        return login_key.login_key
 
 
 @app.get('/raise_error/')
