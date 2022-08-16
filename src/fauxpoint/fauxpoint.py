@@ -20,7 +20,14 @@ assert sys.version_info >= (3, 8)
 sql.expression.Select.inherit_cache = False  # https://github.com/tiangolo/sqlmodel/issues/189
 sql.expression.SelectOfScalar.inherit_cache = False
 
+
+def app_name():
+    return os.path.splitext(os.path.basename(__file__))[0]
+
+
+###
 ### command-line interface
+###
 
 
 def cli(return_help_text=False):
@@ -99,14 +106,77 @@ def cli(return_help_text=False):
     return args
 
 
+###
+### DB table 'user' - person managing VPN clients
+###
+
+# account code, e.g. 'L7V2BCMM3PRKVF2'
+#     → log(28^15)÷log(2) ≈ 72 bits of entropy
+# 6 words from 4000-word dictionary, e.g. 'OstrichPrecipiceWeldLinkRoastedLeopard'
+#     → log(4000^6)÷log(2) ≈ 72 bits of entropy
+base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
+
+
+class User(SQLModel, table=True):
+    __table_args__ = (sqlalchemy.UniqueConstraint('account'),)  # must have a unique account code
+    id: Optional[int] = Field(primary_key=True, default=None)
+    account: str = Field(  # e.g. 'L7V2BCMM3PRKVF2';  sometimes called "account code"
+        index=True,
+        default_factory=lambda: ''.join(secrets.choice(base28_digits) for i in range(15)),
+    )
+    clients_max: int = 7
+    created_at: DateTime = Field(
+        sa_column=sqlalchemy.Column(
+            sqlalchemy.DateTime(timezone=True),
+            default=DateTime.utcnow,
+        )
+    )
+    valid_until: DateTime = Field(
+        sa_column=sqlalchemy.Column(
+            sqlalchemy.DateTime(timezone=True),
+            default=lambda: DateTime.utcnow() + TimeDelta(days=3650),
+        )
+    )
+    comment: str
+
+    def formatted_account(self):  # display version, e.g. 'L7V.2BC.MM3.PRK.VF2'
+        return '.'.join(self[i : i + 3] for i in range(0, 15, 3))
+
+    @staticmethod
+    def validate_account(a):
+        if len(a) != 15:
+            raise HTTPException(status_code=422, detail="Account length must be 15")
+        if not set(base28_digits).issuperset(a):
+            raise HTTPException(status_code=422, detail="Invalid account characters")
+        with Session(engine) as session:
+            statement = select(User).where(User.account == a)
+            result = session.exec(statement).one_or_none()
+        if result is None:
+            raise HTTPException(status_code=422, detail="Account not found")
+        if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
+            raise HTTPException(status_code=422, detail="Account expired")
+        # FIXME: verify pubkey limit
+        return result
+
+    @staticmethod
+    def startup():
+        with Session(engine) as session:
+            user_count = session.query(User).count()
+        if user_count == 0:  # first run--need to define a master account
+            with Session(engine) as session:
+                user = User()
+                user.clients_max = 0  # reserve master account for account creation, not VPNs
+                user.comment = "master account"
+                session.add(user)
+                session.commit()
+
+
+###
 ### DB table 'netif' - WireGuard network interfaces
+###
 
 wgif_prefix = 'fdfb'
 reserved_ips = 38
-
-
-def app_name():
-    return os.path.splitext(os.path.basename(__file__))[0]
 
 
 class Netif(SQLModel, table=True):
@@ -195,70 +265,9 @@ class Netif(SQLModel, table=True):
         Netif.delete_our_wgif()
 
 
-### DB table 'user' - person managing VPN clients
-
-# account code, e.g. 'L7V2BCMM3PRKVF2'
-#     → log(28^15)÷log(2) ≈ 72 bits of entropy
-# 6 words from 4000-word dictionary, e.g. 'OstrichPrecipiceWeldLinkRoastedLeopard'
-#     → log(4000^6)÷log(2) ≈ 72 bits of entropy
-base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
-
-
-class User(SQLModel, table=True):
-    __table_args__ = (sqlalchemy.UniqueConstraint('account'),)  # must have a unique account code
-    id: Optional[int] = Field(primary_key=True, default=None)
-    account: str = Field(  # e.g. 'L7V2BCMM3PRKVF2';  sometimes called "account code"
-        index=True,
-        default_factory=lambda: ''.join(secrets.choice(base28_digits) for i in range(15)),
-    )
-    clients_max: int = 7
-    created_at: DateTime = Field(
-        sa_column=sqlalchemy.Column(
-            sqlalchemy.DateTime(timezone=True),
-            default=DateTime.utcnow,
-        )
-    )
-    valid_until: DateTime = Field(
-        sa_column=sqlalchemy.Column(
-            sqlalchemy.DateTime(timezone=True),
-            default=lambda: DateTime.utcnow() + TimeDelta(days=3650),
-        )
-    )
-    comment: str
-
-    def formatted_account(self):  # display version, e.g. 'L7V.2BC.MM3.PRK.VF2'
-        return '.'.join(self[i : i + 3] for i in range(0, 15, 3))
-
-    @staticmethod
-    def validate_account(a):
-        if len(a) != 15:
-            raise HTTPException(status_code=422, detail="Account length must be 15")
-        if not set(base28_digits).issuperset(a):
-            raise HTTPException(status_code=422, detail="Invalid account characters")
-        with Session(engine) as session:
-            statement = select(User).where(User.account == a)
-            result = session.exec(statement).one_or_none()
-        if result is None:
-            raise HTTPException(status_code=422, detail="Account not found")
-        if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise HTTPException(status_code=422, detail="Account expired")
-        # FIXME: verify pubkey limit
-        return result
-
-    @staticmethod
-    def startup():
-        with Session(engine) as session:
-            user_count = session.query(User).count()
-        if user_count == 0:  # first run--need to define a master account
-            with Session(engine) as session:
-                user = User()
-                user.clients_max = 0  # reserve master account for account creation, not VPNs
-                user.comment = "master account"
-                session.add(user)
-                session.commit()
-
-
+###
 ### DB table 'client' - VPN client device
+###
 
 
 class Client(SQLModel, table=True):
@@ -307,7 +316,9 @@ class Client(SQLModel, table=True):
                 c.set_peer(wgif)
 
 
+###
 ### helper methods
+###
 
 
 def ip_route_show(item: str):  # name of interface ('dev') or IP ('via') with default route
@@ -391,7 +402,9 @@ def run_external(args, input=None):
     return proc.stdout.decode().rstrip()
 
 
+###
 ### startup and shutdown
+###
 
 
 def mkdir_r(path):  # like Linux `mkdir --parents`
@@ -449,7 +462,9 @@ def on_shutdown():
     Netif.shutdown()
 
 
+###
 ### web API
+###
 
 
 @app.get('/pubkeys/{account}')
