@@ -1,5 +1,6 @@
 from asyncio import subprocess
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
+import enum
 import ipaddress
 import logging
 import os
@@ -107,14 +108,36 @@ def cli(return_help_text=False):
 
 
 ###
-### DB table 'account' - person managing VPN clients
+### DB table 'axis' - website configuration; should be exactly 1 row
+###
+
+
+class Axis(SQLModel, table=True):
+    id: Optional[int] = Field(primary_key=True, default=None)
+    url: str = ""  # website url in form example.com or node.example.com
+    # FIXME: add note--recommend url not contain `vpn` or `proxy` for firewalls of clients to block
+    name: str = ""  # displayed at the top of the home screen
+    image: str = ""  # base64-encoded; displayed at the top of the home screen
+
+
+###
+### DB table 'account' - an administrative login
 ###
 
 # login key, e.g. 'L7V2BCMM3PRKVF2'
 #     → log(28^15)÷log(2) ≈ 72 bits of entropy
 # 6 words from 4000-word dictionary, e.g. 'OstrichPrecipiceWeldLinkRoastedLeopard'
 #     → log(4000^6)÷log(2) ≈ 72 bits of entropy
+# Mullvad 16-digit account number
+#     → log(10^16)÷log(2) ≈ 53 bits of entropy
 base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
+
+
+class Account_kind(enum.Enum):
+    ROOT = 0  # can create, edit, and delete coupon codes; can edit and delete managers and users
+    COUPON = 100  # can create managers (that's all)
+    MANAGER = 200  # can set up, edit, and delete servers and clients
+    USER = 300  # can set up, edit, and delete clients for a specific netif_id on 1 server
 
 
 class Account(SQLModel, table=True):
@@ -137,10 +160,14 @@ class Account(SQLModel, table=True):
             default=lambda: DateTime.utcnow() + TimeDelta(days=3650),
         )
     )
-    comment: str
+    kind: Account_kind
+    netif_id: int = Field(foreign_key='netif.id')  # used only if kind == USER
+    comment: str = ""
 
-    def formatted_login_key(self):  # display version, e.g. 'L7V.2BC.MM3.PRK.VF2'
-        return '.'.join(self[i : i + 3] for i in range(0, 15, 3))
+    @staticmethod
+    def partition_login_key(k):  # display version, e.g. 'L7V-2BCM-M3P-RKVF2'
+        assert len(k) == 15
+        return f'{k[0:3]}-{k[3:7]}-{k[7:10]}-{k[10:15]}'
 
     @staticmethod
     def validate_login_key(a):
@@ -172,7 +199,18 @@ class Account(SQLModel, table=True):
 
 
 ###
-### DB table 'netif' - WireGuard network interfaces
+### DB table 'server' - VPN server device
+###
+
+
+class Server(SQLModel, table=True):
+    id: Optional[int] = Field(primary_key=True, default=None)
+    account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager
+    comment: str = ""
+
+
+###
+### DB table 'netif' - WireGuard network interface
 ###
 
 wgif_prefix = 'fdfb'
@@ -181,15 +219,15 @@ reserved_ips = 38
 
 class Netif(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
-    comment: str
+    server_id: int = Field(index=True, foreign_key='server.id')  # server this netif is on
     ipv4_base: str
     ipv6_base: str
     privkey: str
     pubkey: str
     listening_port: int
+    comment: str = ""
 
     def __init__(self):
-        self.comment = ""
         # IPv4 base is 10. + random xx.xx. + 0
         self.ipv4_base = str(ipaddress.ip_address('10.0.0.0') + secrets.randbelow(2**16) * 2**8)
         # IPv6 base is prefix + 2 random groups + 5 0000 groups
@@ -273,11 +311,12 @@ class Netif(SQLModel, table=True):
 class Client(SQLModel, table=True):
     __table_args__ = (sqlalchemy.UniqueConstraint('pubkey'),)  # no 2 clients may share a key
     id: Optional[int] = Field(primary_key=True, default=None)
-    account_id: int = Field(index=True, foreign_key='account.id')
+    netif_id: int = Field(foreign_key='netif.id')  # the server interface this client connects to
     pubkey: str
-    netif_id: int = Field(foreign_key='netif.id')
     # preshared_key: str
     # keepalive: int
+    account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager or user
+    comment: str = ""
 
     def ip_list(self, wgif: Netif = None):  # calculate client's 2 IP addresses for allowed-ips
         if wgif is None:
