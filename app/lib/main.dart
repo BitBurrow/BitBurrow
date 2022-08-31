@@ -1,115 +1,185 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:go_router/go_router.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(App());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({Key? key}) : super(key: key);
-
-  // This widget is the root of your application.
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // Try running your application with "flutter run". You'll see the
-        // application has a blue toolbar. Then, without quitting the app, try
-        // changing the primarySwatch below to Colors.green and then invoke
-        // "hot reload" (press "r" in the console where you ran "flutter run",
-        // or simply save your changes to "hot reload" in a Flutter IDE).
-        // Notice that the counter didn't reset back to zero; the application
-        // is not restarted.
-        primarySwatch: Colors.blue,
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+Page<void> ourPageBuilder(
+        BuildContext context, GoRouterState state, Widget child) =>
+    CustomTransitionPage<void>(
+      key: state.pageKey,
+      child: child,
+      transitionsBuilder: // disable the default MaterialApp transition
+          (context, animation, secondaryAnimation, child) =>
+              FadeTransition(opacity: animation, child: child),
     );
-  }
-}
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({Key? key, required this.title}) : super(key: key);
+class App extends StatelessWidget {
+  App({Key? key}) : super(key: key);
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
-  }
+  static const String title = 'BitBurrow';
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
-            ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headline4,
-            ),
-          ],
+    return MaterialApp.router(
+      title: title,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSwatch().copyWith(
+          primary: const Color(0xFF343A40),
+          secondary: const Color(0xFFFFC107),
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+      routeInformationProvider: _router.routeInformationProvider,
+      routeInformationParser: _router.routeInformationParser,
+      routerDelegate: _router.routerDelegate,
     );
   }
+
+  final GoRouter _router = GoRouter(
+    routes: <GoRoute>[
+      GoRoute(
+        path: '/',
+        pageBuilder: (context, state) =>
+            ourPageBuilder(context, state, RootScreen()),
+        routes: <GoRoute>[
+          // has back arrow to root page
+          GoRoute(
+            path: 'page2',
+            pageBuilder: (context, state) =>
+                ourPageBuilder(context, state, Page2Screen()),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/page3',
+        pageBuilder: (context, state) =>
+            ourPageBuilder(context, state, Page3Screen()),
+      ),
+    ],
+    urlPathStrategy:
+        UrlPathStrategy.path, // turn off the extra `#/` in the URLs
+  );
+}
+
+var text1 =
+    'Ut **bold** and *ital* and [pub.dev](https://pub.dev) necessitatibus '
+    '[page 2 with back arrow](/page2) and [page 3](/page3) and '
+    'dignissimos rerum et fuga sapiente et dicta internos non '
+    'odio repudiandae? Ut repellat amet est ducimus doloremque est similique nobis '
+    'qui explicabo molestiae. Qui sunt porro vel quas officia nam porro galisum! '
+    '\n\n';
+var text2 =
+    'Lorem ipsum dolor sit amet. Non magni internos eum quis omnis et eveniet '
+    'repellendus eos illo quas est voluptatibus minima ut explicabo enim. Ea nobis '
+    'corporis sit voluptas nihil in labore minima quo similique velit ex distinctio '
+    'laboriosam vel iste excepturi non sunt alias. Et eligendi odio est impedit '
+    'voluptatem et animi necessitatibus ut quod dignissimos non aspernatur veniam '
+    'aut illum minima. Qui iure facere id mollitia doloribus et eaque nemo vel enim '
+    'molestiae et consequuntur quas et quae quia. '
+    '\n\n'
+    'Aut magnam incidunt et '
+    'earum voluptate vel voluptates minus et illo et necessitatibus doloribus et '
+    'temporibus accusamus. In vitae alias non corrupti ullam ad galisum velit. Ea '
+    'laudantium minus id quam quae rem illum magnam id provident veniam id facilis '
+    'sunt ad rerum officiis sed minima unde. '
+    '\n\n';
+var text3 =
+    'Ut Quis sint ea sequi assumenda qui ullam fuga et debitis tenetur id dolores '
+    'dolorum quo vitae dolores quo odit obcaecati! Id fugiat temporibus qui '
+    'doloremque adipisci ut consectetur impedit hic possimus molestiae ea iste '
+    'saepe. Ut eligendi error nam cumque magnam et dolorem omnis et enim ratione '
+    'sed repellat fugiat eum perspiciatis facilis et voluptatem quod. Sed voluptas '
+    'repudiandae et recusandae excepturi aut eligendi laborum et obcaecati dolorem '
+    'et quidem nisi et voluptate quod vel numquam illo! '
+    '\n\n';
+
+void onMarkdownClick(BuildContext context, String url) {
+  if (url[0] == '/') {
+    // within our app
+    context.go(url);
+  } else {
+    launchUrl(Uri.parse(url));
+  }
+}
+
+Widget ourScreenLayout(BuildContext context, String text) => Scaffold(
+      appBar: AppBar(
+        // title: const Text(App.title),
+        toolbarHeight: 40.0,
+      ),
+      body: SingleChildScrollView(
+          child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(18.0),
+            child: MarkdownBody(
+                selectable:
+                    false, // DO NOT USE; see https://stackoverflow.com/questions/73491527
+                //FIXME: read from a file: https://developer.school/tutorials/how-to-display-markdown-in-flutter
+                styleSheet: MarkdownStyleSheet.fromTheme(ThemeData(
+                    textTheme: const TextTheme(
+                        bodyText2: TextStyle(
+                  fontSize: 16.0,
+                  color: Colors.black,
+                )))),
+                onTapLink: (text, url, title) {
+                  onMarkdownClick(context, url!);
+                },
+                data: text),
+          ),
+        ],
+      )),
+    );
+
+class RootScreen extends StatelessWidget {
+  const RootScreen({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) => ourScreenLayout(
+        context,
+        text1 + text2 * 15 + text3,
+      );
+}
+
+class Page2Screen extends StatelessWidget {
+  const Page2Screen({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const Text(App.title)),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              ElevatedButton(
+                onPressed: () => context.go('/'),
+                child: const Text('Go back to home page'),
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
+class Page3Screen extends StatelessWidget {
+  const Page3Screen({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const Text(App.title)),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              ElevatedButton(
+                onPressed: () => context.go('/'),
+                child: const Text('Go back to home page'),
+              ),
+            ],
+          ),
+        ),
+      );
 }
