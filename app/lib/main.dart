@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:go_router/go_router.dart';
@@ -12,7 +13,7 @@ Page<void> ourPageBuilder(
     CustomTransitionPage<void>(
       key: state.pageKey,
       child: child,
-      transitionsBuilder: // disable the default MaterialApp transition
+      transitionsBuilder: // change the default MaterialApp transition
           (context, animation, secondaryAnimation, child) =>
               FadeTransition(opacity: animation, child: child),
     );
@@ -43,20 +44,20 @@ class App extends StatelessWidget {
       GoRoute(
         path: '/',
         pageBuilder: (context, state) =>
-            ourPageBuilder(context, state, RootScreen()),
+            ourPageBuilder(context, state, const WelcomeScreen()),
         routes: <GoRoute>[
           // has back arrow to root page
           GoRoute(
             path: 'page2',
             pageBuilder: (context, state) =>
-                ourPageBuilder(context, state, Page2Screen()),
+                ourPageBuilder(context, state, const Page2Screen()),
           ),
         ],
       ),
       GoRoute(
         path: '/page3',
         pageBuilder: (context, state) =>
-            ourPageBuilder(context, state, Page3Screen()),
+            ourPageBuilder(context, state, const Page3Screen()),
       ),
     ],
     urlPathStrategy:
@@ -66,7 +67,7 @@ class App extends StatelessWidget {
 
 var text1 =
     'Ut **bold** and *ital* and [pub.dev](https://pub.dev) necessitatibus '
-    '[page 2 with back arrow](/page2) and [page 3](/page3) and '
+    '[page 2 with back arrow](/page2) and [page 3](/page3) and [back to home page](/) '
     'dignissimos rerum et fuga sapiente et dicta internos non '
     'odio repudiandae? Ut repellat amet est ducimus doloremque est similique nobis '
     'qui explicabo molestiae. Qui sunt porro vel quas officia nam porro galisum! '
@@ -105,61 +106,255 @@ void onMarkdownClick(BuildContext context, String url) {
   }
 }
 
-Widget ourScreenLayout(BuildContext context, String text) => Scaffold(
+Widget ourScreenLayout(BuildContext context, Widget child) => Scaffold(
       appBar: AppBar(
         // title: const Text(App.title),
         toolbarHeight: 40.0,
       ),
       body: SingleChildScrollView(
-          child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(18.0),
-            child: MarkdownBody(
-                selectable:
-                    false, // DO NOT USE; see https://stackoverflow.com/questions/73491527
-                //FIXME: read from a file: https://developer.school/tutorials/how-to-display-markdown-in-flutter
-                styleSheet: MarkdownStyleSheet.fromTheme(ThemeData(
-                    textTheme: const TextTheme(
-                        bodyText2: TextStyle(
-                  fontSize: 16.0,
-                  color: Colors.black,
-                )))),
-                onTapLink: (text, url, title) {
-                  onMarkdownClick(context, url!);
-                },
-                data: text),
-          ),
-        ],
+          child: Padding(
+        padding: const EdgeInsets.all(18.0),
+        child: child,
       )),
     );
 
-class RootScreen extends StatelessWidget {
-  const RootScreen({Key? key}) : super(key: key);
+class WelcomeScreen extends StatelessWidget {
+  const WelcomeScreen({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) => ourScreenLayout(
         context,
-        text1 + text2 * 15 + text3,
+        const WelcomeForm(),
       );
+}
+
+class WelcomeForm extends StatefulWidget {
+  const WelcomeForm({Key? key}) : super(key: key);
+
+  @override
+  WelcomeFormState createState() => WelcomeFormState();
+}
+
+class InviteData {
+  String? hub = '';
+  String? coupon = '';
+}
+
+const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
+
+class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
+  // based on https://github.com/flutter/gallery/blob/d030f1e5316310c48fc725f619eb980a0597366d/lib/demos/material/text_field_demo.dart
+  InviteData invite = InviteData();
+
+  late FocusNode _hub, _coupon;
+
+  @override
+  void initState() {
+    super.initState();
+    _hub = FocusNode();
+    _coupon = FocusNode();
+  }
+
+  @override
+  void dispose() {
+    _hub.dispose();
+    _coupon.dispose();
+    super.dispose();
+  }
+
+  void showInSnackBar(String value) {
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(value),
+    ));
+  }
+
+  @override
+  String get restorationId => 'welcome_form';
+
+  @override
+  void restoreState(RestorationBucket? oldBucket, bool initialRestore) {
+    registerForRestoration(_autoValidateModeIndex, 'autovalidate_mode');
+  }
+
+  final RestorableInt _autoValidateModeIndex =
+      RestorableInt(AutovalidateMode.disabled.index);
+
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+  final _CouponTextInputFormatter _couponFormatter =
+      _CouponTextInputFormatter();
+
+  void _handleSubmitted() {
+    final form = _formKey.currentState!;
+    if (!form.validate()) {
+      _autoValidateModeIndex.value =
+          AutovalidateMode.always.index; // Start validating on every change.
+      showInSnackBar("Please fix the errors in red before submitting.");
+    } else {
+      form.save();
+      showInSnackBar("$invite.hub!:$invite.coupon!");
+    }
+  }
+
+  String? _validateHub(String? value) {
+    if (value == null || value.isEmpty) {
+      return "Hub is required";
+    }
+    final hubExp = RegExp(r'^[^\.-].*\..*[^\.-]$');
+    if (!hubExp.hasMatch(value)) {
+      return "Hub must contain a '.' and begin and end with a letter or number.";
+    }
+    return null;
+  }
+
+  String? _validateCoupon(String? value) {
+    if (value == null || value.isEmpty) {
+      return "Coupon is required";
+    }
+    if (value.length != 18) {
+      return "Coupon must be exactly 18 characters (including dashes).";
+    }
+    final hubExp = RegExp(r'^[' + base28Digits + r'-]{18}$');
+    if (!hubExp.hasMatch(value)) {
+      return "Please use only numbers and letters.";
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const sizedBoxSpace = SizedBox(height: 24);
+
+    return Form(
+      key: _formKey,
+      autovalidateMode: AutovalidateMode.values[_autoValidateModeIndex.value],
+      child: Scrollbar(
+        child: SingleChildScrollView(
+          restorationId: 'text_field_demo_scroll_view',
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Column(
+            children: [
+              sizedBoxSpace,
+              TextFormField(
+                restorationId: 'hub_field',
+                textInputAction: TextInputAction.next,
+                textCapitalization: TextCapitalization.none,
+                decoration: const InputDecoration(
+                  filled: true,
+                  icon: Icon(Icons.token_outlined),
+                  hintText: "example.com",
+                  labelText: "Hub*",
+                ),
+                onSaved: (value) {
+                  invite.hub = value;
+                  _coupon.requestFocus();
+                },
+                validator: _validateHub,
+                inputFormatters: <TextInputFormatter>[
+                  // don't allow upper-case, common symbols except -.
+                  FilteringTextInputFormatter.deny(RegExp(
+                      r'''[A-Z~`!@#$%^&\*\(\)_\+=\[\]\{\}\|\\:;"'<>,/\? ]''')),
+                ],
+              ),
+              sizedBoxSpace,
+              TextFormField(
+                restorationId: 'coupon_field',
+                textInputAction: TextInputAction.next,
+                textCapitalization: TextCapitalization.characters,
+                decoration: const InputDecoration(
+                  filled: true,
+                  icon: Icon(Icons.receipt_sharp),
+                  hintText: "XXX-XXXX-XXX-XXXXX (Case-insensitive)",
+                  labelText: "Coupon*",
+                ),
+                onSaved: (value) {
+                  invite.coupon = value;
+                },
+                maxLength: 18,
+                maxLengthEnforcement: MaxLengthEnforcement.none,
+                validator: _validateCoupon,
+                inputFormatters: <TextInputFormatter>[
+                  _couponFormatter,
+                ],
+              ),
+              sizedBoxSpace,
+              Center(
+                child: ElevatedButton(
+                  onPressed: _handleSubmitted,
+                  child: const Text("SUBMIT"),
+                ),
+              ),
+              sizedBoxSpace,
+              Text(
+                "* indicates required field",
+                style: Theme.of(context).textTheme.caption,
+              ),
+              sizedBoxSpace,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+//                                                              123456789012345678
+// Strip illegal chars, format incoming text to fit the format: XXX-XXXX-XXX-XXXXX
+class _CouponTextInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    var before = newValue.text.toUpperCase();
+    var beforePos = newValue.selection.end;
+    var beforeLength = before.length;
+    final after = StringBuffer();
+    var afterPos = 0;
+    String unbackspaceTest =
+        '${before.substring(0, beforePos)}-${before.substring(beforePos)}';
+    if (unbackspaceTest == oldValue.text) {
+      // if user backspaces over '-', delete the character before
+      before =
+          '${before.substring(0, beforePos - 1)}${before.substring(beforePos)}';
+      beforePos = beforePos - 1;
+      beforeLength = before.length;
+    }
+    for (int i = 0; i < beforeLength; i++) {
+      if (i == beforePos) afterPos = after.length;
+      var c = before[i];
+      if (base28Digits.contains(c)) after.write(c);
+      var l = after.length;
+      if (l == 3 || l == 8 || l == 12) after.write('-');
+    }
+    if (beforeLength == beforePos) afterPos = after.length;
+    return TextEditingValue(
+      text: after.toString(),
+      selection: TextSelection.collapsed(offset: afterPos),
+    );
+  }
 }
 
 class Page2Screen extends StatelessWidget {
   const Page2Screen({Key? key}) : super(key: key);
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text(App.title)),
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              ElevatedButton(
-                onPressed: () => context.go('/'),
-                child: const Text('Go back to home page'),
-              ),
-            ],
-          ),
+  Widget build(BuildContext context) => ourScreenLayout(
+        context,
+        MarkdownBody(
+          selectable:
+              false, // DO NOT USE; see https://stackoverflow.com/questions/73491527
+          // fixme: read from a file: https://developer.school/tutorials/how-to-display-markdown-in-flutter
+          styleSheet: MarkdownStyleSheet.fromTheme(ThemeData(
+              textTheme: const TextTheme(
+                  bodyText2: TextStyle(
+            fontSize: 16.0,
+            color: Colors.black,
+          )))),
+          onTapLink: (text, url, title) {
+            onMarkdownClick(context, url!);
+          },
+          data: text1 + text2 * 15 + text3,
         ),
       );
 }
