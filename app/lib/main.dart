@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'dart:math';
 
 void main() {
   runApp(App());
@@ -104,6 +106,24 @@ void onMarkdownClick(BuildContext context, String url) {
   } else {
     launchUrl(Uri.parse(url));
   }
+}
+
+MarkdownBody textMd(BuildContext context, md) {
+  return MarkdownBody(
+    selectable:
+        false, // DO NOT USE; see https://stackoverflow.com/questions/73491527
+    // fixme: read from a file: https://developer.school/tutorials/how-to-display-markdown-in-flutter
+    styleSheet: MarkdownStyleSheet.fromTheme(ThemeData(
+        textTheme: const TextTheme(
+            bodyText2: TextStyle(
+      fontSize: 16.0,
+      color: Colors.black,
+    )))),
+    onTapLink: (text, url, title) {
+      onMarkdownClick(context, url!);
+    },
+    data: md,
+  );
 }
 
 Widget ourScreenLayout(BuildContext context, Widget child) => Scaffold(
@@ -234,14 +254,43 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Column(
             children: [
+              // center elements vertically if less than screen height
+              Container(
+                  height: // fixme: replace 700 with the actual height of widgets below
+                      max((MediaQuery.of(context).size.height - 700) / 2, 0)),
+              sizedBoxSpace,
+              const FractionallySizedBox(
+                widthFactor: 0.8,
+                child: Text(
+                  "Welcome to BitBurrow",
+                  textAlign: TextAlign.center,
+                  textScaleFactor: 1.8,
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+              sizedBoxSpace,
+              FractionallySizedBox(
+                widthFactor: 0.4,
+                child: Image.asset("images/BitBurrow.png"),
+              ),
+              sizedBoxSpace,
+              textMd(
+                  context,
+                  "This app needs a BitBurrow Hub to run. "
+                  "Please enter the information below. "),
               sizedBoxSpace,
               TextFormField(
                 restorationId: 'hub_field',
                 textInputAction: TextInputAction.next,
                 textCapitalization: TextCapitalization.none,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   filled: true,
-                  icon: Icon(Icons.token_outlined),
+                  icon: SvgPicture.asset(
+                    'images/cloud-data-connection.svg',
+                    width: 30,
+                    height: 30,
+                    color: Colors.grey[700],
+                  ),
                   hintText: "example.com",
                   labelText: "Hub*",
                 ),
@@ -261,9 +310,14 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
                 restorationId: 'coupon_field',
                 textInputAction: TextInputAction.next,
                 textCapitalization: TextCapitalization.characters,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   filled: true,
-                  icon: Icon(Icons.receipt_sharp),
+                  icon: SvgPicture.asset(
+                    'images/ticket.svg',
+                    width: 30,
+                    height: 30,
+                    color: Colors.grey[700],
+                  ),
                   hintText: "XXX-XXXX-XXX-XXXXX (Case-insensitive)",
                   labelText: "Coupon*",
                 ),
@@ -341,21 +395,7 @@ class Page2Screen extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ourScreenLayout(
         context,
-        MarkdownBody(
-          selectable:
-              false, // DO NOT USE; see https://stackoverflow.com/questions/73491527
-          // fixme: read from a file: https://developer.school/tutorials/how-to-display-markdown-in-flutter
-          styleSheet: MarkdownStyleSheet.fromTheme(ThemeData(
-              textTheme: const TextTheme(
-                  bodyText2: TextStyle(
-            fontSize: 16.0,
-            color: Colors.black,
-          )))),
-          onTapLink: (text, url, title) {
-            onMarkdownClick(context, url!);
-          },
-          data: text1 + text2 * 15 + text3,
-        ),
+        textMd(context, text1 + text2 * 15 + text3),
       );
 }
 
