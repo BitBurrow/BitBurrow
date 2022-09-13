@@ -458,7 +458,7 @@ def mkdir_r(path):  # like Linux `mkdir --parents`
 
 
 def db_pathname(create_dir=False):
-    config_dir = platformdirs.account_config_dir(app_name())
+    config_dir = platformdirs.user_config_dir(app_name())
     if create_dir:
         mkdir_r(config_dir)
     return os.path.join(config_dir, f'data.sqlite')
