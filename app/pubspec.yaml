@@ -38,6 +38,7 @@ dependencies:
   flutter_markdown: ^0.6.10+5
   url_launcher: ^6.1.5
   flutter_svg: ^1.1.4
+  http: ^0.13.5
 
 dev_dependencies:
   flutter_test:

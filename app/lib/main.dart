@@ -1,9 +1,13 @@
+// ignore_for_file: avoid_print
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'dart:convert' as convert;
 import 'dart:math';
 
 void main() {
@@ -48,11 +52,16 @@ class App extends StatelessWidget {
         pageBuilder: (context, state) =>
             ourPageBuilder(context, state, const WelcomeScreen()),
         routes: <GoRoute>[
-          // has back arrow to root page
+          // has back arrow to above page
           GoRoute(
-            path: 'page2',
-            pageBuilder: (context, state) =>
-                ourPageBuilder(context, state, const Page2Screen()),
+            path: 'new-login-key',
+            pageBuilder: (context, state) => ourPageBuilder(
+                context,
+                state,
+                NewLoginKeyScreen(
+                  hub: state.queryParams['hub']!,
+                  loginKey: state.queryParams['login_key']!,
+                )),
           ),
         ],
       ),
@@ -66,38 +75,6 @@ class App extends StatelessWidget {
         UrlPathStrategy.path, // turn off the extra `#/` in the URLs
   );
 }
-
-var text1 =
-    'Ut **bold** and *ital* and [pub.dev](https://pub.dev) necessitatibus '
-    '[page 2 with back arrow](/page2) and [page 3](/page3) and [back to home page](/) '
-    'dignissimos rerum et fuga sapiente et dicta internos non '
-    'odio repudiandae? Ut repellat amet est ducimus doloremque est similique nobis '
-    'qui explicabo molestiae. Qui sunt porro vel quas officia nam porro galisum! '
-    '\n\n';
-var text2 =
-    'Lorem ipsum dolor sit amet. Non magni internos eum quis omnis et eveniet '
-    'repellendus eos illo quas est voluptatibus minima ut explicabo enim. Ea nobis '
-    'corporis sit voluptas nihil in labore minima quo similique velit ex distinctio '
-    'laboriosam vel iste excepturi non sunt alias. Et eligendi odio est impedit '
-    'voluptatem et animi necessitatibus ut quod dignissimos non aspernatur veniam '
-    'aut illum minima. Qui iure facere id mollitia doloribus et eaque nemo vel enim '
-    'molestiae et consequuntur quas et quae quia. '
-    '\n\n'
-    'Aut magnam incidunt et '
-    'earum voluptate vel voluptates minus et illo et necessitatibus doloribus et '
-    'temporibus accusamus. In vitae alias non corrupti ullam ad galisum velit. Ea '
-    'laudantium minus id quam quae rem illum magnam id provident veniam id facilis '
-    'sunt ad rerum officiis sed minima unde. '
-    '\n\n';
-var text3 =
-    'Ut Quis sint ea sequi assumenda qui ullam fuga et debitis tenetur id dolores '
-    'dolorum quo vitae dolores quo odit obcaecati! Id fugiat temporibus qui '
-    'doloremque adipisci ut consectetur impedit hic possimus molestiae ea iste '
-    'saepe. Ut eligendi error nam cumque magnam et dolorem omnis et enim ratione '
-    'sed repellat fugiat eum perspiciatis facilis et voluptatem quod. Sed voluptas '
-    'repudiandae et recusandae excepturi aut eligendi laborum et obcaecati dolorem '
-    'et quidem nisi et voluptate quod vel numquam illo! '
-    '\n\n';
 
 void onMarkdownClick(BuildContext context, String url) {
   if (url[0] == '/') {
@@ -125,6 +102,27 @@ MarkdownBody textMd(BuildContext context, md) {
     data: md,
   );
 }
+
+Future showSimpleDialog(
+        BuildContext context, String title, String text, String buttonText) =>
+    showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext context) => AlertDialog(
+              title: Text(title),
+              content: Text(text),
+              actions: <Widget>[
+                TextButton(
+                  style: TextButton.styleFrom(
+                    textStyle: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  onPressed: () {
+                    Navigator.of(context).pop(context);
+                  },
+                  child: Text(buttonText),
+                )
+              ],
+            ));
 
 Widget ourScreenLayout(BuildContext context, Widget child) => Scaffold(
       appBar: AppBar(
@@ -161,6 +159,13 @@ class InviteData {
 }
 
 const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
+
+enum DialogStates {
+  open,
+  closing,
+  closed,
+  canceled,
+}
 
 class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
   // based on https://github.com/flutter/gallery/blob/d030f1e5316310c48fc725f619eb980a0597366d/lib/demos/material/text_field_demo.dart
@@ -204,16 +209,90 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
   final _CouponTextInputFormatter _couponFormatter =
       _CouponTextInputFormatter();
 
-  void _handleSubmitted() {
+  void _handleSubmitted() async {
     final form = _formKey.currentState!;
     if (!form.validate()) {
       _autoValidateModeIndex.value =
           AutovalidateMode.always.index; // Start validating on every change.
       showInSnackBar("Please fix the errors in red before submitting.");
-    } else {
-      form.save();
-      showInSnackBar("$invite.hub!:$invite.coupon!");
+      return;
     }
+    form.save();
+    var hub = invite.hub; // keep local value in case dialog is canceled ...
+    // and _handleSubmitted() is re-entered
+    var connectingDialog =
+        showSimpleDialog(context, "Connecting to hub ...", "", "CANCEL");
+    var dialogState = DialogStates.open;
+    connectingDialog.whenComplete(() {
+      if (dialogState == DialogStates.open) {
+        print("user canceled dialog before request completed");
+        dialogState = DialogStates.canceled;
+      } else {
+        dialogState = DialogStates.closed;
+      }
+    });
+    // wait 1 seconds so user will see that something is happening
+    await Future.delayed(const Duration(seconds: 1), () {});
+    print("calling http $hub ...");
+    http.Response? response;
+    var errMessage = "";
+    String? loginKey;
+    try {
+      var url = Uri.http('$hub:8443', '/v1/accounts/${invite.coupon}/accounts');
+      response = await http.post(url);
+    } catch (err) {
+      errMessage = err.toString();
+    }
+    if (dialogState == DialogStates.canceled) return;
+    if (!mounted) return;
+    dialogState = DialogStates.closing;
+    Navigator.pop(context); // close dialog
+    if (errMessage.startsWith("Failed host lookup:") ||
+        errMessage == "Network is unreachable" ||
+        errMessage == "Connection timed out" ||
+        errMessage == "Connection refused") {
+      errMessage = 'Cannot find hub "$hub". Make sure this is correct '
+          "and that you are connected to the internet. "
+          '(Error "$errMessage".)';
+    }
+    if (errMessage.isEmpty) {
+      if (response == null) {
+        errMessage = "Internal error B29348.";
+      } else {
+        if (response.statusCode != 201) {
+          errMessage = "The hub responseded with an invalid status code. "
+              "Make sure you typed the hub correctly, try again later, or "
+              "contact the hub administrator. "
+              '(Error "invalid status code ${response.statusCode}".)';
+        } else {
+          try {
+            var jsonResponse =
+                convert.jsonDecode(response.body) as Map<String, dynamic>;
+            loginKey = jsonResponse["login_key"];
+            if (loginKey == null || loginKey.length != 18) {
+              errMessage = "Received invalid data from the hub. Contact the "
+                  "hub administrator. "
+                  '(Error "login_key is $loginKey".)';
+            } else {
+              print("successful connection to $hub, "
+                  "status code ${response.statusCode}");
+            }
+          } catch (err) {
+            errMessage = "Unable to parse the hub's response. Make sure "
+                "you typed the hub correctly, try again later, or contact "
+                "the hub administrator. "
+                '(Error "$err".)';
+          }
+        }
+      }
+    }
+    if (errMessage.isEmpty) {
+      context.go('/new-login-key?hub=$hub&login_key=$loginKey');
+      return;
+    }
+    print("finished http $hub: $errMessage");
+    await showSimpleDialog(context, "Unable to connect", errMessage, "OK");
+    return;
   }
 
   String? _validateHub(String? value) {
@@ -222,7 +301,8 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
     }
     final hubExp = RegExp(r'^[^\.-].*\..*[^\.-]$');
     if (!hubExp.hasMatch(value)) {
-      return "Hub must contain a '.' and begin and end with a letter or number.";
+      return 'Hub must contain a "." and begin and end with '
+          'a letter or number.';
     }
     return null;
   }
@@ -250,13 +330,14 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
       autovalidateMode: AutovalidateMode.values[_autoValidateModeIndex.value],
       child: Scrollbar(
         child: SingleChildScrollView(
-          restorationId: 'text_field_demo_scroll_view',
+          restorationId: 'welcome_screen_scroll_view',
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Column(
             children: [
               // center elements vertically if less than screen height
               Container(
-                  height: // fixme: replace 700 with the actual height of widgets below
+                  // fixme: replace 700 with the actual height of widgets below
+                  height:
                       max((MediaQuery.of(context).size.height - 700) / 2, 0)),
               sizedBoxSpace,
               const FractionallySizedBox(
@@ -277,7 +358,7 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
               textMd(
                   context,
                   "This app needs a BitBurrow Hub to run. "
-                  "Please enter the information below. "),
+                  "Please enter the information below."),
               sizedBoxSpace,
               TextFormField(
                 restorationId: 'hub_field',
@@ -352,8 +433,8 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
   }
 }
 
-//                                                              123456789012345678
-// Strip illegal chars, format incoming text to fit the format: XXX-XXXX-XXX-XXXXX
+//                                               123456789012345678
+// Strip illegal chars, format incoming text as: XXX-XXXX-XXX-XXXXX
 class _CouponTextInputFormatter extends TextInputFormatter {
   @override
   TextEditingValue formatEditUpdate(
@@ -389,14 +470,75 @@ class _CouponTextInputFormatter extends TextInputFormatter {
   }
 }
 
-class Page2Screen extends StatelessWidget {
-  const Page2Screen({Key? key}) : super(key: key);
+class NewLoginKeyScreen extends StatelessWidget {
+  const NewLoginKeyScreen({required this.hub, required this.loginKey, Key? key})
+      : super(key: key);
+
+  final String hub;
+  final String loginKey;
 
   @override
-  Widget build(BuildContext context) => ourScreenLayout(
-        context,
-        textMd(context, text1 + text2 * 15 + text3),
-      );
+  Widget build(BuildContext context) {
+    const sizedBoxSpace = SizedBox(height: 24);
+    return ourScreenLayout(
+      context,
+      Scrollbar(
+        child: SingleChildScrollView(
+          restorationId: 'new_login_key_screen_scroll_view',
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Column(
+            children: [
+              // center elements vertically if less than screen height
+              Container(
+                  // fixme: replace 550 with the actual height of widgets below
+                  height:
+                      max((MediaQuery.of(context).size.height - 550) / 2, 0)),
+              sizedBoxSpace,
+              const FractionallySizedBox(
+                widthFactor: 0.8,
+                child: Text(
+                  "Here is your new login key:",
+                  textAlign: TextAlign.center,
+                  textScaleFactor: 1.8,
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+              sizedBoxSpace,
+              FractionallySizedBox(
+                widthFactor: 0.6,
+                child: SvgPicture.asset("images/padlock-24051.svg"),
+              ),
+              sizedBoxSpace,
+              FractionallySizedBox(
+                widthFactor: 0.8,
+                child: Text(
+                  loginKey.toString(),
+                  textAlign: TextAlign.center,
+                  textScaleFactor: 1.8,
+                  style: const TextStyle(fontWeight: FontWeight.normal),
+                ),
+              ),
+              sizedBoxSpace,
+              textMd(
+                  context,
+                  "Before continuing, write this down in a safe place. You "
+                  "will need it in the future to make changes to your router "
+                  "and VPN settings."),
+              sizedBoxSpace,
+              sizedBoxSpace,
+              Center(
+                child: ElevatedButton(
+                  onPressed: () {},
+                  child: const Text("I HAVE WRITTEN IT DOWN"),
+                ),
+              ),
+              sizedBoxSpace,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class Page3Screen extends StatelessWidget {
