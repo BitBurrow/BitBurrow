@@ -55,13 +55,8 @@ class App extends StatelessWidget {
           // has back arrow to above page
           GoRoute(
             path: 'new-login-key',
-            pageBuilder: (context, state) => ourPageBuilder(
-                context,
-                state,
-                NewLoginKeyScreen(
-                  hub: state.queryParams['hub']!,
-                  loginKey: state.queryParams['login_key']!,
-                )),
+            pageBuilder: (context, state) =>
+                ourPageBuilder(context, state, const NewLoginKeyScreen()),
           ),
         ],
       ),
@@ -153,10 +148,14 @@ class WelcomeForm extends StatefulWidget {
   WelcomeFormState createState() => WelcomeFormState();
 }
 
-class InviteData {
-  String? hub = '';
-  String? coupon = '';
+class LoginState {
+  String hub = "";
+  String coupon = "";
+  String newLoginKey = "";
+  String loginKey = ""; // if not empty, user is logged in (client side)
 }
+
+LoginState loginState = LoginState();
 
 const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
 
@@ -169,8 +168,6 @@ enum DialogStates {
 
 class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
   // based on https://github.com/flutter/gallery/blob/d030f1e5316310c48fc725f619eb980a0597366d/lib/demos/material/text_field_demo.dart
-  InviteData invite = InviteData();
-
   late FocusNode _hub, _coupon;
 
   @override
@@ -218,7 +215,7 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
       return;
     }
     form.save();
-    var hub = invite.hub; // keep local value in case dialog is canceled ...
+    var hub = loginState.hub; // keep local value in case dialog is canceled ...
     // and _handleSubmitted() is re-entered
     var connectingDialog =
         showSimpleDialog(context, "Connecting to hub ...", "", "CANCEL");
@@ -236,13 +233,14 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
     print("calling http $hub ...");
     http.Response? response;
     var errMessage = "";
-    String? loginKey;
     try {
-      var url = Uri.http('$hub:8443', '/v1/accounts/${invite.coupon}/accounts');
+      var url =
+          Uri.http('$hub:8443', '/v1/accounts/${loginState.coupon}/accounts');
       response = await http.post(url);
     } catch (err) {
       errMessage = err.toString();
     }
+    // ignore user-canceled result, successful or not
     if (dialogState == DialogStates.canceled) return;
     if (!mounted) return;
     dialogState = DialogStates.closing;
@@ -251,8 +249,8 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
         errMessage == "Network is unreachable" ||
         errMessage == "Connection timed out" ||
         errMessage == "Connection refused") {
-      errMessage = 'Cannot find hub "$hub". Make sure this is correct '
-          "and that you are connected to the internet. "
+      errMessage = 'Cannot find hub "$hub". Make sure that you typed the hub'
+          "correctly and that you are connected to the internet. "
           '(Error "$errMessage".)';
     }
     if (errMessage.isEmpty) {
@@ -268,14 +266,15 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
           try {
             var jsonResponse =
                 convert.jsonDecode(response.body) as Map<String, dynamic>;
-            loginKey = jsonResponse["login_key"];
-            if (loginKey == null || loginKey.length != 18) {
+            String? newLoginKey = jsonResponse["login_key"];
+            if (newLoginKey == null || newLoginKey.length != 18) {
               errMessage = "Received invalid data from the hub. Contact the "
                   "hub administrator. "
-                  '(Error "login_key is $loginKey".)';
+                  '(Error "login_key is $newLoginKey".)';
             } else {
               print("successful connection to $hub, "
                   "status code ${response.statusCode}");
+              loginState.newLoginKey = newLoginKey;
             }
           } catch (err) {
             errMessage = "Unable to parse the hub's response. Make sure "
@@ -287,7 +286,13 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
       }
     }
     if (errMessage.isEmpty) {
-      context.go('/new-login-key?hub=$hub&login_key=$loginKey');
+      if (loginState.hub != hub) {
+        errMessage = "Internal error B99034."
+            '(Error "${loginState.hub} != $hub".)';
+      }
+    }
+    if (errMessage.isEmpty) {
+      context.go('/new-login-key');
       return;
     }
     print("finished http $hub: $errMessage");
@@ -376,7 +381,7 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
                   labelText: "Hub*",
                 ),
                 onSaved: (value) {
-                  invite.hub = value;
+                  loginState.hub = value ?? "";
                   _coupon.requestFocus();
                 },
                 validator: _validateHub,
@@ -403,7 +408,7 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
                   labelText: "Coupon*",
                 ),
                 onSaved: (value) {
-                  invite.coupon = value;
+                  loginState.coupon = value ?? "";
                 },
                 maxLength: 18,
                 maxLengthEnforcement: MaxLengthEnforcement.none,
@@ -471,11 +476,7 @@ class _CouponTextInputFormatter extends TextInputFormatter {
 }
 
 class NewLoginKeyScreen extends StatelessWidget {
-  const NewLoginKeyScreen({required this.hub, required this.loginKey, Key? key})
-      : super(key: key);
-
-  final String hub;
-  final String loginKey;
+  const NewLoginKeyScreen({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -512,7 +513,7 @@ class NewLoginKeyScreen extends StatelessWidget {
               FractionallySizedBox(
                 widthFactor: 0.8,
                 child: Text(
-                  loginKey.toString(),
+                  loginState.newLoginKey,
                   textAlign: TextAlign.center,
                   textScaleFactor: 1.8,
                   style: const TextStyle(fontWeight: FontWeight.normal),
