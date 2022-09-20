@@ -58,12 +58,12 @@ class App extends StatelessWidget {
             pageBuilder: (context, state) =>
                 ourPageBuilder(context, state, const NewLoginKeyScreen()),
           ),
+          GoRoute(
+            path: 'sign-in',
+            pageBuilder: (context, state) =>
+                ourPageBuilder(context, state, const SignInScreen()),
+          ),
         ],
-      ),
-      GoRoute(
-        path: '/page3',
-        pageBuilder: (context, state) =>
-            ourPageBuilder(context, state, const Page3Screen()),
       ),
     ],
     urlPathStrategy:
@@ -121,15 +121,31 @@ Future showSimpleDialog(
 
 Widget ourScreenLayout(BuildContext context, Widget child) => Scaffold(
       appBar: AppBar(
-        // title: const Text(App.title),
-        toolbarHeight: 40.0,
-      ),
+          // title: const Text(App.title),
+          toolbarHeight: 40.0,
+          actions: <Widget>[
+            IconButton(
+                icon: const Icon(Icons.login),
+                tooltip: "Sign in",
+                onPressed: () {
+                  context.push('/sign-in');
+                }),
+          ]),
       body: SingleChildScrollView(
           child: Padding(
         padding: const EdgeInsets.all(18.0),
         child: child,
       )),
     );
+
+class LoginState {
+  String hub = "";
+  String coupon = "";
+  String newLoginKey = "";
+  String loginKey = ""; // if not empty, user is logged in (client side)
+}
+
+LoginState loginState = LoginState();
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({Key? key}) : super(key: key);
@@ -147,15 +163,6 @@ class WelcomeForm extends StatefulWidget {
   @override
   WelcomeFormState createState() => WelcomeFormState();
 }
-
-class LoginState {
-  String hub = "";
-  String coupon = "";
-  String newLoginKey = "";
-  String loginKey = ""; // if not empty, user is logged in (client side)
-}
-
-LoginState loginState = LoginState();
 
 const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
 
@@ -228,75 +235,87 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
         dialogState = DialogStates.closed;
       }
     });
-    // wait 1 seconds so user will see that something is happening
-    await Future.delayed(const Duration(seconds: 1), () {});
+    var futureDelay = Future.delayed(const Duration(seconds: 1), () {});
     print("calling http $hub ...");
     http.Response? response;
-    var errMessage = "";
+    var error = "";
     try {
-      var url =
-          Uri.http('$hub:8443', '/v1/accounts/${loginState.coupon}/accounts');
+      var url = Uri.http(
+        '$hub:8443',
+        '/v1/accounts/${loginState.coupon}/accounts',
+      );
       response = await http.post(url);
     } catch (err) {
-      errMessage = err.toString();
+      error = err.toString();
     }
+    await futureDelay; // ensure user always sees that something is happening
     // ignore user-canceled result, successful or not
-    if (dialogState == DialogStates.canceled) return;
-    if (!mounted) return;
+    if (dialogState == DialogStates.canceled) {
+      print("(finished http $hub but ignoring because it was user-canceled)");
+      return;
+    }
+    if (!mounted) {
+      print("(finished http $hub but !mounted)");
+      return;
+    }
     dialogState = DialogStates.closing;
     Navigator.pop(context); // close dialog
-    if (errMessage.startsWith("Failed host lookup:") ||
-        errMessage == "Network is unreachable" ||
-        errMessage == "Connection timed out" ||
-        errMessage == "Connection refused") {
-      errMessage = 'Cannot find hub "$hub". Make sure that you typed the hub'
-          "correctly and that you are connected to the internet. "
-          '(Error "$errMessage".)';
+    var displayError = "";
+    if (error.startsWith("Failed host lookup:") ||
+        error == "Network is unreachable" ||
+        error == "Connection timed out" ||
+        error == "Connection refused") {
+      displayError = 'Cannot find hub "$hub". Make sure that you typed the hub '
+          "correctly and that you are connected to the internet.";
     }
-    if (errMessage.isEmpty) {
+    if (error.isEmpty) {
       if (response == null) {
-        errMessage = "Internal error B29348.";
+        error = "B29348";
       } else {
         if (response.statusCode != 201) {
-          errMessage = "The hub responseded with an invalid status code. "
+          displayError = "The hub responseded with an invalid status code. "
               "Make sure you typed the hub correctly, try again later, or "
-              "contact the hub administrator. "
-              '(Error "invalid status code ${response.statusCode}".)';
+              "contact the hub administrator.";
+          error = "invalid status code ${response.statusCode}";
         } else {
           try {
             var jsonResponse =
                 convert.jsonDecode(response.body) as Map<String, dynamic>;
             String? newLoginKey = jsonResponse["login_key"];
             if (newLoginKey == null || newLoginKey.length != 18) {
-              errMessage = "Received invalid data from the hub. Contact the "
-                  "hub administrator. "
-                  '(Error "login_key is $newLoginKey".)';
+              displayError = "Received invalid data from the hub. Contact the "
+                  "hub administrator.";
+              error = "login_key is $newLoginKey";
             } else {
               print("successful connection to $hub, "
                   "status code ${response.statusCode}");
               loginState.newLoginKey = newLoginKey;
             }
           } catch (err) {
-            errMessage = "Unable to parse the hub's response. Make sure "
+            displayError = "Unable to parse the hub's response. Make sure "
                 "you typed the hub correctly, try again later, or contact "
-                "the hub administrator. "
-                '(Error "$err".)';
+                "the hub administrator.";
+            error = err.toString();
           }
         }
       }
     }
-    if (errMessage.isEmpty) {
+    if (error.isEmpty) {
       if (loginState.hub != hub) {
-        errMessage = "Internal error B99034."
-            '(Error "${loginState.hub} != $hub".)';
+        error = "B99034 ${loginState.hub}!=$hub";
       }
     }
-    if (errMessage.isEmpty) {
-      context.go('/new-login-key');
+    if (error.isEmpty) {
+      context.push('/new-login-key');
       return;
     }
-    print("finished http $hub: $errMessage");
-    await showSimpleDialog(context, "Unable to connect", errMessage, "OK");
+    print("finished http $hub: $error");
+    await showSimpleDialog(
+      context,
+      "Unable to connect",
+      '$displayError (Error "$error".)',
+      "OK",
+    );
     return;
   }
 
@@ -404,7 +423,7 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
                     height: 30,
                     color: Colors.grey[700],
                   ),
-                  hintText: "XXX-XXXX-XXX-XXXXX (Case-insensitive)",
+                  hintText: "xxx-xxxx-xxx-xxxxx",
                   labelText: "Coupon*",
                 ),
                 onSaved: (value) {
@@ -529,7 +548,9 @@ class NewLoginKeyScreen extends StatelessWidget {
               sizedBoxSpace,
               Center(
                 child: ElevatedButton(
-                  onPressed: () {},
+                  onPressed: () {
+                    context.push('/sign-in');
+                  },
                   child: const Text("I HAVE WRITTEN IT DOWN"),
                 ),
               ),
@@ -542,8 +563,8 @@ class NewLoginKeyScreen extends StatelessWidget {
   }
 }
 
-class Page3Screen extends StatelessWidget {
-  const Page3Screen({Key? key}) : super(key: key);
+class SignInScreen extends StatelessWidget {
+  const SignInScreen({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) => Scaffold(
