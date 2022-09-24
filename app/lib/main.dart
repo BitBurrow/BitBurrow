@@ -138,6 +138,12 @@ Widget ourScreenLayout(BuildContext context, Widget child) => Scaffold(
       )),
     );
 
+extension StringExtension on String {
+  String capitalize() {
+    return "${this[0].toUpperCase()}${substring(1).toLowerCase()}";
+  }
+}
+
 class LoginState {
   String hub = "";
   String coupon = "";
@@ -145,23 +151,10 @@ class LoginState {
   String loginKey = ""; // if not empty, user is logged in (client side)
 }
 
-LoginState loginState = LoginState();
+var loginState = LoginState();
 
-class WelcomeScreen extends StatelessWidget {
-  const WelcomeScreen({Key? key}) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) => ourScreenLayout(
-        context,
-        const WelcomeForm(),
-      );
-}
-
-class WelcomeForm extends StatefulWidget {
-  const WelcomeForm({Key? key}) : super(key: key);
-
-  @override
-  WelcomeFormState createState() => WelcomeFormState();
+abstract class ParentForm extends StatefulWidget {
+  const ParentForm({Key? key}) : super(key: key);
 }
 
 const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
@@ -173,23 +166,8 @@ enum DialogStates {
   canceled,
 }
 
-class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
+abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
   // based on https://github.com/flutter/gallery/blob/d030f1e5316310c48fc725f619eb980a0597366d/lib/demos/material/text_field_demo.dart
-  late FocusNode _hub, _coupon;
-
-  @override
-  void initState() {
-    super.initState();
-    _hub = FocusNode();
-    _coupon = FocusNode();
-  }
-
-  @override
-  void dispose() {
-    _hub.dispose();
-    _coupon.dispose();
-    super.dispose();
-  }
 
   void showInSnackBar(String value) {
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
@@ -197,9 +175,6 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
       content: Text(value),
     ));
   }
-
-  @override
-  String get restorationId => 'welcome_form';
 
   @override
   void restoreState(RestorationBucket? oldBucket, bool initialRestore) {
@@ -210,8 +185,17 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
       RestorableInt(AutovalidateMode.disabled.index);
 
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
-  final _CouponTextInputFormatter _couponFormatter =
-      _CouponTextInputFormatter();
+  final _AccountTextInputFormatter _accountFormatter =
+      _AccountTextInputFormatter();
+
+  Future<http.Response?> callApi();
+  bool statusCodeIsOkay(status);
+  String processApiResponse(response);
+  String nextScreenUrl();
+  String getRestorationId();
+  String getHubValue();
+  void setHubValue(String value);
+  void setAccountValue(String value);
 
   void _handleSubmitted() async {
     final form = _formKey.currentState!;
@@ -222,8 +206,8 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
       return;
     }
     form.save();
-    var hub = loginState.hub; // keep local value in case dialog is canceled ...
-    // and _handleSubmitted() is re-entered
+    var hub = getHubValue(); // if user cancels dialog, hub and ...
+    // getHubValue() may not be the same because this method is re-entered
     var connectingDialog =
         showSimpleDialog(context, "Connecting to hub ...", "", "CANCEL");
     var dialogState = DialogStates.open;
@@ -240,17 +224,14 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
     http.Response? response;
     var error = "";
     try {
-      var url = Uri.http(
-        '$hub:8443',
-        '/v1/accounts/${loginState.coupon}/accounts',
-      );
-      response = await http.post(url);
+      response = await callApi()
+          .timeout(const Duration(seconds: 45)); // default 120 in my test
     } catch (err) {
       error = err.toString();
     }
     await futureDelay; // ensure user always sees that something is happening
-    // ignore user-canceled result, successful or not
     if (dialogState == DialogStates.canceled) {
+      // ignore user-canceled result, successful or not
       print("(finished http $hub but ignoring because it was user-canceled)");
       return;
     }
@@ -261,35 +242,24 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
     dialogState = DialogStates.closing;
     Navigator.pop(context); // close dialog
     var displayError = "";
-    if (error.startsWith("Failed host lookup:") ||
-        error == "Network is unreachable" ||
-        error == "Connection timed out" ||
-        error == "Connection refused") {
-      displayError = 'Cannot find hub "$hub". Make sure that you typed the hub '
-          "correctly and that you are connected to the internet.";
-    }
     if (error.isEmpty) {
       if (response == null) {
         error = "B29348";
       } else {
-        if (response.statusCode != 201) {
+        if (!statusCodeIsOkay(response.statusCode)) {
           displayError = "The hub responseded with an invalid status code. "
               "Make sure you typed the hub correctly, try again later, or "
               "contact the hub administrator.";
           error = "invalid status code ${response.statusCode}";
         } else {
           try {
-            var jsonResponse =
-                convert.jsonDecode(response.body) as Map<String, dynamic>;
-            String? newLoginKey = jsonResponse["login_key"];
-            if (newLoginKey == null || newLoginKey.length != 18) {
+            error = processApiResponse(response);
+            if (error.isNotEmpty) {
               displayError = "Received invalid data from the hub. Contact the "
                   "hub administrator.";
-              error = "login_key is $newLoginKey";
             } else {
               print("successful connection to $hub, "
                   "status code ${response.statusCode}");
-              loginState.newLoginKey = newLoginKey;
             }
           } catch (err) {
             displayError = "Unable to parse the hub's response. Make sure "
@@ -302,14 +272,24 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
     }
     if (error.isEmpty) {
       if (loginState.hub != hub) {
-        error = "B99034 ${loginState.hub}!=$hub";
+        error = "B99034 '${loginState.hub}'!='$hub'";
       }
     }
     if (error.isEmpty) {
-      context.push('/new-login-key');
+      context.push(nextScreenUrl());
       return;
     }
     print("finished http $hub: $error");
+    if (displayError.isEmpty) {
+      if (error.startsWith("Failed host lookup:") ||
+          error == "Network is unreachable") {
+        displayError = 'Cannot find hub "$hub".';
+      } else {
+        displayError = 'Unable to connect to hub "$hub".';
+      }
+      displayError += " Make sure that you typed the hub correctly "
+          "and that you are connected to the internet.";
+    }
     await showSimpleDialog(
       context,
       "Unable to connect",
@@ -331,12 +311,13 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
     return null;
   }
 
-  String? _validateCoupon(String? value) {
+  String? _validateAccount(String? value, String accountKind) {
     if (value == null || value.isEmpty) {
-      return "Coupon is required";
+      return "${accountKind.capitalize()} is required";
     }
     if (value.length != 18) {
-      return "Coupon must be exactly 18 characters (including dashes).";
+      return "${accountKind.capitalize()} must be "
+          "exactly 18 characters (including dashes).";
     }
     final hubExp = RegExp(r'^[' + base28Digits + r'-]{18}$');
     if (!hubExp.hasMatch(value)) {
@@ -345,121 +326,64 @@ class WelcomeFormState extends State<WelcomeForm> with RestorationMixin {
     return null;
   }
 
-  @override
-  Widget build(BuildContext context) {
-    const sizedBoxSpace = SizedBox(height: 24);
-
-    return Form(
-      key: _formKey,
-      autovalidateMode: AutovalidateMode.values[_autoValidateModeIndex.value],
-      child: Scrollbar(
-        child: SingleChildScrollView(
-          restorationId: 'welcome_screen_scroll_view',
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Column(
-            children: [
-              // center elements vertically if less than screen height
-              Container(
-                  // fixme: replace 700 with the actual height of widgets below
-                  height:
-                      max((MediaQuery.of(context).size.height - 700) / 2, 0)),
-              sizedBoxSpace,
-              const FractionallySizedBox(
-                widthFactor: 0.8,
-                child: Text(
-                  "Welcome to BitBurrow",
-                  textAlign: TextAlign.center,
-                  textScaleFactor: 1.8,
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              sizedBoxSpace,
-              FractionallySizedBox(
-                widthFactor: 0.4,
-                child: Image.asset("images/BitBurrow.png"),
-              ),
-              sizedBoxSpace,
-              textMd(
-                  context,
-                  "This app needs a BitBurrow Hub to run. "
-                  "Please enter the information below."),
-              sizedBoxSpace,
-              TextFormField(
-                restorationId: 'hub_field',
-                textInputAction: TextInputAction.next,
-                textCapitalization: TextCapitalization.none,
-                decoration: InputDecoration(
-                  filled: true,
-                  icon: SvgPicture.asset(
-                    'images/cloud-data-connection.svg',
-                    width: 30,
-                    height: 30,
-                    color: Colors.grey[700],
-                  ),
-                  hintText: "example.com",
-                  labelText: "Hub*",
-                ),
-                onSaved: (value) {
-                  loginState.hub = value ?? "";
-                  _coupon.requestFocus();
-                },
-                validator: _validateHub,
-                inputFormatters: <TextInputFormatter>[
-                  // don't allow upper-case, common symbols except -.
-                  FilteringTextInputFormatter.deny(RegExp(
-                      r'''[A-Z~`!@#$%^&\*\(\)_\+=\[\]\{\}\|\\:;"'<>,/\? ]''')),
-                ],
-              ),
-              sizedBoxSpace,
-              TextFormField(
-                restorationId: 'coupon_field',
-                textInputAction: TextInputAction.next,
-                textCapitalization: TextCapitalization.characters,
-                decoration: InputDecoration(
-                  filled: true,
-                  icon: SvgPicture.asset(
-                    'images/ticket.svg',
-                    width: 30,
-                    height: 30,
-                    color: Colors.grey[700],
-                  ),
-                  hintText: "xxx-xxxx-xxx-xxxxx",
-                  labelText: "Coupon*",
-                ),
-                onSaved: (value) {
-                  loginState.coupon = value ?? "";
-                },
-                maxLength: 18,
-                maxLengthEnforcement: MaxLengthEnforcement.none,
-                validator: _validateCoupon,
-                inputFormatters: <TextInputFormatter>[
-                  _couponFormatter,
-                ],
-              ),
-              sizedBoxSpace,
-              Center(
-                child: ElevatedButton(
-                  onPressed: _handleSubmitted,
-                  child: const Text("SUBMIT"),
-                ),
-              ),
-              sizedBoxSpace,
-              Text(
-                "* indicates required field",
-                style: Theme.of(context).textTheme.caption,
-              ),
-              sizedBoxSpace,
-            ],
+  Widget hubTextFormField() => TextFormField(
+        restorationId: 'hub_field',
+        textInputAction: TextInputAction.next,
+        textCapitalization: TextCapitalization.none,
+        decoration: InputDecoration(
+          filled: true,
+          icon: SvgPicture.asset(
+            'images/cloud-data-connection.svg',
+            width: 30,
+            height: 30,
+            color: Colors.grey[700],
           ),
+          hintText: "example.com",
+          labelText: "Hub*",
         ),
-      ),
-    );
-  }
+        initialValue: getHubValue(),
+        onSaved: (value) {
+          setHubValue(value ?? "");
+        },
+        validator: _validateHub,
+        inputFormatters: <TextInputFormatter>[
+          // don't allow upper-case, common symbols except -.
+          FilteringTextInputFormatter.deny(
+              RegExp(r'''[A-Z~`!@#$%^&\*\(\)_\+=\[\]\{\}\|\\:;"'<>,/\? ]''')),
+        ],
+      );
+
+  Widget accountTextFormField(String accountKind, String icon) => TextFormField(
+        restorationId: '${accountKind}_field',
+        textInputAction: TextInputAction.next,
+        textCapitalization: TextCapitalization.characters,
+        decoration: InputDecoration(
+          filled: true,
+          icon: SvgPicture.asset(
+            'images/$icon',
+            width: 30,
+            height: 30,
+            color: Colors.grey[700],
+          ),
+          hintText: "xxx-xxxx-xxx-xxxxx",
+          labelText: "$accountKind*".capitalize(),
+        ),
+        autofocus: getHubValue().isNotEmpty,
+        onSaved: (value) {
+          setAccountValue(value ?? "");
+        },
+        maxLength: 18,
+        maxLengthEnforcement: MaxLengthEnforcement.none,
+        validator: (value) => _validateAccount(value, accountKind),
+        inputFormatters: <TextInputFormatter>[
+          _accountFormatter,
+        ],
+      );
 }
 
 //                                               123456789012345678
 // Strip illegal chars, format incoming text as: XXX-XXXX-XXX-XXXXX
-class _CouponTextInputFormatter extends TextInputFormatter {
+class _AccountTextInputFormatter extends TextInputFormatter {
   @override
   TextEditingValue formatEditUpdate(
     TextEditingValue oldValue,
@@ -563,22 +487,246 @@ class NewLoginKeyScreen extends StatelessWidget {
   }
 }
 
+class WelcomeScreen extends StatelessWidget {
+  const WelcomeScreen({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) => ourScreenLayout(
+        context,
+        const WelcomeForm(),
+      );
+}
+
+class WelcomeForm extends ParentForm {
+  const WelcomeForm({Key? key}) : super(key: key);
+
+  @override
+  WelcomeFormState createState() => WelcomeFormState();
+}
+
+class WelcomeFormState extends ParentFormState {
+  @override
+  String get restorationId => 'welcome_form';
+
+  @override
+  Future<http.Response?> callApi() => http.post(Uri.http(
+        '${loginState.hub}:8443',
+        '/v1/accounts/${loginState.coupon}/accounts',
+      ));
+
+  @override
+  bool statusCodeIsOkay(status) => status == 201;
+
+  @override
+  String processApiResponse(response) {
+    var jsonResponse =
+        convert.jsonDecode(response.body) as Map<String, dynamic>;
+    String? newLoginKey = jsonResponse["login_key"];
+    if (newLoginKey == null || newLoginKey.length != 18) {
+      return "login_key is $newLoginKey"; // error
+    } else {
+      loginState.newLoginKey = newLoginKey;
+      return "";
+    }
+  }
+
+  @override
+  String nextScreenUrl() => '/new-login-key';
+
+  @override
+  String getRestorationId() => 'welcome_screen_scroll_view';
+
+  @override
+  String getHubValue() => loginState.hub;
+
+  @override
+  void setHubValue(value) {
+    loginState.hub = value;
+  }
+
+  @override
+  void setAccountValue(value) {
+    loginState.coupon = value;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const sizedBoxSpace = SizedBox(height: 24);
+
+    return Form(
+      key: _formKey,
+      autovalidateMode: AutovalidateMode.values[_autoValidateModeIndex.value],
+      child: Scrollbar(
+        child: SingleChildScrollView(
+          restorationId: getRestorationId(),
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Column(
+            children: [
+              // center elements vertically if less than screen height
+              Container(
+                  // fixme: replace 700 with the actual height of widgets below
+                  height:
+                      max((MediaQuery.of(context).size.height - 700) / 2, 0)),
+              sizedBoxSpace,
+              const FractionallySizedBox(
+                widthFactor: 0.8,
+                child: Text(
+                  "Welcome to BitBurrow",
+                  textAlign: TextAlign.center,
+                  textScaleFactor: 1.8,
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+              sizedBoxSpace,
+              FractionallySizedBox(
+                widthFactor: 0.4,
+                child: Image.asset("images/BitBurrow.png"),
+              ),
+              sizedBoxSpace,
+              textMd(
+                  context,
+                  "This app needs a BitBurrow Hub to run. "
+                  "Please enter the information below."),
+              sizedBoxSpace,
+              hubTextFormField(),
+              sizedBoxSpace,
+              accountTextFormField("coupon", 'ticket.svg'),
+              sizedBoxSpace,
+              Center(
+                child: ElevatedButton(
+                  onPressed: _handleSubmitted,
+                  child: const Text("SUBMIT"),
+                ),
+              ),
+              sizedBoxSpace,
+              Text(
+                "* indicates required field",
+                style: Theme.of(context).textTheme.caption,
+              ),
+              sizedBoxSpace,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class SignInScreen extends StatelessWidget {
   const SignInScreen({Key? key}) : super(key: key);
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text(App.title)),
-        body: Center(
+  Widget build(BuildContext context) => ourScreenLayout(
+        context,
+        const SignInForm(),
+      );
+}
+
+class SignInForm extends ParentForm {
+  const SignInForm({Key? key}) : super(key: key);
+
+  @override
+  SignInFormState createState() => SignInFormState();
+}
+
+class SignInFormState extends ParentFormState {
+  @override
+  String get restorationId => 'sign_in_form';
+
+  @override
+  Future<http.Response?> callApi() => http.get(Uri.http(
+        '${loginState.hub}:8443',
+        '/v1/accounts/${loginState.loginKey}/servers',
+      ));
+
+  @override
+  bool statusCodeIsOkay(status) => status == 200;
+
+  @override
+  String processApiResponse(response) {
+    var jsonResponse =
+        convert.jsonDecode(response.body) as Map<String, dynamic>;
+    String? serverList = jsonResponse["servers"];
+    if (serverList == null) {
+      return "invalid server list"; // error
+    } else {
+      return "";
+    }
+  }
+
+  @override
+  String nextScreenUrl() => '/main';
+
+  @override
+  String getRestorationId() => 'sign_in_screen_scroll_view';
+
+  @override
+  String getHubValue() => loginState.hub;
+
+  @override
+  void setHubValue(value) {
+    loginState.hub = value;
+  }
+
+  @override
+  void setAccountValue(value) {
+    loginState.loginKey = value;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const sizedBoxSpace = SizedBox(height: 24);
+
+    return Form(
+      key: _formKey,
+      autovalidateMode: AutovalidateMode.values[_autoValidateModeIndex.value],
+      child: Scrollbar(
+        child: SingleChildScrollView(
+          restorationId: getRestorationId(),
+          padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              ElevatedButton(
-                onPressed: () => context.go('/'),
-                child: const Text('Go back to home page'),
+            children: [
+              // center elements vertically if less than screen height
+              Container(
+                  // fixme: replace 600 with the actual height of widgets below
+                  height:
+                      max((MediaQuery.of(context).size.height - 600) / 2, 0)),
+              sizedBoxSpace,
+              const FractionallySizedBox(
+                widthFactor: 0.8,
+                child: Text(
+                  "Sign in:",
+                  textAlign: TextAlign.center,
+                  textScaleFactor: 1.8,
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
               ),
+              sizedBoxSpace,
+              FractionallySizedBox(
+                widthFactor: 0.4,
+                child: Image.asset('images/brass-1293947.png'),
+              ),
+              sizedBoxSpace,
+              hubTextFormField(),
+              sizedBoxSpace,
+              accountTextFormField("login key", 'key.svg'),
+              sizedBoxSpace,
+              Center(
+                child: ElevatedButton(
+                  onPressed: _handleSubmitted,
+                  child: const Text("SIGN IN"),
+                ),
+              ),
+              sizedBoxSpace,
+              Text(
+                "* indicates required field",
+                style: Theme.of(context).textTheme.caption,
+              ),
+              sizedBoxSpace,
             ],
           ),
         ),
-      );
+      ),
+    );
+  }
 }
