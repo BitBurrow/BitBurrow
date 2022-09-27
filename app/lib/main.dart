@@ -7,8 +7,9 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'dart:convert' as convert;
-import 'dart:math';
+import 'welcome_screen.dart';
+import 'new_login_key_screen.dart';
+import 'sign_in_screen.dart';
 
 void main() {
   runApp(App());
@@ -178,13 +179,13 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
 
   @override
   void restoreState(RestorationBucket? oldBucket, bool initialRestore) {
-    registerForRestoration(_autoValidateModeIndex, 'autovalidate_mode');
+    registerForRestoration(autoValidateModeIndex, 'autovalidate_mode');
   }
 
-  final RestorableInt _autoValidateModeIndex =
+  final RestorableInt autoValidateModeIndex =
       RestorableInt(AutovalidateMode.disabled.index);
 
-  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+  final GlobalKey<FormState> formKey = GlobalKey<FormState>();
   final _AccountTextInputFormatter _accountFormatter =
       _AccountTextInputFormatter();
 
@@ -197,10 +198,10 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
   void setHubValue(String value);
   void setAccountValue(String value);
 
-  void _handleSubmitted() async {
-    final form = _formKey.currentState!;
+  void handleSubmitted() async {
+    final form = formKey.currentState!;
     if (!form.validate()) {
-      _autoValidateModeIndex.value =
+      autoValidateModeIndex.value =
           AutovalidateMode.always.index; // Start validating on every change.
       showInSnackBar("Please fix the errors in red before submitting.");
       return;
@@ -414,319 +415,6 @@ class _AccountTextInputFormatter extends TextInputFormatter {
     return TextEditingValue(
       text: after.toString(),
       selection: TextSelection.collapsed(offset: afterPos),
-    );
-  }
-}
-
-class NewLoginKeyScreen extends StatelessWidget {
-  const NewLoginKeyScreen({Key? key}) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    const sizedBoxSpace = SizedBox(height: 24);
-    return ourScreenLayout(
-      context,
-      Scrollbar(
-        child: SingleChildScrollView(
-          restorationId: 'new_login_key_screen_scroll_view',
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Column(
-            children: [
-              // center elements vertically if less than screen height
-              Container(
-                  // fixme: replace 550 with the actual height of widgets below
-                  height:
-                      max((MediaQuery.of(context).size.height - 550) / 2, 0)),
-              sizedBoxSpace,
-              const FractionallySizedBox(
-                widthFactor: 0.8,
-                child: Text(
-                  "Here is your new login key:",
-                  textAlign: TextAlign.center,
-                  textScaleFactor: 1.8,
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              sizedBoxSpace,
-              FractionallySizedBox(
-                widthFactor: 0.6,
-                child: SvgPicture.asset("images/padlock-24051.svg"),
-              ),
-              sizedBoxSpace,
-              FractionallySizedBox(
-                widthFactor: 0.8,
-                child: Text(
-                  loginState.newLoginKey,
-                  textAlign: TextAlign.center,
-                  textScaleFactor: 1.8,
-                  style: const TextStyle(fontWeight: FontWeight.normal),
-                ),
-              ),
-              sizedBoxSpace,
-              textMd(
-                  context,
-                  "Before continuing, write this down in a safe place. You "
-                  "will need it in the future to make changes to your router "
-                  "and VPN settings."),
-              sizedBoxSpace,
-              sizedBoxSpace,
-              Center(
-                child: ElevatedButton(
-                  onPressed: () {
-                    context.push('/sign-in');
-                  },
-                  child: const Text("I HAVE WRITTEN IT DOWN"),
-                ),
-              ),
-              sizedBoxSpace,
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class WelcomeScreen extends StatelessWidget {
-  const WelcomeScreen({Key? key}) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) => ourScreenLayout(
-        context,
-        const WelcomeForm(),
-      );
-}
-
-class WelcomeForm extends ParentForm {
-  const WelcomeForm({Key? key}) : super(key: key);
-
-  @override
-  WelcomeFormState createState() => WelcomeFormState();
-}
-
-class WelcomeFormState extends ParentFormState {
-  @override
-  String get restorationId => 'welcome_form';
-
-  @override
-  Future<http.Response?> callApi() => http.post(Uri.http(
-        '${loginState.hub}:8443',
-        '/v1/accounts/${loginState.coupon}/accounts',
-      ));
-
-  @override
-  bool statusCodeIsOkay(status) => status == 201;
-
-  @override
-  String processApiResponse(response) {
-    var jsonResponse =
-        convert.jsonDecode(response.body) as Map<String, dynamic>;
-    String? newLoginKey = jsonResponse["login_key"];
-    if (newLoginKey == null || newLoginKey.length != 18) {
-      return "login_key is $newLoginKey"; // error
-    } else {
-      loginState.newLoginKey = newLoginKey;
-      return "";
-    }
-  }
-
-  @override
-  String nextScreenUrl() => '/new-login-key';
-
-  @override
-  String getRestorationId() => 'welcome_screen_scroll_view';
-
-  @override
-  String getHubValue() => loginState.hub;
-
-  @override
-  void setHubValue(value) {
-    loginState.hub = value;
-  }
-
-  @override
-  void setAccountValue(value) {
-    loginState.coupon = value;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    const sizedBoxSpace = SizedBox(height: 24);
-
-    return Form(
-      key: _formKey,
-      autovalidateMode: AutovalidateMode.values[_autoValidateModeIndex.value],
-      child: Scrollbar(
-        child: SingleChildScrollView(
-          restorationId: getRestorationId(),
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Column(
-            children: [
-              // center elements vertically if less than screen height
-              Container(
-                  // fixme: replace 700 with the actual height of widgets below
-                  height:
-                      max((MediaQuery.of(context).size.height - 700) / 2, 0)),
-              sizedBoxSpace,
-              const FractionallySizedBox(
-                widthFactor: 0.8,
-                child: Text(
-                  "Welcome to BitBurrow",
-                  textAlign: TextAlign.center,
-                  textScaleFactor: 1.8,
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              sizedBoxSpace,
-              FractionallySizedBox(
-                widthFactor: 0.4,
-                child: Image.asset("images/BitBurrow.png"),
-              ),
-              sizedBoxSpace,
-              textMd(
-                  context,
-                  "This app needs a BitBurrow Hub to run. "
-                  "Please enter the information below."),
-              sizedBoxSpace,
-              hubTextFormField(),
-              sizedBoxSpace,
-              accountTextFormField("coupon", 'ticket.svg'),
-              sizedBoxSpace,
-              Center(
-                child: ElevatedButton(
-                  onPressed: _handleSubmitted,
-                  child: const Text("SUBMIT"),
-                ),
-              ),
-              sizedBoxSpace,
-              Text(
-                "* indicates required field",
-                style: Theme.of(context).textTheme.caption,
-              ),
-              sizedBoxSpace,
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class SignInScreen extends StatelessWidget {
-  const SignInScreen({Key? key}) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) => ourScreenLayout(
-        context,
-        const SignInForm(),
-      );
-}
-
-class SignInForm extends ParentForm {
-  const SignInForm({Key? key}) : super(key: key);
-
-  @override
-  SignInFormState createState() => SignInFormState();
-}
-
-class SignInFormState extends ParentFormState {
-  @override
-  String get restorationId => 'sign_in_form';
-
-  @override
-  Future<http.Response?> callApi() => http.get(Uri.http(
-        '${loginState.hub}:8443',
-        '/v1/accounts/${loginState.loginKey}/servers',
-      ));
-
-  @override
-  bool statusCodeIsOkay(status) => status == 200;
-
-  @override
-  String processApiResponse(response) {
-    var jsonResponse =
-        convert.jsonDecode(response.body) as Map<String, dynamic>;
-    String? serverList = jsonResponse["servers"];
-    if (serverList == null) {
-      return "invalid server list"; // error
-    } else {
-      return "";
-    }
-  }
-
-  @override
-  String nextScreenUrl() => '/main';
-
-  @override
-  String getRestorationId() => 'sign_in_screen_scroll_view';
-
-  @override
-  String getHubValue() => loginState.hub;
-
-  @override
-  void setHubValue(value) {
-    loginState.hub = value;
-  }
-
-  @override
-  void setAccountValue(value) {
-    loginState.loginKey = value;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    const sizedBoxSpace = SizedBox(height: 24);
-
-    return Form(
-      key: _formKey,
-      autovalidateMode: AutovalidateMode.values[_autoValidateModeIndex.value],
-      child: Scrollbar(
-        child: SingleChildScrollView(
-          restorationId: getRestorationId(),
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Column(
-            children: [
-              // center elements vertically if less than screen height
-              Container(
-                  // fixme: replace 600 with the actual height of widgets below
-                  height:
-                      max((MediaQuery.of(context).size.height - 600) / 2, 0)),
-              sizedBoxSpace,
-              const FractionallySizedBox(
-                widthFactor: 0.8,
-                child: Text(
-                  "Sign in:",
-                  textAlign: TextAlign.center,
-                  textScaleFactor: 1.8,
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              sizedBoxSpace,
-              FractionallySizedBox(
-                widthFactor: 0.4,
-                child: Image.asset('images/brass-1293947.png'),
-              ),
-              sizedBoxSpace,
-              hubTextFormField(),
-              sizedBoxSpace,
-              accountTextFormField("login key", 'key.svg'),
-              sizedBoxSpace,
-              Center(
-                child: ElevatedButton(
-                  onPressed: _handleSubmitted,
-                  child: const Text("SIGN IN"),
-                ),
-              ),
-              sizedBoxSpace,
-              Text(
-                "* indicates required field",
-                style: Theme.of(context).textTheme.caption,
-              ),
-              sizedBoxSpace,
-            ],
-          ),
-        ),
-      ),
     );
   }
 }
