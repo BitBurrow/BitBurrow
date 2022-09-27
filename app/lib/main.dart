@@ -75,7 +75,7 @@ class App extends StatelessWidget {
 void onMarkdownClick(BuildContext context, String url) {
   if (url[0] == '/') {
     // within our app
-    context.go(url);
+    context.push(url);
   } else {
     launchUrl(Uri.parse(url));
   }
@@ -124,14 +124,25 @@ Widget ourScreenLayout(BuildContext context, Widget child) => Scaffold(
       appBar: AppBar(
           // title: const Text(App.title),
           toolbarHeight: 40.0,
-          actions: <Widget>[
-            IconButton(
-                icon: const Icon(Icons.login),
-                tooltip: "Sign in",
-                onPressed: () {
-                  context.push('/sign-in');
-                }),
-          ]),
+          actions: GoRouter.of(context).location == '/sign-in'
+              ? <Widget>[
+                  IconButton(
+                      icon: const Icon(Icons.more_vert),
+                      tooltip: "More",
+                      onPressed: () {})
+                ]
+              : <Widget>[
+                  IconButton(
+                      icon: const Icon(Icons.login),
+                      tooltip: "Sign in",
+                      onPressed: () {
+                        context.push('/sign-in');
+                      }),
+                  IconButton(
+                      icon: const Icon(Icons.more_vert),
+                      tooltip: "More",
+                      onPressed: () {}),
+                ]),
       body: SingleChildScrollView(
           child: Padding(
         padding: const EdgeInsets.all(18.0),
