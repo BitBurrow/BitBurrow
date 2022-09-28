@@ -10,6 +10,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'welcome_screen.dart';
 import 'new_login_key_screen.dart';
 import 'sign_in_screen.dart';
+import 'servers_screen.dart';
 
 void main() {
   runApp(App());
@@ -36,8 +37,8 @@ class App extends StatelessWidget {
       title: title,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSwatch().copyWith(
-          primary: const Color(0xFF343A40),
-          secondary: const Color(0xFFFFC107),
+          primary: const Color(0xff5b5b5b),
+          secondary: const Color(0xffd3a492),
         ),
       ),
       routeInformationProvider: _router.routeInformationProvider,
@@ -63,6 +64,11 @@ class App extends StatelessWidget {
             path: 'sign-in',
             pageBuilder: (context, state) =>
                 ourPageBuilder(context, state, const SignInScreen()),
+          ),
+          GoRoute(
+            path: 'servers',
+            pageBuilder: (context, state) =>
+                ourPageBuilder(context, state, const ServersScreen()),
           ),
         ],
       ),
@@ -120,34 +126,31 @@ Future showSimpleDialog(
               ],
             ));
 
-Widget ourScreenLayout(BuildContext context, Widget child) => Scaffold(
+Widget ourScreenLayout(BuildContext context, Widget body,
+        {Widget? floatingActionButton}) =>
+    Scaffold(
       appBar: AppBar(
           // title: const Text(App.title),
           toolbarHeight: 40.0,
-          actions: GoRouter.of(context).location == '/sign-in'
-              ? <Widget>[
-                  IconButton(
-                      icon: const Icon(Icons.more_vert),
-                      tooltip: "More",
-                      onPressed: () {})
-                ]
-              : <Widget>[
-                  IconButton(
-                      icon: const Icon(Icons.login),
-                      tooltip: "Sign in",
-                      onPressed: () {
-                        context.push('/sign-in');
-                      }),
-                  IconButton(
-                      icon: const Icon(Icons.more_vert),
-                      tooltip: "More",
-                      onPressed: () {}),
-                ]),
-      body: SingleChildScrollView(
-          child: Padding(
+          actions: <Widget>[
+            if (GoRouter.of(context).location != '/sign-in' &&
+                loginState.isNotSignedIn())
+              IconButton(
+                  icon: const Icon(Icons.login),
+                  tooltip: "Sign in",
+                  onPressed: () {
+                    context.push('/sign-in');
+                  }),
+            IconButton(
+                icon: const Icon(Icons.more_vert),
+                tooltip: "More",
+                onPressed: () {}),
+          ]),
+      body: Padding(
         padding: const EdgeInsets.all(18.0),
-        child: child,
-      )),
+        child: body,
+      ),
+      floatingActionButton: floatingActionButton,
     );
 
 extension StringExtension on String {
@@ -160,7 +163,12 @@ class LoginState {
   String hub = "";
   String coupon = "";
   String newLoginKey = "";
-  String loginKey = ""; // if not empty, user is logged in (client side)
+  String loginKey = "";
+  bool loginKeyVerified = false;
+  List<int> servers = [];
+
+  bool isSignedIn() => loginKeyVerified;
+  bool isNotSignedIn() => !loginKeyVerified;
 }
 
 var loginState = LoginState();
@@ -372,7 +380,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
         decoration: InputDecoration(
           filled: true,
           icon: SvgPicture.asset(
-            'images/$icon',
+            icon,
             width: 30,
             height: 30,
             color: Colors.grey[700],

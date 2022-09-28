@@ -38,7 +38,7 @@ class WelcomeFormState extends ParentFormState {
   String processApiResponse(response) {
     var jsonResponse =
         convert.jsonDecode(response.body) as Map<String, dynamic>;
-    String? newLoginKey = jsonResponse["login_key"];
+    String? newLoginKey = jsonResponse['login_key'];
     if (newLoginKey == null || newLoginKey.length != 18) {
       return "login_key is $newLoginKey"; // error
     } else {
@@ -107,7 +107,7 @@ class WelcomeFormState extends ParentFormState {
               sizedBoxSpace,
               hubTextFormField(),
               sizedBoxSpace,
-              accountTextFormField("coupon", 'ticket.svg'),
+              accountTextFormField("coupon", 'images/ticket.svg'),
               sizedBoxSpace,
               Center(
                 child: ElevatedButton(

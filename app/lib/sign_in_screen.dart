@@ -32,22 +32,21 @@ class SignInFormState extends ParentFormState {
       ));
 
   @override
-  bool statusCodeIsOkay(status) => status == 200;
-
-  @override
-  String processApiResponse(response) {
-    var jsonResponse =
-        convert.jsonDecode(response.body) as Map<String, dynamic>;
-    String? serverList = jsonResponse["servers"];
-    if (serverList == null) {
-      return "invalid server list"; // error
-    } else {
-      return "";
-    }
+  bool statusCodeIsOkay(status) {
+    loginState.loginKeyVerified = status == 200;
+    return status == 200;
   }
 
   @override
-  String nextScreenUrl() => '/main';
+  String processApiResponse(response) {
+    final jsonResponse =
+        convert.jsonDecode(response.body)['servers'] as List<dynamic>;
+    loginState.servers = List<int>.from(jsonResponse);
+    return "";
+  }
+
+  @override
+  String nextScreenUrl() => '/servers';
 
   @override
   String getRestorationId() => 'sign_in_screen_scroll_view';
@@ -101,7 +100,7 @@ class SignInFormState extends ParentFormState {
               sizedBoxSpace,
               hubTextFormField(),
               sizedBoxSpace,
-              accountTextFormField("login key", 'key.svg'),
+              accountTextFormField("login key", 'images/key.svg'),
               sizedBoxSpace,
               Center(
                 child: ElevatedButton(
