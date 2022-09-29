@@ -100,7 +100,11 @@ class SignInFormState extends ParentFormState {
               sizedBoxSpace,
               hubTextFormField(),
               sizedBoxSpace,
-              accountTextFormField("login key", 'images/key.svg'),
+              accountTextFormField(
+                "login key",
+                'images/key.svg',
+                isPassword: true, // communicate to user that it's important
+              ),
               sizedBoxSpace,
               Center(
                 child: ElevatedButton(

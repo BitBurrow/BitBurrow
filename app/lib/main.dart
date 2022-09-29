@@ -188,6 +188,7 @@ enum DialogStates {
 
 abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
   // based on https://github.com/flutter/gallery/blob/d030f1e5316310c48fc725f619eb980a0597366d/lib/demos/material/text_field_demo.dart
+  bool _isObscure = true;
 
   void showInSnackBar(String value) {
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
@@ -373,7 +374,9 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
         ],
       );
 
-  Widget accountTextFormField(String accountKind, String icon) => TextFormField(
+  Widget accountTextFormField(String accountKind, String icon,
+          {bool isPassword = false}) =>
+      TextFormField(
         restorationId: '${accountKind}_field',
         textInputAction: TextInputAction.next,
         textCapitalization: TextCapitalization.characters,
@@ -387,7 +390,18 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
           ),
           hintText: "xxx-xxxx-xxx-xxxxx",
           labelText: "$accountKind*".capitalize(),
+          suffixIcon: isPassword
+              ? IconButton(
+                  icon: Icon(
+                      _isObscure ? Icons.visibility : Icons.visibility_off),
+                  onPressed: () {
+                    setState(() {
+                      _isObscure = !_isObscure;
+                    });
+                  })
+              : null,
         ),
+        obscureText: isPassword && _isObscure,
         autofocus: getHubValue().isNotEmpty,
         onSaved: (value) {
           setAccountValue(value ?? "");
