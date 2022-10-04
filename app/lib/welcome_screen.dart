@@ -22,6 +22,9 @@ class WelcomeForm extends ParentForm {
 }
 
 class WelcomeFormState extends ParentFormState {
+  // RestorableBoolN checkboxTrustedHub = RestorableBoolN(false);
+  bool? checkboxTrustedHub = false;
+
   @override
   String get restorationId => 'welcome_form';
 
@@ -109,9 +112,36 @@ class WelcomeFormState extends ParentFormState {
               sizedBoxSpace,
               accountTextFormField("coupon", 'images/ticket.svg'),
               sizedBoxSpace,
+              CheckboxListTile(
+                title: textMd(
+                    context,
+                    "I trust the person or entity that provided me with "
+                    "the above information. (A malicious BitBurrow hub, "
+                    "when used with this app, can take over your router, "
+                    "snoop on your internet traffic, and attack other "
+                    "devices on your local network.)*"),
+                value: checkboxTrustedHub,
+                onChanged: (value) {
+                  setState(() {
+                    checkboxTrustedHub = value;
+                  });
+                },
+              ),
+              sizedBoxSpace,
               Center(
                 child: ElevatedButton(
-                  onPressed: handleSubmitted,
+                  onPressed: () {
+                    var err = "";
+                    if (validateTextFields()) {
+                      err = "Please fix the errors in red before submitting.";
+                    } else if (checkboxTrustedHub != true) {
+                      err = "Please check the box on the right before "
+                          "submitting.";
+                    } else {
+                      return handleSubmitted();
+                    }
+                    showInSnackBar(err);
+                  },
                   child: const Text("SUBMIT"),
                 ),
               ),

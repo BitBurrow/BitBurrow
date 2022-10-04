@@ -108,7 +108,15 @@ class SignInFormState extends ParentFormState {
               sizedBoxSpace,
               Center(
                 child: ElevatedButton(
-                  onPressed: handleSubmitted,
+                  onPressed: () {
+                    var err = "";
+                    if (validateTextFields()) {
+                      err = "Please fix the errors in red before submitting.";
+                    } else {
+                      return handleSubmitted();
+                    }
+                    showInSnackBar(err);
+                  },
                   child: const Text("SIGN IN"),
                 ),
               ),

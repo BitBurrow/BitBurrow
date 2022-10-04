@@ -238,14 +238,18 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
   void setHubValue(String value);
   void setAccountValue(String value);
 
-  void handleSubmitted() async {
+  bool validateTextFields() {
     final form = formKey.currentState!;
     if (!form.validate()) {
       autoValidateModeIndex.value =
           AutovalidateMode.always.index; // Start validating on every change.
-      showInSnackBar("Please fix the errors in red before submitting.");
-      return;
+      return true;
     }
+    return false;
+  }
+
+  void handleSubmitted() async {
+    final form = formKey.currentState!;
     form.save();
     var hub = getHubValue(); // if user cancels dialog, hub and ...
     // getHubValue() may not be the same because this method is re-entered
