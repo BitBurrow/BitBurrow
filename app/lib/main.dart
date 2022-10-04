@@ -11,6 +11,7 @@ import 'welcome_screen.dart';
 import 'new_login_key_screen.dart';
 import 'sign_in_screen.dart';
 import 'servers_screen.dart';
+import 'new_server_screen.dart';
 
 void main() {
   runApp(App());
@@ -90,21 +91,17 @@ class App extends StatelessWidget {
             pageBuilder: (context, state) =>
                 ourPageBuilder(context, state, const ServersScreen()),
           ),
+          GoRoute(
+            path: 'new-server',
+            pageBuilder: (context, state) =>
+                ourPageBuilder(context, state, const NewServerScreen()),
+          ),
         ],
       ),
     ],
     urlPathStrategy:
         UrlPathStrategy.path, // turn off the extra `#/` in the URLs
   );
-}
-
-void onMarkdownClick(BuildContext context, String url) {
-  if (url[0] == '/') {
-    // within our app
-    context.push(url);
-  } else {
-    launchUrl(Uri.parse(url));
-  }
 }
 
 MarkdownBody textMd(BuildContext context, md) {
@@ -119,7 +116,12 @@ MarkdownBody textMd(BuildContext context, md) {
       ),
     ),
     onTapLink: (text, url, title) {
-      onMarkdownClick(context, url!);
+      if (url == null) return;
+      if (url[0] == '/') {
+        context.push(url); // within our app
+      } else {
+        launchUrl(Uri.parse(url));
+      }
     },
     data: md,
   );

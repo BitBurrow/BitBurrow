@@ -1,6 +1,7 @@
 // ignore_for_file: prefer_const_constructors, prefer_const_literals_to_create_immutables
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'dart:math';
 import 'main.dart';
@@ -106,7 +107,9 @@ class ServersScreen extends StatelessWidget {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {},
+        onPressed: () {
+          context.push('/new-server');
+        },
         tooltip: 'Set up a new server',
         backgroundColor: Theme.of(context).colorScheme.primary,
         child: const Icon(Icons.add),
