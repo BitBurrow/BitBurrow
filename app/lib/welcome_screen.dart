@@ -102,7 +102,7 @@ class WelcomeFormState extends ParentFormState {
               sizedBoxSpace,
               textMd(
                   context,
-                  "This app needs a BitBurrow Hub to run. "
+                  "This app needs a BitBurrow hub to run. "
                   "Please enter the information below."),
               sizedBoxSpace,
               hubTextFormField(),

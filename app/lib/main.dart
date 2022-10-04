@@ -31,14 +31,34 @@ class App extends StatelessWidget {
 
   static const String title = 'BitBurrow';
 
+  static const ourPrimaryColor = 0xff5b5b5b;
+  final int r = (ourPrimaryColor & 0x00ff0000) ~/ 0x10000;
+  final int g = (ourPrimaryColor & 0x0000ff00) ~/ 0x100;
+  final int b = (ourPrimaryColor & 0x000000ff);
+  late final Map<int, Color> ourColorCodes = {
+    50: Color.fromRGBO(r, g, b, .1),
+    100: Color.fromRGBO(r, g, b, .2),
+    200: Color.fromRGBO(r, g, b, .3),
+    300: Color.fromRGBO(r, g, b, .4),
+    400: Color.fromRGBO(r, g, b, .5),
+    500: Color.fromRGBO(r, g, b, .6),
+    600: Color.fromRGBO(r, g, b, .7),
+    700: Color.fromRGBO(r, g, b, .8),
+    800: Color.fromRGBO(r, g, b, .9),
+    900: Color.fromRGBO(r, g, b, 1),
+  };
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp.router(
       title: title,
       theme: ThemeData(
+        primarySwatch:
+            MaterialColor(ourPrimaryColor, ourColorCodes), // checkboxes
         colorScheme: ColorScheme.fromSwatch().copyWith(
-          primary: const Color(0xff5b5b5b),
+          primary: const Color(ourPrimaryColor),
           secondary: const Color(0xffd3a492),
+          background: const Color(0xffff0000), // seems unused
         ),
       ),
       routeInformationProvider: _router.routeInformationProvider,
@@ -91,13 +111,13 @@ MarkdownBody textMd(BuildContext context, md) {
   return MarkdownBody(
     selectable:
         false, // DO NOT USE; see https://stackoverflow.com/questions/73491527
-    // fixme: read from a file: https://developer.school/tutorials/how-to-display-markdown-in-flutter
-    styleSheet: MarkdownStyleSheet.fromTheme(ThemeData(
-        textTheme: const TextTheme(
-            bodyText2: TextStyle(
-      fontSize: 16.0,
-      color: Colors.black,
-    )))),
+    styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+      textScaleFactor: 1.15, // match other text
+      a: const TextStyle(
+        color: Color.fromARGB(255, 40, 128, 22),
+        decoration: TextDecoration.underline,
+      ),
+    ),
     onTapLink: (text, url, title) {
       onMarkdownClick(context, url!);
     },
@@ -357,7 +377,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
             'images/cloud-data-connection.svg',
             width: 30,
             height: 30,
-            color: Colors.grey[700],
+            color: Theme.of(context).colorScheme.primary,
           ),
           hintText: "example.com",
           labelText: "Hub*",
@@ -386,7 +406,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
             icon,
             width: 30,
             height: 30,
-            color: Colors.grey[700],
+            color: Theme.of(context).colorScheme.primary,
           ),
           hintText: "xxx-xxxx-xxx-xxxxx",
           labelText: "$accountKind*".capitalize(),

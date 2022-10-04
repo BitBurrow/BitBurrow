@@ -86,7 +86,7 @@ class SignInFormState extends ParentFormState {
               const FractionallySizedBox(
                 widthFactor: 0.8,
                 child: Text(
-                  "Sign in:",
+                  "Sign in",
                   textAlign: TextAlign.center,
                   textScaleFactor: 1.8,
                   style: TextStyle(fontWeight: FontWeight.bold),

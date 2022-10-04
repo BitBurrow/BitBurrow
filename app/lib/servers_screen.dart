@@ -27,10 +27,10 @@ class ServersScreen extends StatelessWidget {
                       color: Theme.of(context).backgroundColor,
                     ))
                 : Text(
-                    "Your VPN servers:",
+                    "Your VPN servers",
                     textAlign: TextAlign.center,
                     textScaleFactor: 1.8,
-                    style: TextStyle(fontWeight: FontWeight.normal),
+                    style: TextStyle(fontWeight: FontWeight.bold),
                   ),
           ),
           sizedBoxSpace,
@@ -52,13 +52,9 @@ class ServersScreen extends StatelessWidget {
                               child: Padding(
                                 padding: const EdgeInsets.all(8.0),
                                 child: ListTile(
-                                  leading: CircleAvatar(
-                                    backgroundColor:
-                                        Theme.of(context).colorScheme.secondary,
-                                    child: SvgPicture.asset(
+                                  leading: SvgPicture.asset(
                                       'images/server.svg',
-                                      width: 20,
-                                    ),
+                                    width: 42,
                                   ),
                                   title: Text(
                                     "VPN server ${loginState.servers[index]}",
@@ -112,8 +108,8 @@ class ServersScreen extends StatelessWidget {
       floatingActionButton: FloatingActionButton(
         onPressed: () {},
         tooltip: 'Set up a new server',
-        child: const Icon(Icons.add),
         backgroundColor: Theme.of(context).colorScheme.primary,
+        child: const Icon(Icons.add),
       ),
     );
   }
