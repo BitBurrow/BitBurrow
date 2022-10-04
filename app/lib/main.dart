@@ -168,10 +168,7 @@ Widget ourScreenLayout(BuildContext context, Widget body,
                 tooltip: "More",
                 onPressed: () {}),
           ]),
-      body: Padding(
-        padding: const EdgeInsets.all(18.0),
-        child: body,
-      ),
+      body: body,
       floatingActionButton: floatingActionButton,
     );
 

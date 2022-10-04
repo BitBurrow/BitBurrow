@@ -5,8 +5,9 @@ import 'main.dart';
 const textBlob = """
 All of these steps should be done at your "VPN home" location.
 
-\\
-**1. Connect your new router to the internet.**
+` `
+## 1. Connect your new router to the internet.
+
 * Make a note of the existing set-up in case there is a problem setting 
   up the new router.
 * If possible, install the new router *in place of*  the existing one. 
@@ -26,13 +27,14 @@ All of these steps should be done at your "VPN home" location.
   "Internet", with a globe symbol, or is unlabeled but uniquely colored. 
   [More details.](/two-routers-details)
 
-\\
-**2. Plug your new router into a wall socket.**
+` `
+## 2. Plug your new router into a wall socket.
+
 * Make sure at least one light turns on.
 * It may take a few minutes for the WiFi to begin working.
 
-\\
-**3. Connect to the new router via WiFi.**
+` `
+## 3. Connect to the new router via WiFi.
 * It is sometimes necessary to turn off mobile data (internet via 
   your cellular provider).
 * Enable WiFi if needed and scan for available WiFi networks.
@@ -51,7 +53,7 @@ class NewServerScreen extends StatelessWidget {
       context,
       SingleChildScrollView(
         restorationId: 'new_server_screen_scroll_view',
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 34),
         child: Column(
           children: [
             sizedBoxSpace,

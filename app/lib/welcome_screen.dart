@@ -79,7 +79,7 @@ class WelcomeFormState extends ParentFormState {
       child: Scrollbar(
         child: SingleChildScrollView(
           restorationId: getRestorationId(),
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 34),
           child: Column(
             children: [
               // center elements vertically if less than screen height

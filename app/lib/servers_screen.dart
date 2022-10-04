@@ -41,6 +41,7 @@ class ServersScreen extends StatelessWidget {
                 width: min(MediaQuery.of(context).size.width, 700),
                 child: ListView.builder(
                   itemCount: loginState.servers.length,
+                  padding: const EdgeInsets.symmetric(horizontal: 18),
                   itemBuilder: (context, index) => Card(
                       elevation: 7,
                       margin: const EdgeInsets.symmetric(
@@ -54,7 +55,7 @@ class ServersScreen extends StatelessWidget {
                                 padding: const EdgeInsets.all(8.0),
                                 child: ListTile(
                                   leading: SvgPicture.asset(
-                                      'images/server.svg',
+                                    'images/server.svg',
                                     width: 42,
                                   ),
                                   title: Text(

@@ -14,7 +14,7 @@ class NewLoginKeyScreen extends StatelessWidget {
       context,
       SingleChildScrollView(
         restorationId: 'new_login_key_screen_scroll_view',
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 34),
         child: Column(
           children: [
             // center elements vertically if less than screen height
