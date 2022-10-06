@@ -1,9 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 162.00388 101.31097" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
  <defs>
-  <filter id="s" x="-.03474" y="-.22" width="1.0695" height="1.44">
-   <feGaussianBlur stdDeviation="1.20093"/>
-  </filter>
   <linearGradient id="a">
    <stop stop-color="#1a1a1a" offset="0"/>
    <stop stop-color="#fff" offset="1"/>
