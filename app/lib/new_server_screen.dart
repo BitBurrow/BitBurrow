@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
+import 'dart:convert' as convert;
 import 'main.dart';
 
 const textBlob = """
@@ -47,44 +49,104 @@ class NewServerScreen extends StatelessWidget {
   const NewServerScreen({Key? key}) : super(key: key);
 
   @override
+  Widget build(BuildContext context) => ourScreenLayout(
+        context,
+        const NewServerForm(),
+      );
+}
+
+class NewServerForm extends ParentForm {
+  const NewServerForm({Key? key}) : super(key: key);
+
+  @override
+  NewServerFormState createState() => NewServerFormState();
+}
+
+class NewServerFormState extends ParentFormState {
+  @override
+  String get restorationId => 'new_server_form';
+
+  @override
+  Future<http.Response?> callApi() => http.post(Uri.http(
+        '${loginState.hub}:8443',
+        '/v1/accounts/${loginState.loginKey}/servers',
+      ));
+
+  @override
+  bool statusCodeIsOkay(status) => status == 201;
+
+  @override
+  String processApiResponse(response) {
+    final jsonResponse =
+        convert.jsonDecode(response.body) as Map<String, dynamic>;
+    String? sshKey = jsonResponse['ssh_key'];
+    int? sshPort = jsonResponse['ssh_port'];
+    if (sshKey == null || sshPort == null) {
+      return "invalid server response"; // error
+    } else {
+      // loginState.sshLogin = jsonResponse;
+      return "";
+    }
+  }
+
+  @override
+  nextScreen() => bbProxy();
+
+  @override
+  String getHubValue() => loginState.hub;
+
+  @override
+  void setHubValue(value) {
+    loginState.hub = value;
+  }
+
+  @override
+  void setAccountValue(value) {
+    loginState.loginKey = value;
+  }
+
+  Future bbProxy() async {}
+
+  @override
   Widget build(BuildContext context) {
     const sizedBoxSpace = SizedBox(height: 24);
-    return ourScreenLayout(
-      context,
-      SingleChildScrollView(
-        restorationId: 'new_server_screen_scroll_view',
-        padding: const EdgeInsets.symmetric(horizontal: 34),
-        child: Column(
-          children: [
-            sizedBoxSpace,
-            const FractionallySizedBox(
-              widthFactor: 0.8,
-              child: Text(
-                "Set up a BitBurrow VPN server",
-                textAlign: TextAlign.center,
-                textScaleFactor: 1.8,
-                style: TextStyle(fontWeight: FontWeight.bold),
+    return Form(
+        key: formKey,
+        autovalidateMode: AutovalidateMode.values[autoValidateModeIndex.value],
+        child: Scrollbar(
+            child: SingleChildScrollView(
+          restorationId: 'new_server_screen_scroll_view',
+          padding: const EdgeInsets.symmetric(horizontal: 34),
+          child: Column(
+            children: [
+              sizedBoxSpace,
+              const FractionallySizedBox(
+                widthFactor: 0.8,
+                child: Text(
+                  "Set up a BitBurrow VPN server",
+                  textAlign: TextAlign.center,
+                  textScaleFactor: 1.8,
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
               ),
-            ),
-            sizedBoxSpace,
-            FractionallySizedBox(
-              widthFactor: 0.6,
-              child: SvgPicture.asset("images/server-32983.svg"),
-            ),
-            sizedBoxSpace,
-            textMd(context, textBlob),
-            sizedBoxSpace,
-            sizedBoxSpace,
-            Center(
-              child: ElevatedButton(
-                onPressed: () async {},
-                child: const Text("I HAVE DONE THESE"),
+              sizedBoxSpace,
+              FractionallySizedBox(
+                widthFactor: 0.6,
+                child: SvgPicture.asset("images/server-32983.svg"),
               ),
-            ),
-            sizedBoxSpace,
-          ],
-        ),
-      ),
-    );
+              sizedBoxSpace,
+              textMd(context, textBlob),
+              sizedBoxSpace,
+              sizedBoxSpace,
+              Center(
+                child: ElevatedButton(
+                  onPressed: handleSubmitted,
+                  child: const Text("I HAVE DONE THESE"),
+                ),
+              ),
+              sizedBoxSpace,
+            ],
+          ),
+        )));
   }
 }
