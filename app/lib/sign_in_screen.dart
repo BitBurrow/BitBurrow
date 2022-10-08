@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:go_router/go_router.dart';
 import 'dart:convert' as convert;
 import 'dart:math';
 import 'main.dart';
@@ -46,10 +47,7 @@ class SignInFormState extends ParentFormState {
   }
 
   @override
-  String nextScreenUrl() => '/servers';
-
-  @override
-  String getRestorationId() => 'sign_in_screen_scroll_view';
+  nextScreen() => context.push('/servers');
 
   @override
   String getHubValue() => loginState.hub;
@@ -67,13 +65,12 @@ class SignInFormState extends ParentFormState {
   @override
   Widget build(BuildContext context) {
     const sizedBoxSpace = SizedBox(height: 24);
-
     return Form(
       key: formKey,
       autovalidateMode: AutovalidateMode.values[autoValidateModeIndex.value],
       child: Scrollbar(
         child: SingleChildScrollView(
-          restorationId: getRestorationId(),
+          restorationId: 'sign_in_screen_scroll_view',
           padding: const EdgeInsets.symmetric(horizontal: 34),
           child: Column(
             children: [

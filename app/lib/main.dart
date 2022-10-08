@@ -231,8 +231,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
   Future<http.Response?> callApi();
   bool statusCodeIsOkay(status);
   String processApiResponse(response);
-  String nextScreenUrl();
-  String getRestorationId();
+  nextScreen();
   String getHubValue();
   void setHubValue(String value);
   void setAccountValue(String value);
@@ -320,7 +319,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       }
     }
     if (error.isEmpty) {
-      context.push(nextScreenUrl());
+      nextScreen();
       return;
     }
     print("finished http $hub: $error");

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:go_router/go_router.dart';
 import 'dart:convert' as convert;
 import 'dart:math';
 import 'main.dart';
@@ -22,7 +23,6 @@ class WelcomeForm extends ParentForm {
 }
 
 class WelcomeFormState extends ParentFormState {
-  // RestorableBoolN checkboxTrustedHub = RestorableBoolN(false);
   bool? checkboxTrustedHub = false;
 
   @override
@@ -39,7 +39,7 @@ class WelcomeFormState extends ParentFormState {
 
   @override
   String processApiResponse(response) {
-    var jsonResponse =
+    final jsonResponse =
         convert.jsonDecode(response.body) as Map<String, dynamic>;
     String? newLoginKey = jsonResponse['login_key'];
     if (newLoginKey == null || newLoginKey.length != 18) {
@@ -51,10 +51,7 @@ class WelcomeFormState extends ParentFormState {
   }
 
   @override
-  String nextScreenUrl() => '/new-login-key';
-
-  @override
-  String getRestorationId() => 'welcome_screen_scroll_view';
+  nextScreen() => context.push('/new-login-key');
 
   @override
   String getHubValue() => loginState.hub;
@@ -72,13 +69,12 @@ class WelcomeFormState extends ParentFormState {
   @override
   Widget build(BuildContext context) {
     const sizedBoxSpace = SizedBox(height: 24);
-
     return Form(
       key: formKey,
       autovalidateMode: AutovalidateMode.values[autoValidateModeIndex.value],
       child: Scrollbar(
         child: SingleChildScrollView(
-          restorationId: getRestorationId(),
+          restorationId: 'welcome_screen_scroll_view',
           padding: const EdgeInsets.symmetric(horizontal: 34),
           child: Column(
             children: [
