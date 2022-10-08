@@ -114,9 +114,11 @@ class NewServerFormState extends ParentFormState {
         key: formKey,
         autovalidateMode: AutovalidateMode.values[autoValidateModeIndex.value],
         child: Scrollbar(
+            controller: scrollController,
             child: SingleChildScrollView(
           restorationId: 'new_server_screen_scroll_view',
           padding: const EdgeInsets.symmetric(horizontal: 34),
+              controller: scrollController,
           child: Column(
             children: [
               sizedBoxSpace,
