@@ -73,7 +73,13 @@ class NewServerFormState extends ParentFormState {
       ));
 
   @override
-  bool statusCodeIsOkay(status) => status == 201;
+  String validateStatusCode(status) {
+    if (status == 201) return "";
+    if (status == 403) return "Invalid login key. Please sign in again.";
+    return "The hub responseded with an invalid status code. "
+        "Make sure you typed the hub correctly, try again later, or "
+        "contact the hub administrator.";
+  }
 
   @override
   String processApiResponse(response) {
@@ -99,6 +105,9 @@ class NewServerFormState extends ParentFormState {
   void setHubValue(value) {
     loginState.hub = value;
   }
+
+  @override
+  String getAccountValue() => "";
 
   @override
   void setAccountValue(value) {

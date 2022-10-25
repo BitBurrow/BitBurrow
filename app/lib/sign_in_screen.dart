@@ -1,6 +1,9 @@
+// ignore_for_file: avoid_print
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
 import 'dart:convert' as convert;
 import 'dart:math';
 import 'main.dart';
@@ -24,6 +27,14 @@ class SignInForm extends ParentForm {
 
 class SignInFormState extends ParentFormState {
   @override
+  void initState() {
+    super.initState();
+    // check our login state before drawing the screen
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => checkLoginState(context));
+  }
+
+  @override
   String get restorationId => 'sign_in_form';
 
   @override
@@ -33,9 +44,34 @@ class SignInFormState extends ParentFormState {
       ));
 
   @override
-  bool statusCodeIsOkay(status) {
-    loginState.loginKeyVerified = status == 200;
-    return status == 200;
+  String validateStatusCode(status) {
+    bool serverError;
+    if (status == 200 || status == 403) {
+      loginState.loginKeyVerified = status == 200;
+      serverError = false;
+    } else {
+      serverError = true;
+    }
+    const keyStore = storage.FlutterSecureStorage();
+    // if loginState.saveLoginKey == false, values have already been cleared
+    if (loginState.saveLoginKey && loginState.loginKeyVerified) {
+      // only save login key if user opts in AND login key is valid
+      keyStore.write(key: 'hub', value: loginState.hub);
+      keyStore.write(key: 'login_key', value: loginState.loginKey);
+      keyStore.write(key: 'login_key_verified', value: 'true');
+    }
+    if (serverError) {
+      return "The hub responseded with an invalid status code. "
+          "Make sure you typed the hub correctly, try again later, or "
+          "contact the hub administrator.";
+    } else {
+      if (loginState.loginKeyVerified) {
+        return "";
+      } else {
+        return "Invalid login key. Please check what you typed "
+            "and try again.";
+      }
+    }
   }
 
   @override
@@ -56,6 +92,9 @@ class SignInFormState extends ParentFormState {
   void setHubValue(value) {
     loginState.hub = value;
   }
+
+  @override
+  String getAccountValue() => loginState.loginKey;
 
   @override
   void setAccountValue(value) {
@@ -102,20 +141,22 @@ class SignInFormState extends ParentFormState {
               accountTextFormField(
                 "login key",
                 'images/key.svg',
-                isPassword: true, // communicate to user that it's important
+                isPassword: true, // communicate to user to keep it private
+              ),
+              sizedBoxSpace,
+              CheckboxListTile(
+                title: textMd(context, "Store my login key on this device"),
+                value: loginState.saveLoginKey,
+                onChanged: (value) {
+                  setState(() {
+                    loginState.saveLoginKey = value == true;
+                  });
+                },
               ),
               sizedBoxSpace,
               Center(
                 child: ElevatedButton(
-                  onPressed: () {
-                    var err = "";
-                    if (validateTextFields()) {
-                      err = "Please fix the errors in red before submitting.";
-                    } else {
-                      return handleSubmitted();
-                    }
-                    showInSnackBar(err);
-                  },
+                  onPressed: signIn,
                   child: const Text("SIGN IN"),
                 ),
               ),
@@ -130,5 +171,29 @@ class SignInFormState extends ParentFormState {
         ),
       ),
     );
+  }
+
+  void signIn() {
+    if (loginState.saveLoginKey == false) {
+      const keyStore = storage.FlutterSecureStorage();
+      // if box not checked, clear stored login key even before trying server
+      // no need: keyStore.write(key: 'hub', value: '');
+      keyStore.write(key: 'login_key', value: '');
+      keyStore.write(key: 'login_key_verified', value: 'false');
+    }
+    var err = "";
+    if (validateTextFields()) {
+      err = "Please fix the errors in red before submitting.";
+    } else {
+      return handleSubmitted();
+    }
+    showInSnackBar(err);
+  }
+
+  void checkLoginState(context) {
+    // if login key is verified, press the sign-in button (virtually)
+    if (loginState.loginKeyVerified) {
+      signIn();
+    }
   }
 }

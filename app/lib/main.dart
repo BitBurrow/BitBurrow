@@ -7,14 +7,56 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
+import 'dart:io' as io;
 import 'welcome_screen.dart';
 import 'new_login_key_screen.dart';
 import 'sign_in_screen.dart';
 import 'servers_screen.dart';
 import 'new_server_screen.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await onAppStart();
   runApp(App());
+}
+
+class LoginState {
+  String hub = ""; // saved in secure storage
+  String coupon = "";
+  String newLoginKey = "";
+  String loginKey = ""; // saved in secure storage
+  bool loginKeyVerified = false; // saved in secure storage
+  bool saveLoginKey = false; // user choice to keep login key in secure storage
+  List<int> servers = [];
+
+  bool isSignedIn() => loginKeyVerified;
+  bool isNotSignedIn() => !loginKeyVerified;
+}
+
+var loginState = LoginState();
+
+Future<void> onAppStart() async {
+  // fixme: user sees blank screen until this completes; implement a loading
+  // ... screen if this method takes too long
+  try {
+    var keyStore = const storage.FlutterSecureStorage();
+    loginState.hub = (await keyStore.read(key: 'hub')) ?? "";
+    loginState.loginKey = (await keyStore.read(key: 'login_key')) ?? "";
+    loginState.loginKeyVerified =
+        (await keyStore.read(key: 'login_key_verified') == 'true');
+    // login key is saved if and only if it's verified and user opts to store it
+    loginState.saveLoginKey = loginState.loginKeyVerified;
+  } catch (err) {
+    if (io.Platform.environment['DBUS_SESSION_BUS_ADDRESS'] == 'disabled:') {
+      // VSCode Linux issue - https://github.com/electron/electron/issues/31981
+      // add this to .bashrc: unset DBUS_SESSION_BUS_ADDRESS
+      print("B70101 D-Bus has been disabled: $err");
+    } else {
+      print("B52325 can't read from secure storage: $err");
+    }
+    return;
+  }
 }
 
 Page<void> ourPageBuilder(
@@ -74,31 +116,36 @@ class App extends StatelessWidget {
         path: '/',
         pageBuilder: (context, state) =>
             ourPageBuilder(context, state, const WelcomeScreen()),
-        routes: <GoRoute>[
-          // has back arrow to above page
-          GoRoute(
-            path: 'new-login-key',
-            pageBuilder: (context, state) =>
-                ourPageBuilder(context, state, const NewLoginKeyScreen()),
-          ),
-          GoRoute(
-            path: 'sign-in',
-            pageBuilder: (context, state) =>
-                ourPageBuilder(context, state, const SignInScreen()),
-          ),
-          GoRoute(
-            path: 'servers',
-            pageBuilder: (context, state) =>
-                ourPageBuilder(context, state, const ServersScreen()),
-          ),
-          GoRoute(
-            path: 'new-server',
-            pageBuilder: (context, state) =>
-                ourPageBuilder(context, state, const NewServerScreen()),
-          ),
-        ],
+      ),
+      GoRoute(
+        path: '/new-login-key',
+        pageBuilder: (context, state) =>
+            ourPageBuilder(context, state, const NewLoginKeyScreen()),
+      ),
+      GoRoute(
+        path: '/sign-in',
+        pageBuilder: (context, state) =>
+            ourPageBuilder(context, state, const SignInScreen()),
+      ),
+      GoRoute(
+        path: '/servers',
+        pageBuilder: (context, state) =>
+            ourPageBuilder(context, state, const ServersScreen()),
+      ),
+      GoRoute(
+        path: '/new-server',
+        pageBuilder: (context, state) =>
+            ourPageBuilder(context, state, const NewServerScreen()),
       ),
     ],
+    redirect: (state) {
+      if (state.subloc == '/' && loginState.loginKeyVerified) {
+        // if we have valid login key, skip welcome screen and proceed with automatic sign-in
+        return '/sign-in';
+      }
+      return null;
+    },
+
     urlPathStrategy:
         UrlPathStrategy.path, // turn off the extra `#/` in the URLs
   );
@@ -155,8 +202,7 @@ Widget ourScreenLayout(BuildContext context, Widget body,
           // title: const Text(App.title),
           toolbarHeight: 40.0,
           actions: <Widget>[
-            if (GoRouter.of(context).location != '/sign-in' &&
-                loginState.isNotSignedIn())
+            if (GoRouter.of(context).location != '/sign-in')
               IconButton(
                   icon: const Icon(Icons.login),
                   tooltip: "Sign in",
@@ -177,20 +223,6 @@ extension StringExtension on String {
     return "${this[0].toUpperCase()}${substring(1).toLowerCase()}";
   }
 }
-
-class LoginState {
-  String hub = "";
-  String coupon = "";
-  String newLoginKey = "";
-  String loginKey = "";
-  bool loginKeyVerified = false;
-  List<int> servers = [];
-
-  bool isSignedIn() => loginKeyVerified;
-  bool isNotSignedIn() => !loginKeyVerified;
-}
-
-var loginState = LoginState();
 
 abstract class ParentForm extends StatefulWidget {
   const ParentForm({Key? key}) : super(key: key);
@@ -230,11 +262,12 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       _AccountTextInputFormatter();
 
   Future<http.Response?> callApi();
-  bool statusCodeIsOkay(status);
+  String validateStatusCode(status);
   String processApiResponse(response);
   nextScreen();
   String getHubValue();
   void setHubValue(String value);
+  String getAccountValue();
   void setAccountValue(String value);
 
   bool validateTextFields() {
@@ -290,12 +323,11 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       if (response == null) {
         error = "B29348";
       } else {
-        if (!statusCodeIsOkay(response.statusCode)) {
-          displayError = "The hub responseded with an invalid status code. "
-              "Make sure you typed the hub correctly, try again later, or "
-              "contact the hub administrator.";
+        displayError = validateStatusCode(response.statusCode);
+        if (displayError.isNotEmpty) {
           error = "invalid status code ${response.statusCode}";
         } else {
+          // status code is okay
           try {
             error = processApiResponse(response);
             if (error.isNotEmpty) {
@@ -426,6 +458,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
         ),
         obscureText: isPassword && _isObscure,
         autofocus: getHubValue().isNotEmpty,
+        initialValue: getAccountValue(),
         onSaved: (value) {
           setAccountValue(value ?? "");
         },
