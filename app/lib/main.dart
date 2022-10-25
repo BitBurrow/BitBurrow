@@ -156,12 +156,12 @@ MarkdownBody textMd(BuildContext context, md) {
     selectable:
         false, // DO NOT USE; see https://stackoverflow.com/questions/73491527
     styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-      textScaleFactor: 1.15, // match other text
-      a: const TextStyle(
-        color: Color.fromARGB(255, 40, 128, 22),
-        decoration: TextDecoration.underline,
-      ),
-    ),
+        textScaleFactor: 1.14, // match default Text() widget size
+        a: const TextStyle(
+          color: Color.fromARGB(255, 40, 128, 22),
+          decoration: TextDecoration.underline,
+        ),
+        p: const TextStyle(height: 1.35)), // less cramped vertically
     onTapLink: (text, url, title) {
       if (url == null) return;
       if (url[0] == '/') {
