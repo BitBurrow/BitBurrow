@@ -15,12 +15,12 @@ class JsonChunks {
           // sink JSON chunks until there are no more
           len = jsonObjectLength(_buffer);
           if (len <= 0) break;
-          var forDisplay = _buffer
-              .substring(0, len)
-              .replaceAll(r'\', r'\\')
-              .replaceAll('\r', r'\r')
-              .replaceAll('\n', r'\n');
-          print("test-----sinking JSON: $forDisplay");
+          // var forDisplay = _buffer
+          //     .substring(0, len)
+          //     .replaceAll(r'\', r'\\')
+          //     .replaceAll('\r', r'\r')
+          //     .replaceAll('\n', r'\n');
+          // print("JsonChunks: sinking JSON: $forDisplay");
           _controller.sink.add(_buffer.substring(0, len));
           _buffer = _buffer.substring(len);
         }
@@ -34,9 +34,9 @@ class JsonChunks {
         } else {
           assert(len == 0);
           if (_buffer.isEmpty) {
-            print("test-----buffer is now empty");
+            // print("JsonChunks: buffer is now empty");
           } else {
-            print("test-----holding partial JSON: $forDisplay");
+            // print("JsonChunks: holding partial JSON: $forDisplay");
           }
         }
       },
@@ -96,7 +96,6 @@ class JsonChunks {
       /*var json =*/ convert.jsonDecode(buffer);
       return buffer.length; // valid JSON, no trailing data
     } on FormatException catch (err) {
-      //print("jsonDecode failed: $err");
       Map<String, List<String>> regexList = {
         'okay': [
           // valid JSON object plus trailing data
