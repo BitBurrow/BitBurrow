@@ -72,6 +72,8 @@ class NewServerForm extends ParentForm {
 class NewServerFormState extends ParentFormState {
   Map<String, dynamic>? sshLogin;
   async.Completer hubCommanderFinished = async.Completer();
+  List<Future> forwardsList = [];
+  var guiMessages = async.StreamController<String>();
 
   @override
   String get restorationId => 'new_server_form';
@@ -125,34 +127,32 @@ class NewServerFormState extends ParentFormState {
   }
 
   Future bbProxy() async {
-    var progressDialog = showSimpleDialog(
-      context,
-      "Configuring BitBurrow VPN server ...",
-      '',
-      "CANCEL",
+    guiMessages = async.StreamController<String>();
+    var progressDialog = showPopupDialog(
+      context: context,
+      title: "Configuring BitBurrow VPN server ...",
+      messages: guiMessages.stream,
+      buttonText: "CANCEL",
     );
     var dialogState = DialogStates.open;
     progressDialog.whenComplete(() {
       if (dialogState == DialogStates.open) {
-        print("user canceled dialog before request completed");
+        print("B29626 user canceled dialog before request completed");
         dialogState = DialogStates.canceled;
+        // FIXME: gracefully cancel router config and ssh connection
       } else {
         dialogState = DialogStates.closed;
       }
     });
     var error = "";
     try {
-      hubCommanderFinished = async.Completer();
       if (sshLogin != null) {
-        await sshPortForward(
+        await sshConnect(
           sshUser: sshLogin!['ssh_user'],
           sshKey: sshLogin!['ssh_key'],
           sshDomain: sshLogin!['ssh_domain'],
           sshPort: sshLogin!['ssh_port'],
-          sourcePort: sshLogin!['source_port'],
-          destDomain: '192.168.8.1',
-          // destPortList: [0, 22, 23, 80, 443, 8443],
-          destPortList: [0],
+          forwardFromPort: sshLogin!['forward_from_port'],
         );
       } else {
         error = "B12944 sshLogin is null";
@@ -174,126 +174,158 @@ class NewServerFormState extends ParentFormState {
     // if (error.isEmpty) {}
   }
 
-  Future sshPortForward({
+  Future sshConnect({
     sshUser,
     sshKey, // actual key contents
     sshDomain,
     sshPort = 22,
-    sourcePort, // first of block of TCP ports on sshDomain
-    destDomain,
-    destPortList, // forward from sourcePort+2 to destDomain:destPortList[2]
+    forwardFromPort,
   }) async {
-    List<Future> forwardOneList = [];
-    try {
-      final socket = await ssh.SSHSocket.connect(sshDomain, sshPort);
-      final client = ssh.SSHClient(
-        socket,
-        username: sshUser,
-        identities: ssh.SSHKeyPair.fromPem(sshKey),
-      );
-      await client.authenticated;
-      // forward ports from server to us
-      List<Stream> forwardConnectionList = [];
-      for (var i = 0; i < destPortList.length; i += 1) {
-        final forward = await client.forwardRemote(port: sourcePort + i);
-        if (forward == null) {
-          print("B35541 can't forward $sshDomain:${sourcePort + i}");
-        } else {
-          // add to list: $sshDomain:${sourcePort + i}
-          forwardConnectionList.add(forward.connections);
-        }
+    var retriesLeft = 8;
+    var error = "never assigned";
+    while (true) {
+      try {
+        hubCommanderFinished = async.Completer();
+        final socket = await ssh.SSHSocket.connect(sshDomain, sshPort);
+        final client = ssh.SSHClient(
+          socket,
+          username: sshUser,
+          identities: ssh.SSHKeyPair.fromPem(sshKey),
+        );
+        await client.authenticated;
+        forwardsList.add(forwardCommandChannel(
+          client: client,
+          fromPort: forwardFromPort,
+        ));
+        // await until hub sends 'exit' command (or an error occurrs)
+        error = await hubCommanderFinished.future;
+        client.close();
+        await client.done;
+        return;
+      } on io.SocketException catch (err) {
+        print("B88675 can't connect to $sshDomain:$sshPort: $err");
+      } on ssh.SSHAuthAbortError catch (err) {
+        print("B31284 can't connect to $sshDomain:$sshPort: $err");
+      } on ssh.SSHAuthFailError catch (err) {
+        print("B61302 bad ssh key: $err");
+      } on ssh.SSHStateError catch (err) {
+        print("B88975 ssh connection failed: $err"); // e.g. server proc killed
+      } catch (err) {
+        print("B50513 can't connect to $sshDomain: $err");
       }
-      // call forwardOne for each port to pipe to remote
-      forwardConnectionList.asMap().forEach((index, c) {
-        forwardOneList.add(forwardOne(c, destPortList[index], destDomain));
-      });
-      await Future.wait(forwardOneList);
-      // await until hub sends 'exit' command (or an error occurrs)
-      var error = await hubCommanderFinished.future;
-      client.close();
-      await client.done;
-      return;
-    } on io.SocketException catch (err) {
-      print("B88675 can't connect to $sshDomain:$sshPort ($err)");
-    } on ssh.SSHAuthAbortError catch (err) {
-      print("B31284 can't connect to $sshDomain:$sshPort ($err)");
-    } on ssh.SSHAuthFailError catch (err) {
-      print("B61302 bad ssh key ($err)");
-    } catch (err) {
-      print("B50513 can't connect to $sshDomain: $err");
+      if (error.isEmpty || retriesLeft <= 0) {
+        break;
+      }
+      print("B08226 retrying ssh connection; last error was: $error");
+      retriesLeft -= 1;
     }
   }
 
-  Future<void> forwardOne(
-      Stream forwardConnection, int destPort, destDomain) async {
-    await for (final connection in forwardConnection) {
-      var errStr = "";
+  Future<void> forwardCommandChannel({
+    required ssh.SSHClient client,
+    required int fromPort,
+  }) async {
+    final forward = await client.forwardRemote(port: fromPort);
+    if (forward == null) {
+      print("B35541 can't forward from_port $fromPort");
+      return;
+    }
+    await for (final connection in forward.connections) {
       try {
-        if (destPort == 0) {
-          // hubCommander connection from hub
-          final jsonStrings = JsonChunks(connection.stream);
-          jsonStrings.stream.listen(
-            (String json) {
-              hubCommander(json, connection);
-            },
-            // fixme: make it work after disconnect → ¿broadcast stream (https://stackoverflow.com/a/70563131) or re-create new stream after close
-            onError: (err) {
-              print("B17234: $err");
-              connection.sink.close();
-            },
-            onDone: () {
-              if (!hubCommanderFinished.isCompleted) {
-                print("B55482 connection closed unexpectedly");
-                hubCommanderFinished.complete("connection closed unexpectedly");
-              }
-              connection.sink.close();
-            },
-          );
-          return;
+        // hubCommander connection from hub
+        final jsonStrings = JsonChunks(connection.stream);
+        // breaks ordering, esp. 'sleep': jsonStrings.stream.listen(...)
+        await for (final json in jsonStrings.stream) {
+          try {
+            await hubCommander(json, client, connection);
+          } catch (err) {
+            print("B17234: $err");
+            connection.sink.close();
+          }
         }
-        print("connection from server; trying $destDomain:$destPort");
+        if (!hubCommanderFinished.isCompleted) {
+          print("B55482 connection closed unexpectedly");
+          hubCommanderFinished.complete("connection closed unexpectedly");
+        }
+        connection.sink.close();
+      } catch (err) {
+        print("B58184 command channel failed: $err");
+      }
+    }
+  }
+
+  Future<void> forwardToRouter({
+    required ssh.SSHClient client,
+    required int fromPort,
+    required int toPort,
+    String toAddress = '',
+  }) async {
+    final forward = await client.forwardRemote(port: fromPort);
+    if (forward == null) {
+      print("B35542 can't forward fromPort $fromPort");
+      return;
+    }
+    await for (final connection in forward.connections) {
+      try {
+        print("connection from server; trying $toAddress:$toPort");
         final socket = await io.Socket.connect(
-          destDomain,
-          destPort,
+          toAddress,
+          toPort,
           timeout: const Duration(seconds: 20),
         );
         connection.stream.cast<List<int>>().pipe(socket);
         socket.pipe(connection.sink);
-        print("connected to $destDomain:$destPort");
-      } on io.SocketException catch (err) {
-        errStr = "B22066 can't connect to $destDomain:$destPort ($err)";
+        print("connected to $toAddress:$toPort");
       } catch (err) {
-        errStr = "B58184 can't connect to $destDomain:$destPort ($err)";
-      }
-      if (errStr.isNotEmpty) {
-        print(errStr);
-        var bytes = Uint8List.fromList(("$errStr\n").codeUnits);
-        connection.sink.add(bytes); // error message for server
+        print("B58185 can't connect to $toAddress:$toPort: $err");
         connection.sink.close();
       }
     }
+    await Future.wait(forwardsList);
   }
 
-  void hubCommander(String json, connection) async {
-    // process a command from the hub
+  Future<void> hubCommander(String json, client, connection) async {
+    // process one command from the hub
     try {
       var command = convert.jsonDecode(json);
-      command.forEach((key, value) {
-        if (key == 'print') {
-          print("hub: ${value['text']}");
-        } else if (key == 'echo') {
-          // echo text back to hub
-          var bytes = Uint8List.fromList(("${value['text']}\n").codeUnits);
-          connection.sink.add(bytes); // .write() doesn't exist
-        } else if (key == 'exit') {
-          // done with commands--close connection
-          hubCommanderFinished.complete("");
-        } else {
-          print("B19842 unknown command: $key");
+      // breaks ordering, esp. 'sleep': command.forEach((key, value) async {...}
+      for (final e in command.entries) {
+        var key = e.key;
+        var value = e.value;
+        try {
+          if (key == 'print') {
+            // print text in app console
+            print("hub: ${value['text']}");
+          } else if (key == 'show_md') {
+            // display Markdown in the user dialog
+            guiMessages.sink.add(value['markdown']);
+          } else if (key == 'echo') {
+            // echo text back to hub
+            var bytes = Uint8List.fromList(("${value['text']}\n").codeUnits);
+            connection.sink.add(bytes); // .write() doesn't exist
+          } else if (key == 'sleep') {
+            // delay processing of subsequent commands
+            await Future.delayed(Duration(seconds: value['seconds']), () {});
+          } else if (key == 'ssh_forward') {
+            forwardToRouter(
+              client: client,
+              fromPort: value['from_port'],
+              toAddress: value['to_address'],
+              toPort: value['to_port'],
+            );
+          } else if (key == 'exit') {
+            // done with commands--close TCP connection
+            hubCommanderFinished.complete("");
+          } else {
+            print("B19842 unknown command: $key");
+          }
+        } catch (err) {
+          print("B18332 illegal arguments: ${json.trim()}");
         }
-      });
+      }
     } catch (err) {
-      print("B50129 illegal command: ${json.trim()}");
+      print("B50129 illegal command ${json.trim()}: "
+          "${err.toString().replaceAll(RegExp(r'[\r\n]+'), ' ¶ ')}");
     }
   }
 

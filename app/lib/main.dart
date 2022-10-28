@@ -174,14 +174,35 @@ MarkdownBody textMd(BuildContext context, md) {
   );
 }
 
-Future showSimpleDialog(
-        BuildContext context, String title, String text, String buttonText) =>
+Future<void> showPopupDialog({
+  required BuildContext context,
+  String title = "",
+  String text = "",
+  required String buttonText,
+  Stream<String>? messages,
+}) =>
     showDialog(
         context: context,
         barrierDismissible: false,
         builder: (BuildContext context) => AlertDialog(
               title: Text(title),
-              content: Text(text),
+              content: messages == null
+                  ? Text(text)
+                  : StreamBuilder<String>(
+                      stream: messages,
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Text("");
+                        } else if (snapshot.connectionState ==
+                            ConnectionState.done) {
+                          return const Text("");
+                        } else if (snapshot.hasError) {
+                          return const Text("error 5007");
+                        } else {
+                          return textMd(context, snapshot.data ?? "");
+                        }
+                      }),
               actions: <Widget>[
                 TextButton(
                   style: TextButton.styleFrom(
@@ -285,8 +306,11 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     form.save();
     var hub = getHubValue(); // if user cancels dialog, hub and ...
     // getHubValue() may not be the same because this method is re-entered
-    var connectingDialog =
-        showSimpleDialog(context, "Connecting to hub ...", "", "CANCEL");
+    var connectingDialog = showPopupDialog(
+      context: context,
+      title: "Connecting to hub ...",
+      buttonText: "CANCEL",
+    );
     var dialogState = DialogStates.open;
     connectingDialog.whenComplete(() {
       if (dialogState == DialogStates.open) {
@@ -366,11 +390,11 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       displayError += " Make sure that you typed the hub correctly "
           "and that you are connected to the internet.";
     }
-    await showSimpleDialog(
-      context,
-      "Unable to connect",
-      '$displayError (Error "$error".)',
-      "OK",
+    await showPopupDialog(
+      context: context,
+      title: "Unable to connect",
+      text: '$displayError (Error "$error".)',
+      buttonText: "OK",
     );
     return;
   }
