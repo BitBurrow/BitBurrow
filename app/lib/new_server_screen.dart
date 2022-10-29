@@ -308,18 +308,21 @@ class NewServerFormState extends ParentFormState {
             guiMessages.sink.add(value['markdown']);
           } else if (key == 'echo') {
             // echo text back to hub
-            hubWrite(
-                "${value['text']}\n", connection); // .write() doesn't exist
+            hubWrite({"hub": value['text']}, connection);
           } else if (key == 'sleep') {
             // delay processing of subsequent commands
             await Future.delayed(Duration(seconds: value['seconds']), () {});
           } else if (key == 'ssh_forward') {
+            // port-forward port from hub to router over ssh
             forwardToRouter(
               client: client,
               fromPort: value['from_port'],
               toAddress: value['to_address'],
               toPort: value['to_port'],
             );
+          } else if (key == 'get_if_list') {
+            // return list of network interfaces and IP addresses
+            hubWrite(await ifList(), connection);
           } else if (key == 'exit') {
             // done with commands--close TCP connection
             hubCommanderFinished.complete("");
@@ -327,7 +330,7 @@ class NewServerFormState extends ParentFormState {
             print("B19842 unknown command: $key");
           }
         } catch (err) {
-          print("B18332 illegal arguments: ${json.trim()}");
+          print("B18332 illegal arguments ${json.trim()}: $err");
         }
       }
     } catch (err) {
@@ -336,9 +339,26 @@ class NewServerFormState extends ParentFormState {
     }
   }
 
-  void hubWrite(String text, connection) {
-    var bytes = convert.utf8.encode(text);
+  void hubWrite(Map<String, dynamic> data, connection) {
+    // everything sent back to the hub is JSON
+    var json = convert.jsonEncode(data);
+    var bytes = convert.utf8.encode(json);
     connection.sink.add(bytes); // .write() doesn't exist
+  }
+
+  static Future<Map<String, dynamic>> ifList() async {
+    final interfaces = await io.NetworkInterface.list(includeLinkLocal: true);
+    Map<String, dynamic> result = {};
+    for (var interface in interfaces) {
+      List<String> i = [];
+      print("${interface.name} →");
+      for (var address in interface.addresses) {
+        print("    ${address.address}");
+        i.add(address.address.toString());
+      }
+      result[interface.name] = i;
+    }
+    return result;
   }
 
   @override
