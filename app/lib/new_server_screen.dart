@@ -181,7 +181,8 @@ class NewServerFormState extends ParentFormState {
     sshPort = 22,
     forwardFromPort,
   }) async {
-    var retriesLeft = 8;
+    var tries = 0;
+    Stopwatch stopwatch = Stopwatch()..start();
     var error = "never assigned";
     while (true) {
       try {
@@ -201,7 +202,6 @@ class NewServerFormState extends ParentFormState {
         error = await hubCommanderFinished.future;
         client.close();
         await client.done;
-        return;
       } on io.SocketException catch (err) {
         print("B88675 can't connect to $sshDomain:$sshPort: $err");
       } on ssh.SSHAuthAbortError catch (err) {
@@ -213,11 +213,18 @@ class NewServerFormState extends ParentFormState {
       } catch (err) {
         print("B50513 can't connect to $sshDomain: $err");
       }
-      if (error.isEmpty || retriesLeft <= 0) {
-        break;
+      if (error.isEmpty) break; // success
+      tries += 1;
+      if (tries >= 7) {
+        if (stopwatch.elapsedMilliseconds < 2000) {
+          print("B34362 7 tries in 2 seconds--giving up");
+          break; // 7 tries in 2 seconds--don't keep trying
+        } else {
+          tries = 0;
+          stopwatch = Stopwatch()..start();
+        }
       }
       print("B08226 retrying ssh connection; last error was: $error");
-      retriesLeft -= 1;
     }
   }
 
