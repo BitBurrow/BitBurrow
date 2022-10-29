@@ -301,8 +301,8 @@ class NewServerFormState extends ParentFormState {
             guiMessages.sink.add(value['markdown']);
           } else if (key == 'echo') {
             // echo text back to hub
-            var bytes = Uint8List.fromList(("${value['text']}\n").codeUnits);
-            connection.sink.add(bytes); // .write() doesn't exist
+            hubWrite(
+                "${value['text']}\n", connection); // .write() doesn't exist
           } else if (key == 'sleep') {
             // delay processing of subsequent commands
             await Future.delayed(Duration(seconds: value['seconds']), () {});
@@ -327,6 +327,11 @@ class NewServerFormState extends ParentFormState {
       print("B50129 illegal command ${json.trim()}: "
           "${err.toString().replaceAll(RegExp(r'[\r\n]+'), ' ¶ ')}");
     }
+  }
+
+  void hubWrite(String text, connection) {
+    var bytes = convert.utf8.encode(text);
+    connection.sink.add(bytes); // .write() doesn't exist
   }
 
   @override

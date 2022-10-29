@@ -4,12 +4,22 @@ import 'dart:convert' as convert;
 import 'dart:typed_data';
 import 'dart:async' as async;
 
+/// Read a byte stream, output a stream of valid JSON objects.
+///
+/// For example:
+///   final jsonStrings = JsonChunks(connection.stream);
+///   await for (final json in jsonStrings.stream) {...}
 class JsonChunks {
   JsonChunks(Stream<Uint8List> byteStream) {
     jsonObjectLengthTests(); // ensure Dart doesn't change error string
     byteStream.listen(
       (Uint8List data) async {
-        _buffer = _buffer + String.fromCharCodes(data);
+        try {
+          _buffer = _buffer + convert.utf8.decode(data);
+        } on FormatException catch (err) {
+          // to test: send '✔' via telnet (226, 255, 243, 255, 253, 6, 148)
+          print("B79804 cannot decode $data: $err");
+        }
         int len;
         while (true) {
           // sink JSON chunks until there are no more
