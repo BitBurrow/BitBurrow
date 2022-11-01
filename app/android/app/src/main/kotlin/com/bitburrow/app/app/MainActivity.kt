@@ -1,4 +1,4 @@
-package com.bitburrow.app.app
+package com.bitburrow.app
 
 import io.flutter.embedding.android.FlutterActivity
 

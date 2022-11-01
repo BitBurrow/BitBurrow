@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.bitburrow.app.app">
+    package="com.bitburrow.app">
    <application
         android:label="BitBurrow"
         android:name="${applicationName}"
