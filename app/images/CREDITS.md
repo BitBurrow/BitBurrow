@@ -8,4 +8,6 @@ Image sources in chronological order:
 * `brass-1293947.png`: https://pixabay.com/images/download/brass-1293947.png
 * `server.svg`: https://tabler-icons.io/static/tabler-icons/icons/server.svg
 * `server-32983.svg`: https://pixabay.com/images/download/server-32983.svg
+* `user-check.svg`: https://tabler-icons.io/static/tabler-icons/icons/user-check.svg
+* `device-floppy.svg`: https://tabler-icons.io/static/tabler-icons/icons/device-floppy.svg
 

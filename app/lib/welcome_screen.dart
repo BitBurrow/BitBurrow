@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'dart:convert' as convert;
 import 'dart:math';
 import 'main.dart';
@@ -111,7 +112,7 @@ class WelcomeFormState extends ParentFormState {
               sizedBoxSpace,
               FractionallySizedBox(
                 widthFactor: 0.4,
-                child: Image.asset("images/BitBurrow.png"),
+                child: Image.asset('images/BitBurrow.png'),
               ),
               sizedBoxSpace,
               textMd(
@@ -122,21 +123,48 @@ class WelcomeFormState extends ParentFormState {
               hubTextFormField(),
               sizedBoxSpace,
               accountTextFormField("coupon", 'images/ticket.svg'),
-              sizedBoxSpace,
-              CheckboxListTile(
-                title: textMd(
-                    context,
-                    "I trust the person or entity that provided me with "
-                    "the above information. (A malicious BitBurrow hub, "
-                    "when used with this app, can take over your router, "
-                    "snoop on your internet traffic, and attack other "
-                    "devices on your local network.)*"),
-                value: checkboxTrustedHub,
-                onChanged: (value) {
-                  setState(() {
-                    checkboxTrustedHub = value;
-                  });
-                },
+              // sizedBoxSpace, // Coupon length display substitutes for this
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start, // top-align
+                children: [
+                  Column(
+                    children: [
+                      const SizedBox(height: 12),
+                      SvgPicture.asset(
+                        'images/user-check.svg',
+                        width: 30,
+                        height: 30,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      children: [
+                        CheckboxListTile(
+                          title: textMd(context, "I trust this hub.*"),
+                          controlAffinity: ListTileControlAffinity.leading,
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          value: checkboxTrustedHub,
+                          onChanged: (value) {
+                            setState(() {
+                              checkboxTrustedHub = value;
+                            });
+                          },
+                        ),
+                        textMd(
+                            context,
+                            "(The person or entity that controls the "
+                            "BitBurrow hub specified above, when used with "
+                            "this app, can take over your router, snoop on "
+                            "your internet traffic, and attack other devices "
+                            "on your local network.)"),
+                      ],
+                    ),
+                  ),
+                ],
               ),
               sizedBoxSpace,
               Center(
@@ -146,7 +174,7 @@ class WelcomeFormState extends ParentFormState {
                     if (validateTextFields()) {
                       err = "Please fix the errors in red before submitting.";
                     } else if (checkboxTrustedHub != true) {
-                      err = "Please check the box on the right before "
+                      err = "Please check the 'I trust this hub' box before "
                           "submitting.";
                     } else {
                       return handleSubmitted();

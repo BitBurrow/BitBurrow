@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
 import 'dart:convert' as convert;
 import 'dart:math';
@@ -143,15 +144,42 @@ class SignInFormState extends ParentFormState {
                 'images/key.svg',
                 isPassword: true, // communicate to user to keep it private
               ),
-              sizedBoxSpace,
-              CheckboxListTile(
-                title: textMd(context, "Store my login key on this device"),
-                value: loginState.saveLoginKey,
-                onChanged: (value) {
-                  setState(() {
-                    loginState.saveLoginKey = value == true;
-                  });
-                },
+              // sizedBoxSpace, // Login Key length display substitutes for this
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start, // top-align
+                children: [
+                  Column(
+                    children: [
+                      const SizedBox(height: 12),
+                      SvgPicture.asset(
+                        'images/device-floppy.svg',
+                        width: 30,
+                        height: 30,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      children: [
+                        CheckboxListTile(
+                          title: textMd(
+                              context, "Store my login key on this device"),
+                          controlAffinity: ListTileControlAffinity.leading,
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          value: loginState.saveLoginKey,
+                          onChanged: (value) {
+                            setState(() {
+                              loginState.saveLoginKey = value == true;
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
               sizedBoxSpace,
               Center(
