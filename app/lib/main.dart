@@ -180,6 +180,7 @@ Future<void> showPopupDialog({
   String text = "",
   required String buttonText,
   Stream<String>? messages,
+  // warning: Markdown lists cause a crash: https://github.com/flutter/flutter/issues/114748
 }) =>
     showDialog(
         context: context,
