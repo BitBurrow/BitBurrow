@@ -7,15 +7,12 @@ import 'package:dartssh2/dartssh2.dart' as ssh;
 import 'dart:io' as io;
 import 'dart:async' as async;
 import 'dart:convert' as convert;
-import 'dart:typed_data';
 import 'main.dart';
 import 'json_chunks.dart';
 
-const textBlob = """
-All of these steps should be done at your "VPN home" location.
-
-` `
-## 1. Connect your new router to the internet.
+const List<String> initialStepsText = [
+  """
+C## Connect your new router to the internet.
 
 * Make a note of the existing set-up in case there is a problem setting 
   up the new router.
@@ -35,22 +32,26 @@ All of these steps should be done at your "VPN home" location.
   1, 2, etc. The WAN jack is sometimes labeled "Ethernet In", 
   "Internet", with a globe symbol, or is unlabeled but uniquely colored. 
   [More details.](/two-routers-details)
-
-` `
-## 2. Plug your new router into a wall socket.
+""",
+  """
+C## Plug your new router into a wall socket.
 
 * Make sure at least one light turns on.
 * It may take a few minutes for the WiFi to begin working.
-
-` `
-## 3. Connect to the new router via WiFi.
+""",
+  """
+C## Connect to the new router via WiFi.
 * It is sometimes necessary to turn off mobile data (internet via 
   your cellular provider).
 * Enable WiFi if needed and scan for available WiFi networks.
 * For the GL-AX1800, the WiFi name will be `GL-AX1800-xxx` or 
   `GL-AX1800-xxx-5G` and the WiFi password written on the bottom of 
   the router ("WiFi Key:").
-""";
+""",
+  """
+BCONFIGURE ROUTER
+""",
+];
 
 class NewServerScreen extends StatelessWidget {
   const NewServerScreen({Key? key}) : super(key: key);
@@ -69,11 +70,36 @@ class NewServerForm extends ParentForm {
   NewServerFormState createState() => NewServerFormState();
 }
 
+enum StepTypes {
+  checkbox, // user can check, uncheck
+  process, // automated, has cancel button, can be retried
+  button, // e.g. "CONFIGURE ROUTER"
+}
+
 class NewServerFormState extends ParentFormState {
-  Map<String, dynamic>? sshLogin;
-  async.Completer hubCommanderFinished = async.Completer();
-  List<Future> forwardsList = [];
-  var guiMessages = async.StreamController<String>();
+  Map<String, dynamic>? _sshLogin;
+  async.Completer _hubCommanderFinished = async.Completer();
+  final List<Future> _forwardsList = [];
+  var _guiMessages = async.StreamController<String>();
+  final List<String> _stepsText = [];
+  final List<StepTypes> _stepsType = [];
+  int _stepsProgress = 0;
+  Stream<String>? _activeStepMessages;
+
+  @override
+  void initState() {
+    super.initState();
+    // add initial steps
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (var s in initialStepsText) {
+        addStep(
+            text: s.substring(1),
+            type: s[0] == 'C'
+                ? StepTypes.checkbox
+                : (s[0] == 'P' ? StepTypes.process : StepTypes.button));
+      }
+    });
+  }
 
   @override
   String get restorationId => 'new_server_form';
@@ -102,7 +128,7 @@ class NewServerFormState extends ParentFormState {
     if (sshKey == null || sshPort == null) {
       return "invalid server response"; // error
     } else {
-      sshLogin = jsonResponse;
+      _sshLogin = jsonResponse;
       return "";
     }
   }
@@ -127,32 +153,17 @@ class NewServerFormState extends ParentFormState {
   }
 
   Future bbProxy() async {
-    guiMessages = async.StreamController<String>();
-    var progressDialog = showPopupDialog(
-      context: context,
-      title: "Configuring BitBurrow VPN server ...",
-      messages: guiMessages.stream,
-      buttonText: "CANCEL",
-    );
-    var dialogState = DialogStates.open;
-    progressDialog.whenComplete(() {
-      if (dialogState == DialogStates.open) {
-        print("B29626 user canceled dialog before request completed");
-        dialogState = DialogStates.canceled;
-        // FIXME: gracefully cancel router config and ssh connection
-      } else {
-        dialogState = DialogStates.closed;
-      }
-    });
+    _guiMessages = async.StreamController<String>();
+    addStep(text: "## Sign in to the router.", type: StepTypes.process);
     var error = "";
     try {
-      if (sshLogin != null) {
+      if (_sshLogin != null) {
         await sshConnect(
-          sshUser: sshLogin!['ssh_user'],
-          sshKey: sshLogin!['ssh_key'],
-          sshDomain: sshLogin!['ssh_domain'],
-          sshPort: sshLogin!['ssh_port'],
-          forwardFromPort: sshLogin!['forward_from_port'],
+          sshUser: _sshLogin!['ssh_user'],
+          sshKey: _sshLogin!['ssh_key'],
+          sshDomain: _sshLogin!['ssh_domain'],
+          sshPort: _sshLogin!['ssh_port'],
+          forwardFromPort: _sshLogin!['forward_from_port'],
         );
       } else {
         error = "B12944 sshLogin is null";
@@ -160,18 +171,10 @@ class NewServerFormState extends ParentFormState {
     } catch (err) {
       error = err.toString();
     }
-    if (dialogState == DialogStates.canceled) {
-      print("(finished configuring but user canceled the progress dialog)");
-      return;
+    var displayError = "";
+    if (error.isEmpty) {
+      addStep(text: "## Connect router to hub.", type: StepTypes.process);
     }
-    if (!mounted) {
-      print("B25601 finished configuring but !mounted");
-      return;
-    }
-    dialogState = DialogStates.closing;
-    Navigator.pop(context); // close dialog
-    // var displayError = "";
-    // if (error.isEmpty) {}
   }
 
   Future sshConnect({
@@ -186,7 +189,7 @@ class NewServerFormState extends ParentFormState {
     var error = "never assigned";
     while (true) {
       try {
-        hubCommanderFinished = async.Completer();
+        _hubCommanderFinished = async.Completer();
         final socket = await ssh.SSHSocket.connect(sshDomain, sshPort);
         final client = ssh.SSHClient(
           socket,
@@ -194,12 +197,12 @@ class NewServerFormState extends ParentFormState {
           identities: ssh.SSHKeyPair.fromPem(sshKey),
         );
         await client.authenticated;
-        forwardsList.add(forwardCommandChannel(
+        _forwardsList.add(forwardCommandChannel(
           client: client,
           fromPort: forwardFromPort,
         ));
         // await until hub sends 'exit' command (or an error occurrs)
-        error = await hubCommanderFinished.future;
+        error = await _hubCommanderFinished.future;
         client.close();
         await client.done;
       } on io.SocketException catch (err) {
@@ -250,9 +253,9 @@ class NewServerFormState extends ParentFormState {
             connection.sink.close();
           }
         }
-        if (!hubCommanderFinished.isCompleted) {
+        if (!_hubCommanderFinished.isCompleted) {
           print("B55482 connection closed unexpectedly");
-          hubCommanderFinished.complete("connection closed unexpectedly");
+          _hubCommanderFinished.complete("connection closed unexpectedly");
         }
         connection.sink.close();
       } catch (err) {
@@ -288,7 +291,7 @@ class NewServerFormState extends ParentFormState {
         connection.sink.close();
       }
     }
-    await Future.wait(forwardsList);
+    await Future.wait(_forwardsList);
   }
 
   Future<void> hubCommander(String json, client, connection) async {
@@ -305,7 +308,7 @@ class NewServerFormState extends ParentFormState {
             print("hub: ${value['text']}");
           } else if (key == 'show_md') {
             // display Markdown in the user dialog
-            guiMessages.sink.add(value['markdown']);
+            _guiMessages.sink.add(value['markdown']);
           } else if (key == 'echo') {
             // echo text back to hub
             hubWrite({"hub": value['text']}, connection);
@@ -325,7 +328,7 @@ class NewServerFormState extends ParentFormState {
             hubWrite(await ifList(), connection);
           } else if (key == 'exit') {
             // done with commands--close TCP connection
-            hubCommanderFinished.complete("");
+            _hubCommanderFinished.complete("");
           } else {
             print("B19842 unknown command: $key");
           }
@@ -391,18 +394,145 @@ class NewServerFormState extends ParentFormState {
                     child: SvgPicture.asset("images/server-32983.svg"),
                   ),
                   sizedBoxSpace,
-                  textMd(context, textBlob),
+                  textMd(
+                      context,
+                      "These steps should be done at "
+                      "your \"VPN home\" location. Check the box on the left "
+                      "as you complete each step."),
                   sizedBoxSpace,
-                  sizedBoxSpace,
-                  Center(
-                    child: ElevatedButton(
-                      onPressed: handleSubmitted,
-                      child: const Text("I HAVE DONE THESE"),
-                    ),
+                  // TODO: use AnimatedList() // https://www.youtube.com/watch?v=ZtfItHwFlZ8
+                  ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: _stepsText.length,
+                    padding: const EdgeInsets.symmetric(horizontal: 18),
+                    itemBuilder: stepBox,
                   ),
                   sizedBoxSpace,
                 ],
               ),
             )));
+  }
+
+  Widget stepBox(context, index) {
+    bool isCheckbox = _stepsType[index] == StepTypes.checkbox;
+    bool isProcess = _stepsType[index] == StepTypes.process;
+    bool isNextStep = index == _stepsProgress;
+    return (_stepsType[index] == StepTypes.button)
+        // StepTypes.button
+        ? Column(
+            children: _stepsText.length - 1 != index
+                ? [] // hide button when it's not the last step
+                : [
+                    const SizedBox(height: 24),
+                    Center(
+                      child: ElevatedButton(
+                        onPressed: isNextStep
+                            ? () {
+                                setState(() {
+                                  _stepsProgress += 1;
+                                });
+                                handleSubmitted();
+                              }
+                            : null, // disabled until all steps are done
+                        child: Text(_stepsText[index].trim()),
+                      ),
+                    ),
+                  ],
+          )
+        // StepTypes.checkbox OR StepTypes.process
+        : Row(
+            crossAxisAlignment: CrossAxisAlignment.start, // top-align
+            children: [
+              // checkbox
+              SizedBox(
+                width: 52, // 3 + 26 + 23
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start, // top-align
+                  children: [
+                    // SizedBox() sizes below mimic CheckboxListTile() with:
+                    //   controlAffinity: ListTileControlAffinity.leading,
+                    //   contentPadding: EdgeInsets.zero, dense: true,
+                    const SizedBox(height: 52, width: 3),
+                    SizedBox(
+                      height: 26,
+                      width: 26,
+                      child: isCheckbox
+                          ? Checkbox(
+                              value: _stepsProgress > index,
+                              onChanged: (newValue) {
+                                if (index < (_stepsProgress - 1)) {
+                                  if (_stepsType[_stepsType.length - 1] !=
+                                      StepTypes.process) {
+                                    // skip snackbar when a process is pending
+                                    showInSnackBar(
+                                        "Uncheck items at the bottom of the "
+                                        "list first.");
+                                  }
+                                  return;
+                                } else if (index > _stepsProgress) {
+                                  showInSnackBar(
+                                      "You must check items in order from "
+                                      "top to bottom.");
+                                  return;
+                                } else {
+                                  setState(() {
+                                    _stepsProgress =
+                                        index + (newValue == true ? 1 : 0);
+                                  });
+                                }
+                              },
+                            )
+                          : (isProcess && !isNextStep)
+                              ? Checkbox(
+                                  value: _stepsProgress > index ? true : null,
+                                  tristate: true,
+                                  onChanged: null,
+                                )
+                              : Transform.scale(
+                                  scale: 1.4,
+                                  child: const CircularProgressIndicator(
+                                    strokeWidth: 4,
+                                  ),
+                                ),
+                    ),
+                  ],
+                ),
+              ),
+              // title and text
+              Expanded(
+                  child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start, // left-align text
+                children: [
+                  textMd(context, _stepsText[index]),
+                  if (isNextStep && isProcess)
+                    Row(
+                      mainAxisAlignment:
+                          MainAxisAlignment.end, // right-align button
+                      children: [
+                        TextButton(
+                            onPressed: () {}, child: const Text("CANCEL"))
+                      ],
+                    ),
+                  const SizedBox(height: 16), // spacing between steps
+                ],
+              )),
+            ],
+          );
+  }
+
+  void addStep({
+    required String text,
+    required StepTypes type,
+    Stream<String>? messages,
+  }) {
+    setState(() {
+      if (_stepsType.length > 1 &&
+          _stepsType[_stepsType.length - 1] == StepTypes.process) {
+        _stepsProgress += 1; // only the last step can be a pending process
+      }
+      _stepsText.add(text);
+      _stepsType.add(type);
+      _activeStepMessages = messages;
+    });
   }
 }
