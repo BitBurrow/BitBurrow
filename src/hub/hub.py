@@ -10,9 +10,10 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import textwrap
 from typing import Optional, Final, final
 from unittest import result
-from fastapi import FastAPI, Form, responses, Depends, Request, Response, HTTPException
+from fastapi import FastAPI, Form, responses, Request, Response, HTTPException, status
 import slowapi  # https://slowapi.readthedocs.io/en/latest/
 from sqlmodel import Field, Session, SQLModel, create_engine, select, sql
 import sqlalchemy
@@ -130,6 +131,7 @@ class Axis(SQLModel, table=True):
 #     → log(4000^6)÷log(2) ≈ 72 bits of entropy
 # Mullvad 16-digit account number
 #     → log(10^16)÷log(2) ≈ 53 bits of entropy
+# Plus Codes use base 20 ('23456789CFGHJMPQRVWX'): https://en.wikipedia.org/wiki/Open_Location_Code
 base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
 
 
@@ -151,13 +153,13 @@ class Account(SQLModel, table=True):
     created_at: DateTime = Field(
         sa_column=sqlalchemy.Column(
             sqlalchemy.DateTime(timezone=True),
-            default=DateTime.utcnow,
+            default=DateTime.utcnow,  # FIXME: don't use utcnow() https://news.ycombinator.com/item?id=33138302
         )
     )
     valid_until: DateTime = Field(
         sa_column=sqlalchemy.Column(
             sqlalchemy.DateTime(timezone=True),
-            default=lambda: DateTime.utcnow() + TimeDelta(days=3650),
+            default=lambda: DateTime.utcnow() + TimeDelta(days=3650),  # FIXME: don't use utcnow() https://news.ycombinator.com/item?id=33138302
         )
     )
     kind: Account_kind
