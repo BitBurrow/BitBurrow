@@ -136,7 +136,7 @@ base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1
 
 
 class Account_kind(enum.Enum):
-    ROOT = 0  # can create, edit, and delete coupon codes; can edit and delete managers and users
+    ADMIN = 0  # can create, edit, and delete coupon codes; can edit and delete managers and users
     COUPON = 100  # can create managers (that's all)
     MANAGER = 200  # can set up, edit, and delete servers and clients
     USER = 300  # can set up, edit, and delete clients for a specific netif_id on 1 server
@@ -162,23 +162,24 @@ class Account(SQLModel, table=True):
             default=lambda: DateTime.utcnow() + TimeDelta(days=3650),  # FIXME: don't use utcnow() https://news.ycombinator.com/item?id=33138302
         )
     )
-    kind: Account_kind
-    netif_id: int = Field(foreign_key='netif.id')  # used only if kind == USER
+    # kind: Account_kind
+    # netif_id: int = Field(foreign_key='netif.id')  # used only if kind == USER
     comment: str = ""
 
     @staticmethod
-    def partition_login_key(k):  # display version, e.g. 'L7V-2BCM-M3P-RKVF2'
+    def dress_login_key(k):  # display version, e.g. 'L7V-2BCM-M3P-RKVF2'
         assert len(k) == 15
         return f'{k[0:3]}-{k[3:7]}-{k[7:10]}-{k[10:15]}'
 
     @staticmethod
-    def validate_login_key(a):
-        if len(a) != 15:
+    def validate_login_key(display_key):
+        key = re.sub(r'[.:_ -]', '', display_key)  # allow these 5 separators
+        if len(key) != 15:
             raise HTTPException(status_code=422, detail="Login key length must be 15")
-        if not set(base28_digits).issuperset(a):
+        if not set(base28_digits).issuperset(key):
             raise HTTPException(status_code=422, detail="Invalid login key characters")
         with Session(engine) as session:
-            statement = select(Account).where(Account.login_key == a)
+            statement = select(Account).where(Account.login_key == key)
             result = session.exec(statement).one_or_none()
         if result is None:
             raise HTTPException(status_code=422, detail="Login key not found")
@@ -221,7 +222,7 @@ reserved_ips = 38
 
 class Netif(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
-    server_id: int = Field(index=True, foreign_key='server.id')  # server this netif is on
+    # server_id: int = Field(index=True, foreign_key='server.id')  # server this netif is on
     ipv4_base: str
     ipv6_base: str
     privkey: str
@@ -460,7 +461,7 @@ def mkdir_r(path):  # like Linux `mkdir --parents`
 
 
 def db_pathname(create_dir=False):
-    config_dir = platformdirs.user_config_dir(app_name())
+    config_dir = platformdirs.user_config_dir('bitburrow')
     if create_dir:
         mkdir_r(config_dir)
     return os.path.join(config_dir, f'data.sqlite')
@@ -506,6 +507,64 @@ def on_shutdown():
 ###
 ### web API
 ###
+
+
+@app.post('/v1/accounts/{login_key}/accounts')
+# @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
+def create_account(login_key: str):
+    return responses.JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={'login_key': Account.dress_login_key('NWXL8GNXK33XXXX')},
+    )
+    account = Account.validate_login_key(login_key)
+    with Session(engine) as session:
+        statement = select(Client).where(Client.account_id == account.id)
+        results = session.exec(statement)
+        return [c.pubkey for c in results]
+
+
+@app.get('/v1/accounts/{login_key}/servers')
+# @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
+def list_servers(login_key: str):
+    return responses.JSONResponse(
+        status_code=status.HTTP_200_OK,
+        # status_code=status.HTTP_403_FORBIDDEN,
+        content={'servers': [10, 11, 20, 21]},
+    )
+    account = Account.validate_login_key(login_key)
+    with Session(engine) as session:
+        statement = select(Client).where(Client.account_id == account.id)
+        results = session.exec(statement)
+        return [c.pubkey for c in results]
+
+
+@app.post('/v1/accounts/{login_key}/servers')
+# @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
+def new_server(login_key: str):
+    private_key = '''
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+    QyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQAAAJjcm6bT3Jum
+    0wAAAAtzc2gtZWQyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQ
+    AAAEA0CiK1zYGSEqZc7dVLktjvVklM6aiWb76/t3r30zNxiTPxJ6LCG38uhr3FT0FsLqS6
+    bKQ4rapQuQZzcF0nAJ4BAAAAEHVidW50dUBmbHV0dGVyMTgBAgMEBQ==
+    -----END OPENSSH PRIVATE KEY-----
+    ''';
+    return responses.JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={
+            'ssh_user': 'ubuntu',
+            'ssh_key': textwrap.dedent(private_key),
+            'ssh_domain': 'localhost',
+            'ssh_port': 22,
+            'forward_from_port': 9001,
+        },
+    )
+    account = Account.validate_login_key(login_key)
+    with Session(engine) as session:
+        statement = select(Client).where(Client.account_id == account.id)
+        results = session.exec(statement)
+        return [c.pubkey for c in results]
 
 
 @app.get('/pubkeys/{login_key}')
@@ -573,7 +632,7 @@ def entry_point():  # called from setup.cfg
         uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
             f'{app_name()}:app',
             host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
-            port=8000,
+            port=8443,
             # workers=3,  # FIXME
             workers=1,
             log_level='debug'
