@@ -154,11 +154,10 @@ class NewServerFormState extends ParentFormState {
 
   Future bbProxy() async {
     _guiMessages = async.StreamController<String>();
-    addStep(text: "## Sign in to the router.", type: StepTypes.process);
     var error = "";
     try {
       if (_sshLogin != null) {
-        await sshConnect(
+        sshConnect(
           sshUser: _sshLogin!['ssh_user'],
           sshKey: _sshLogin!['ssh_key'],
           sshDomain: _sshLogin!['ssh_domain'],
@@ -172,9 +171,6 @@ class NewServerFormState extends ParentFormState {
       error = err.toString();
     }
     var displayError = "";
-    if (error.isEmpty) {
-      addStep(text: "## Connect router to hub.", type: StepTypes.process);
-    }
   }
 
   Future sshConnect({
