@@ -1,16 +1,19 @@
-from asyncio import subprocess
+import asyncio
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import enum
 import ipaddress
+import json
 import logging
 import os
 import platformdirs
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 from typing import Optional, Final, final
 from unittest import result
 from fastapi import FastAPI, Form, responses, Request, Response, HTTPException, status
@@ -153,13 +156,15 @@ class Account(SQLModel, table=True):
     created_at: DateTime = Field(
         sa_column=sqlalchemy.Column(
             sqlalchemy.DateTime(timezone=True),
-            default=DateTime.utcnow,  # FIXME: don't use utcnow() https://news.ycombinator.com/item?id=33138302
+            # FIXME: don't use utcnow() https://news.ycombinator.com/item?id=33138302
+            default=DateTime.utcnow,
         )
     )
     valid_until: DateTime = Field(
         sa_column=sqlalchemy.Column(
             sqlalchemy.DateTime(timezone=True),
-            default=lambda: DateTime.utcnow() + TimeDelta(days=3650),  # FIXME: don't use utcnow() https://news.ycombinator.com/item?id=33138302
+            # FIXME: don't use utcnow() https://news.ycombinator.com/item?id=33138302
+            default=lambda: DateTime.utcnow() + TimeDelta(days=3650),
         )
     )
     # kind: Account_kind
@@ -506,6 +511,66 @@ def on_shutdown():
 
 
 ###
+### user-facing instructions
+###
+
+user_steps = [
+    {
+        'type': 'checkbox',
+        'text': """
+## Connect your new router to the internet.
+
+* Make a note of the existing set-up in case there is a problem setting 
+  up the new router.
+* If possible, install the new router *in place of*  the existing one. 
+  This will be more reliable in the long run, but it is generally only 
+  possible if the existing set-up consists of a modem (DSL, ADSL, cable, 
+  fiber, etc.) and a router, connected by an Ethernet cable. Disconnect 
+  the Ethernet cable from the existing router and connect it to the WAN 
+  jack on your new router. The WAN jack is sometimes labeled "Ethernet 
+  In", "Internet", with a globe symbol, or is unlabeled but uniquely 
+  colored. [More details.](/one-router-details)
+* If you do not have the set-up described above, or you are unsure, 
+  then use the Ethernet cable that came with your new router. Connect 
+  one end to any of the unused LAN jacks on the existing router. 
+  Connect the other end to the WAN jack on your new router. The LAN jacks 
+  are sometimes labeled "Ethernet" or "Ethernet out" or simply numbered 
+  1, 2, etc. The WAN jack is sometimes labeled "Ethernet In", 
+  "Internet", with a globe symbol, or is unlabeled but uniquely colored. 
+  [More details.](/two-routers-details)
+""",
+    },
+    {
+        'type': 'checkbox',
+        'text': """
+## Plug your new router into a wall socket.
+
+* Make sure at least one light turns on.
+* It may take a few minutes for the WiFi to begin working.
+""",
+    },
+    {
+        'type': 'checkbox',
+        'text': """
+## Connect to the new router via WiFi.
+* It is sometimes necessary to turn off mobile data (internet via 
+  your cellular provider).
+* Enable WiFi if needed and scan for available WiFi networks.
+* For the GL-AX1800, the WiFi name will be `GL-AX1800-xxx` or 
+  `GL-AX1800-xxx-5G` and the WiFi password written on the bottom of 
+  the router ("WiFi Key:").
+""",
+    },
+    {
+        'type': 'button',
+        'text': """
+CONFIGURE ROUTER
+""",
+    },
+]
+
+
+###
 ### web API
 ###
 
@@ -539,9 +604,25 @@ def list_servers(login_key: str):
         return [c.pubkey for c in results]
 
 
+class ServerConfig:
+    def send_command_to_client(json_string):
+        # esc_string = json_string.replace('"', r'\"').replace('\n', '\\r')
+        esc_string = json_string.replace(r'\"', r'\\"').replace(r'"', r'\"')
+        run_external(['bash', '-c', 'echo "' + esc_string + '" >/dev/tcp/localhost/9001'])
+
+    async def send_user_steps_text():
+        time.sleep(3)  # FIXME: sleep() and `bash -c` are proof-of-concept only!
+        for step in user_steps:
+            type = step['type']
+            text = step['text']
+            time.sleep(1)
+            ServerConfig.send_command_to_client(json.dumps({f'add_{type}_step': {'text': text}}))
+
+
 @app.post('/v1/accounts/{login_key}/servers')
 # @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
-def new_server(login_key: str):
+async def new_server(login_key: str):
+    asyncio.create_task(ServerConfig.send_user_steps_text())
     private_key = '''
     -----BEGIN OPENSSH PRIVATE KEY-----
     b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
@@ -550,7 +631,7 @@ def new_server(login_key: str):
     AAAEA0CiK1zYGSEqZc7dVLktjvVklM6aiWb76/t3r30zNxiTPxJ6LCG38uhr3FT0FsLqS6
     bKQ4rapQuQZzcF0nAJ4BAAAAEHVidW50dUBmbHV0dGVyMTgBAgMEBQ==
     -----END OPENSSH PRIVATE KEY-----
-    ''';
+    '''
     return responses.JSONResponse(
         status_code=status.HTTP_201_CREATED,
         content={

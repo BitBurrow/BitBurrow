@@ -10,49 +10,6 @@ import 'dart:convert' as convert;
 import 'main.dart';
 import 'json_chunks.dart';
 
-const List<String> initialStepsText = [
-  """
-C## Connect your new router to the internet.
-
-* Make a note of the existing set-up in case there is a problem setting 
-  up the new router.
-* If possible, install the new router *in place of*  the existing one. 
-  This will be more reliable in the long run, but it is generally only 
-  possible if the existing set-up consists of a modem (DSL, ADSL, cable, 
-  fiber, etc.) and a router, connected by an Ethernet cable. Disconnect 
-  the Ethernet cable from the existing router and connect it to the WAN 
-  jack on your new router. The WAN jack is sometimes labeled "Ethernet 
-  In", "Internet", with a globe symbol, or is unlabeled but uniquely 
-  colored. [More details.](/one-router-details)
-* If you do not have the set-up described above, or you are unsure, 
-  then use the Ethernet cable that came with your new router. Connect 
-  one end to any of the unused LAN jacks on the existing router. 
-  Connect the other end to the WAN jack on your new router. The LAN jacks 
-  are sometimes labeled "Ethernet" or "Ethernet out" or simply numbered 
-  1, 2, etc. The WAN jack is sometimes labeled "Ethernet In", 
-  "Internet", with a globe symbol, or is unlabeled but uniquely colored. 
-  [More details.](/two-routers-details)
-""",
-  """
-C## Plug your new router into a wall socket.
-
-* Make sure at least one light turns on.
-* It may take a few minutes for the WiFi to begin working.
-""",
-  """
-C## Connect to the new router via WiFi.
-* It is sometimes necessary to turn off mobile data (internet via 
-  your cellular provider).
-* Enable WiFi if needed and scan for available WiFi networks.
-* For the GL-AX1800, the WiFi name will be `GL-AX1800-xxx` or 
-  `GL-AX1800-xxx-5G` and the WiFi password written on the bottom of 
-  the router ("WiFi Key:").
-""",
-  """
-BCONFIGURE ROUTER
-""",
-];
-
 class NewServerScreen extends StatelessWidget {
   const NewServerScreen({Key? key}) : super(key: key);
 
@@ -91,13 +48,7 @@ class NewServerFormState extends ParentFormState {
     super.initState();
     // add initial steps
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      for (var s in initialStepsText) {
-        addStep(
-            text: s.substring(1),
-            type: s[0] == 'C'
-                ? StepTypes.checkbox
-                : (s[0] == 'P' ? StepTypes.process : StepTypes.button));
-      }
+      handleSubmitted();
     });
   }
 
@@ -304,7 +255,16 @@ class NewServerFormState extends ParentFormState {
             print("hub: ${value['text']}");
           } else if (key == 'show_md') {
             // display Markdown in the user dialog
-            _guiMessages.sink.add(value['markdown']);
+            _guiMessages.sink.add(value['text']);
+          } else if (key == 'add_checkbox_step') {
+            // add a checkbox step to the list of steps displayed for the user
+            addStep(text: value['text'], type: StepTypes.checkbox);
+          } else if (key == 'add_process_step') {
+            // ... or a process step
+            addStep(text: value['text'], type: StepTypes.process);
+          } else if (key == 'add_button_step') {
+            // ... or a button
+            addStep(text: value['text'], type: StepTypes.button);
           } else if (key == 'echo') {
             // echo text back to hub
             hubWrite({"hub": value['text']}, connection);
@@ -427,7 +387,6 @@ class NewServerFormState extends ParentFormState {
                                 setState(() {
                                   _stepsProgress += 1;
                                 });
-                                handleSubmitted();
                               }
                             : null, // disabled until all steps are done
                         child: Text(_stepsText[index].trim()),
