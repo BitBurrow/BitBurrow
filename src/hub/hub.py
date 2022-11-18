@@ -609,6 +609,7 @@ class ServerConfig:
         # esc_string = json_string.replace('"', r'\"').replace('\n', '\\r')
         esc_string = json_string.replace(r'\"', r'\\"').replace(r'"', r'\"')
         run_external(['bash', '-c', 'echo "' + esc_string + '" >/dev/tcp/localhost/9001'])
+        # FIXME: try TCP socket code from https://stackoverflow.com/questions/44196522/how-to-handle-tcp-client-socket-auto-reconnect-in-python-asyncio
 
     async def send_user_steps_text():
         time.sleep(3)  # FIXME: sleep() and `bash -c` are proof-of-concept only!
