@@ -98,7 +98,6 @@ class NewServerFormState extends ParentFormState {
     super.initState();
     // add initial user steps, sent from hub
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      handleSubmitted();
       _hubMessages.stream.listen(
         (message) => hubCommander(message),
       );
@@ -109,36 +108,18 @@ class NewServerFormState extends ParentFormState {
   String get restorationId => 'new_server_form';
 
   @override
-  Future<http.Response?> callApi() => http.post(Uri.http(
-        '${loginState.hub}:8443',
-        '/v1/accounts/${loginState.loginKey}/servers',
-      ));
+  Future<http.Response?> callApi() => Future<http.Response?>.value(null);
 
   @override
-  String validateStatusCode(status) {
-    if (status == 201) return "";
-    if (status == 403) return "Invalid login key. Please sign in again.";
-    return "The hub responseded with an invalid status code. "
-        "Make sure you typed the hub correctly, try again later, or "
-        "contact the hub administrator.";
+  String validateStatusCode(status) => "Not implemented.";
+
+  @override
+  String processApiResponse(response) => "Not implemented.";
+
+  @override
+  nextScreen() {
+    return;
   }
-
-  @override
-  String processApiResponse(response) {
-    final jsonResponse =
-        convert.jsonDecode(response.body) as Map<String, dynamic>;
-    String? sshKey = jsonResponse['ssh_key'];
-    int? sshPort = jsonResponse['ssh_port'];
-    if (sshKey == null || sshPort == null) {
-      return "invalid server response"; // error
-    } else {
-      _sshLogin = jsonResponse;
-      return "";
-    }
-  }
-
-  @override
-  nextScreen() => bbProxy();
 
   @override
   String getHubValue() => loginState.hub;
