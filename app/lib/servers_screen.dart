@@ -42,65 +42,8 @@ class ServersScreen extends StatelessWidget {
                 child: ListView.builder(
                   itemCount: loginState.servers.length,
                   padding: const EdgeInsets.symmetric(horizontal: 18),
-                  itemBuilder: (context, index) => Card(
-                      elevation: 7,
-                      margin: const EdgeInsets.symmetric(
-                          vertical: 8, horizontal: 16),
-                      color: Theme.of(context).colorScheme.secondary,
-                      child: Column(
-                        children: [
-                          InkWell(
-                              onTap: () {},
-                              child: Padding(
-                                padding: const EdgeInsets.all(8.0),
-                                child: ListTile(
-                                  leading: SvgPicture.asset(
-                                    'images/server.svg',
-                                    width: 42,
-                                  ),
-                                  title: Text(
-                                    "VPN server ${loginState.servers[index]}",
-                                    style: const TextStyle(
-                                      fontSize: 20,
-                                      fontWeight: FontWeight.bold,
-                                      letterSpacing: 1.2,
-                                    ),
-                                  ),
-                                  subtitle: Row(
-                                    children: [
-                                      Flexible(
-                                        flex: 2,
-                                        child: Text(
-                                          "19 5 99",
-                                          style: const TextStyle(
-                                            fontSize: 13,
-                                          ),
-                                          overflow: TextOverflow.visible,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 4),
-                                      if (true) const Text('|'),
-                                      const SizedBox(width: 4),
-                                      if (true)
-                                        Flexible(
-                                          child: Text(
-                                            "231032890",
-                                            style:
-                                                const TextStyle(fontSize: 13),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                  trailing: Icon(
-                                    Icons.arrow_forward_ios_rounded,
-                                    color:
-                                        Theme.of(context).colorScheme.primary,
-                                  ),
-                                ),
-                              ))
-                        ],
-                      )),
+                  itemBuilder: (context, index) =>
+                      vpnServerCard(context, index),
                 ),
               ),
             ),
@@ -116,5 +59,64 @@ class ServersScreen extends StatelessWidget {
         child: const Icon(Icons.add),
       ),
     );
+  }
+
+  Card vpnServerCard(BuildContext context, int index) {
+    return Card(
+        elevation: 7,
+        margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+        color: Theme.of(context).colorScheme.secondary,
+        child: Column(
+          children: [
+            InkWell(
+                onTap: () {},
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: ListTile(
+                    leading: SvgPicture.asset(
+                      'images/server.svg',
+                      width: 42,
+                    ),
+                    title: Text(
+                      "VPN server ${loginState.servers[index]}",
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                    subtitle: Row(
+                      children: [
+                        Flexible(
+                          flex: 2,
+                          child: Text(
+                            "19 5 99",
+                            style: const TextStyle(
+                              fontSize: 13,
+                            ),
+                            overflow: TextOverflow.visible,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        if (true) const Text('|'),
+                        const SizedBox(width: 4),
+                        if (true)
+                          Flexible(
+                            child: Text(
+                              "231032890",
+                              style: const TextStyle(fontSize: 13),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                    ),
+                    trailing: Icon(
+                      Icons.arrow_forward_ios_rounded,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
+                ))
+          ],
+        ));
   }
 }
