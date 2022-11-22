@@ -8,7 +8,6 @@ import 'dart:io' as io;
 import 'dart:async' as async;
 import 'dart:convert' as convert;
 import 'main.dart';
-import 'json_chunks.dart';
 
 class NewServerScreen extends StatelessWidget {
   const NewServerScreen({Key? key}) : super(key: key);
@@ -33,8 +32,59 @@ enum StepTypes {
   button, // e.g. "CONFIGURE ROUTER"
 }
 
+class WebSocketMessenger {
+  io.WebSocket? _ws;
+  final async.Completer _connected = async.Completer();
+  final _inbound = async.StreamController<String>();
+
+  WebSocketMessenger() {
+    final wsPath = '/v1/accounts/${loginState.loginKey}/servers_ws';
+    final url = 'ws://${loginState.hub}:8443$wsPath';
+    io.WebSocket.connect(url).then((io.WebSocket socket) async {
+      _ws = socket;
+      if (_ws == null) {
+        print("B10647 WebSocket can't connect");
+        return;
+      }
+      _connected.complete('connected');
+      _ws!.listen(
+        (message) {
+          _inbound.sink.add(message);
+        },
+        onError: (err) {
+          print("B4745 WebSocket: $err");
+        },
+        onDone: () {
+          print('connection to server closed');
+        },
+      );
+    });
+  }
+
+  Future<void> add(message) async {
+    await _connected.future; // wait until connected
+    if (_ws == null) {
+      print("B10648 WebSocket can't connect");
+    } else {
+      _ws!.add(message);
+    }
+  }
+
+  Future<void> close(message) async {
+    await _connected.future; // wait until connected
+    if (_ws == null) {
+      print("B10649 WebSocket can't connect");
+    } else {
+      _ws!.close;
+    }
+  }
+
+  Stream<String> get stream => _inbound.stream;
+}
+
 class NewServerFormState extends ParentFormState {
   Map<String, dynamic>? _sshLogin;
+  final _hubMessages = WebSocketMessenger();
   async.Completer _hubCommanderFinished = async.Completer();
   final List<Future> _forwardsList = [];
   var _guiMessages = async.StreamController<String>();
@@ -46,9 +96,12 @@ class NewServerFormState extends ParentFormState {
   @override
   void initState() {
     super.initState();
-    // add initial steps
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // add initial user steps, sent from hub
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       handleSubmitted();
+      _hubMessages.stream.listen(
+        (message) => hubCommander(message),
+      );
     });
   }
 
@@ -144,10 +197,10 @@ class NewServerFormState extends ParentFormState {
           identities: ssh.SSHKeyPair.fromPem(sshKey),
         );
         await client.authenticated;
-        _forwardsList.add(forwardCommandChannel(
-          client: client,
-          fromPort: forwardFromPort,
-        ));
+        // _forwardsList.add(forwardCommandChannel(
+        //   client: client,
+        //   fromPort: forwardFromPort,
+        // ));
         // await until hub sends 'exit' command (or an error occurrs)
         error = await _hubCommanderFinished.future;
         client.close();
@@ -175,39 +228,6 @@ class NewServerFormState extends ParentFormState {
         }
       }
       print("B08226 retrying ssh connection; last error was: $error");
-    }
-  }
-
-  Future<void> forwardCommandChannel({
-    required ssh.SSHClient client,
-    required int fromPort,
-  }) async {
-    final forward = await client.forwardRemote(port: fromPort);
-    if (forward == null) {
-      print("B35541 can't forward from_port $fromPort");
-      return;
-    }
-    await for (final connection in forward.connections) {
-      try {
-        // hubCommander connection from hub
-        final jsonStrings = JsonChunks(connection.stream);
-        // breaks ordering, esp. 'sleep': jsonStrings.stream.listen(...)
-        await for (final json in jsonStrings.stream) {
-          try {
-            await hubCommander(json, client, connection);
-          } catch (err) {
-            print("B17234: $err");
-            connection.sink.close();
-          }
-        }
-        if (!_hubCommanderFinished.isCompleted) {
-          print("B55482 connection closed unexpectedly");
-          _hubCommanderFinished.complete("connection closed unexpectedly");
-        }
-        connection.sink.close();
-      } catch (err) {
-        print("B58184 command channel failed: $err");
-      }
     }
   }
 
@@ -241,7 +261,7 @@ class NewServerFormState extends ParentFormState {
     await Future.wait(_forwardsList);
   }
 
-  Future<void> hubCommander(String json, client, connection) async {
+  Future<void> hubCommander(String json) async {
     // process one command from the hub
     try {
       var command = convert.jsonDecode(json);
@@ -267,21 +287,21 @@ class NewServerFormState extends ParentFormState {
             addStep(text: value['text'], type: StepTypes.button);
           } else if (key == 'echo') {
             // echo text back to hub
-            hubWrite({"hub": value['text']}, connection);
+            hubWrite({"hub": value['text']});
           } else if (key == 'sleep') {
             // delay processing of subsequent commands
             await Future.delayed(Duration(seconds: value['seconds']), () {});
-          } else if (key == 'ssh_forward') {
-            // port-forward port from hub to router over ssh
-            forwardToRouter(
-              client: client,
-              fromPort: value['from_port'],
-              toAddress: value['to_address'],
-              toPort: value['to_port'],
-            );
+            // } else if (key == 'ssh_forward') {
+            //   // port-forward port from hub to router over ssh
+            //   forwardToRouter(
+            //     client: client,
+            //     fromPort: value['from_port'],
+            //     toAddress: value['to_address'],
+            //     toPort: value['to_port'],
+            //   );
           } else if (key == 'get_if_list') {
             // return list of network interfaces and IP addresses
-            hubWrite(await ifList(), connection);
+            hubWrite(await ifList());
           } else if (key == 'exit') {
             // done with commands--close TCP connection
             _hubCommanderFinished.complete("");
@@ -298,11 +318,11 @@ class NewServerFormState extends ParentFormState {
     }
   }
 
-  void hubWrite(Map<String, dynamic> data, connection) {
+  void hubWrite(Map<String, dynamic> data) {
     // everything sent back to the hub is JSON
     var json = convert.jsonEncode(data);
     var bytes = convert.utf8.encode(json);
-    connection.sink.add(bytes); // .write() doesn't exist
+    _hubMessages.add(bytes);
   }
 
   static Future<Map<String, dynamic>> ifList() async {

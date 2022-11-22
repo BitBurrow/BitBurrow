@@ -8,15 +8,13 @@ import os
 import platformdirs
 import re
 import secrets
-import socket
 import subprocess
 import sys
 import tempfile
 import textwrap
-import time
 from typing import Optional, Final, final
 from unittest import result
-from fastapi import FastAPI, Form, responses, Request, Response, HTTPException, status
+from fastapi import FastAPI, Form, responses, Request, HTTPException, status, WebSocket
 import slowapi  # https://slowapi.readthedocs.io/en/latest/
 from sqlmodel import Field, Session, SQLModel, create_engine, select, sql
 import sqlalchemy
@@ -577,7 +575,7 @@ CONFIGURE ROUTER
 
 @app.post('/v1/accounts/{login_key}/accounts')
 # @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
-def create_account(login_key: str):
+async def create_account(login_key: str):
     return responses.JSONResponse(
         status_code=status.HTTP_201_CREATED,
         content={'login_key': Account.dress_login_key('NWXL8GNXK33XXXX')},
@@ -591,7 +589,7 @@ def create_account(login_key: str):
 
 @app.get('/v1/accounts/{login_key}/servers')
 # @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
-def list_servers(login_key: str):
+async def list_servers(login_key: str):
     return responses.JSONResponse(
         status_code=status.HTTP_200_OK,
         # status_code=status.HTTP_403_FORBIDDEN,
@@ -605,25 +603,22 @@ def list_servers(login_key: str):
 
 
 class ServerConfig:
-    def send_command_to_client(json_string):
-        # esc_string = json_string.replace('"', r'\"').replace('\n', '\\r')
-        esc_string = json_string.replace(r'\"', r'\\"').replace(r'"', r'\"')
-        run_external(['bash', '-c', 'echo "' + esc_string + '" >/dev/tcp/localhost/9001'])
-        # FIXME: try TCP socket code from https://stackoverflow.com/questions/44196522/how-to-handle-tcp-client-socket-auto-reconnect-in-python-asyncio
+    async def send_command_to_client(json_string, ws):
+        await ws.send_text(json_string)
+        # response = await ws.receive_text()
 
-    async def send_user_steps_text():
-        time.sleep(3)  # FIXME: sleep() and `bash -c` are proof-of-concept only!
+    async def send_user_steps_text(ws):
         for step in user_steps:
             type = step['type']
             text = step['text']
-            time.sleep(1)
-            ServerConfig.send_command_to_client(json.dumps({f'add_{type}_step': {'text': text}}))
+            await ServerConfig.send_command_to_client(
+                json.dumps({f'add_{type}_step': {'text': text}}), ws
+            )
 
 
 @app.post('/v1/accounts/{login_key}/servers')
 # @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
 async def new_server(login_key: str):
-    asyncio.create_task(ServerConfig.send_user_steps_text())
     private_key = '''
     -----BEGIN OPENSSH PRIVATE KEY-----
     b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
@@ -650,9 +645,18 @@ async def new_server(login_key: str):
         return [c.pubkey for c in results]
 
 
+@app.websocket('/v1/accounts/{login_key}/servers_ws')
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    asyncio.create_task(ServerConfig.send_user_steps_text(websocket))
+    while True:  # FIXME: keep socket open in a prettier way
+        await asyncio.sleep(10)
+        print("sleeping 10 ...")
+
+
 @app.get('/pubkeys/{login_key}')
 # @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
-def get_pubkeys(login_key: str):
+async def get_pubkeys(login_key: str):
     account = Account.validate_login_key(login_key)
     with Session(engine) as session:
         statement = select(Client).where(Client.account_id == account.id)
@@ -662,7 +666,7 @@ def get_pubkeys(login_key: str):
 
 @app.post('/wg/', response_class=responses.PlainTextResponse)
 @limiter.limit('100/minute')  # FIXME: reduce to 10
-def new_client(request: Request, login_key: str = Form(...), pubkey: str = Form(...)):
+async def new_client(request: Request, login_key: str = Form(...), pubkey: str = Form(...)):
     account = Account.validate_login_key(login_key)
     with Session(engine) as session:
         account_client_count = session.query(Client).filter(Client.account_id == account.id).count()
@@ -690,7 +694,9 @@ def new_client(request: Request, login_key: str = Form(...), pubkey: str = Form(
 
 @app.post('/new_login_key/', response_class=responses.PlainTextResponse)
 @limiter.limit('100/minute')  # FIXME: reduce to 10
-def new_login_key(request: Request, master_login_key: str = Form(...), comment: str = Form(...)):
+async def new_login_key(
+    request: Request, master_login_key: str = Form(...), comment: str = Form(...)
+):
     master_account = Account.validate_login_key(master_login_key)
     if master_account.id != 1:
         raise HTTPException(status_code=422, detail="Master login key required")
@@ -704,7 +710,7 @@ def new_login_key(request: Request, master_login_key: str = Form(...), comment: 
 
 
 @app.get('/raise_error/')
-def error_test():
+async def error_test():
     raise HTTPException(status_code=404, detail="Test exception from /raise_error/")
 
 
@@ -718,7 +724,7 @@ def entry_point():  # called from setup.cfg
             port=8443,
             # workers=3,  # FIXME
             workers=1,
-            log_level='debug'
+            log_level='info'
             # FIXME: generate self-signed TLS cert based on IP address:
             #     mkdir -p ../.ssl/private ../.ssl/certs
             #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
