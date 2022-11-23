@@ -85,9 +85,9 @@ class WebSocketMessenger {
 class NewServerFormState extends ParentFormState {
   Map<String, dynamic>? _sshLogin;
   final _hubMessages = WebSocketMessenger();
-  async.Completer _hubCommanderFinished = async.Completer();
+  async.Completer _buttonPressed = async.Completer();
+  final async.Completer _hubCommanderFinished = async.Completer();
   final List<Future> _forwardsList = [];
-  var _guiMessages = async.StreamController<String>();
   final List<String> _stepsText = [];
   final List<StepTypes> _stepsType = [];
   int _stepsProgress = 0;
@@ -137,26 +137,25 @@ class NewServerFormState extends ParentFormState {
     loginState.loginKey = value;
   }
 
-  Future bbProxy() async {
-    _guiMessages = async.StreamController<String>();
-    var error = "";
-    try {
-      if (_sshLogin != null) {
-        sshConnect(
-          sshUser: _sshLogin!['ssh_user'],
-          sshKey: _sshLogin!['ssh_key'],
-          sshDomain: _sshLogin!['ssh_domain'],
-          sshPort: _sshLogin!['ssh_port'],
-          forwardFromPort: _sshLogin!['forward_from_port'],
-        );
-      } else {
-        error = "B12944 sshLogin is null";
-      }
-    } catch (err) {
-      error = err.toString();
-    }
-    var displayError = "";
-  }
+  // Future bbProxy() async {
+  //   var error = "";
+  //   try {
+  //     if (_sshLogin != null) {
+  //       sshConnect(
+  //         sshUser: _sshLogin!['ssh_user'],
+  //         sshKey: _sshLogin!['ssh_key'],
+  //         sshDomain: _sshLogin!['ssh_domain'],
+  //         sshPort: _sshLogin!['ssh_port'],
+  //         forwardFromPort: _sshLogin!['forward_from_port'],
+  //       );
+  //     } else {
+  //       error = "B12944 sshLogin is null";
+  //     }
+  //   } catch (err) {
+  //     error = err.toString();
+  //   }
+  //   var displayError = "";
+  // }
 
   Future sshConnect({
     sshUser,
@@ -170,7 +169,6 @@ class NewServerFormState extends ParentFormState {
     var error = "never assigned";
     while (true) {
       try {
-        _hubCommanderFinished = async.Completer();
         final socket = await ssh.SSHSocket.connect(sshDomain, sshPort);
         final client = ssh.SSHClient(
           socket,
@@ -244,19 +242,20 @@ class NewServerFormState extends ParentFormState {
 
   Future<void> hubCommander(String json) async {
     // process one command from the hub
+    var result = "okay";
     try {
       var command = convert.jsonDecode(json);
       // breaks ordering, esp. 'sleep': command.forEach((key, value) async {...}
+      var itemCount = 0;
       for (final e in command.entries) {
+        itemCount += 1;
+        assert(itemCount == 1);
         var key = e.key;
         var value = e.value;
         try {
           if (key == 'print') {
             // print text in app console
             print("hub: ${value['text']}");
-          } else if (key == 'show_md') {
-            // display Markdown in the user dialog
-            _guiMessages.sink.add(value['text']);
           } else if (key == 'add_checkbox_step') {
             // add a checkbox step to the list of steps displayed for the user
             addStep(text: value['text'], type: StepTypes.checkbox);
@@ -265,13 +264,25 @@ class NewServerFormState extends ParentFormState {
             addStep(text: value['text'], type: StepTypes.process);
           } else if (key == 'add_button_step') {
             // ... or a button
+            _buttonPressed = async.Completer(); // reset to unpressed state
             addStep(text: value['text'], type: StepTypes.button);
+            await _buttonPressed.future;
           } else if (key == 'echo') {
             // echo text back to hub
-            hubWrite({"hub": value['text']});
+            result = value['text'];
           } else if (key == 'sleep') {
             // delay processing of subsequent commands
             await Future.delayed(Duration(seconds: value['seconds']), () {});
+            // } else if (key == 'ssh_connect') {
+            //   // ssh from app to hub
+            //   FIXME: next line seems to return immediately AND not fail when it can't connect
+            //   await sshConnect(
+            //     sshUser: value['ssh_user'],
+            //     sshKey: value['ssh_key'],
+            //     sshDomain: value['ssh_domain'],
+            //     sshPort: value['ssh_port'],
+            //     forwardFromPort: value['forward_from_port'],
+            //   );
             // } else if (key == 'ssh_forward') {
             //   // port-forward port from hub to router over ssh
             //   forwardToRouter(
@@ -283,27 +294,28 @@ class NewServerFormState extends ParentFormState {
           } else if (key == 'get_if_list') {
             // return list of network interfaces and IP addresses
             hubWrite(await ifList());
+            return;
           } else if (key == 'exit') {
             // done with commands--close TCP connection
             _hubCommanderFinished.complete("");
           } else {
-            print("B19842 unknown command: $key");
+            result = "B19842 unknown command: $key";
           }
         } catch (err) {
-          print("B18332 illegal arguments ${json.trim()}: $err");
+          result = "B18332 illegal arguments ${json.trim()}: $err";
         }
       }
     } catch (err) {
-      print("B50129 illegal command ${json.trim()}: "
-          "${err.toString().replaceAll(RegExp(r'[\r\n]+'), ' ¶ ')}");
+      result = "B50129 illegal command ${json.trim()}: "
+          "${err.toString().replaceAll(RegExp(r'[\r\n]+'), ' ¶ ')}";
     }
+    if (result != "okay") print(result);
+    hubWrite({'result': result});
   }
 
   void hubWrite(Map<String, dynamic> data) {
-    // everything sent back to the hub is JSON
     var json = convert.jsonEncode(data);
-    var bytes = convert.utf8.encode(json);
-    _hubMessages.add(bytes);
+    _hubMessages.add(json);
   }
 
   static Future<Map<String, dynamic>> ifList() async {
@@ -387,6 +399,7 @@ class NewServerFormState extends ParentFormState {
                             ? () {
                                 setState(() {
                                   _stepsProgress += 1;
+                                  _buttonPressed.complete("pressed");
                                 });
                               }
                             : null, // disabled until all steps are done
@@ -482,7 +495,9 @@ class NewServerFormState extends ParentFormState {
     Stream<String>? messages,
   }) {
     setState(() {
-      if (_stepsType.length > 1 &&
+      // if prior step was a process, assume it is now complete (checkboxes
+      // ... and buttons rely on user input)
+      if (_stepsType.isNotEmpty &&
           _stepsType[_stepsType.length - 1] == StepTypes.process) {
         _stepsProgress += 1; // only the last step can be a pending process
       }

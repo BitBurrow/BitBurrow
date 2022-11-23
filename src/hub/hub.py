@@ -513,10 +513,7 @@ def on_shutdown():
 ###
 
 user_steps = [
-    {
-        'type': 'checkbox',
-        'text': """
-## Connect your new router to the internet.
+    """## Connect your new router to the internet.
 
 * Make a note of the existing set-up in case there is a problem setting 
   up the new router.
@@ -537,20 +534,12 @@ user_steps = [
   "Internet", with a globe symbol, or is unlabeled but uniquely colored. 
   [More details.](/two-routers-details)
 """,
-    },
-    {
-        'type': 'checkbox',
-        'text': """
-## Plug your new router into a wall socket.
+    """## Plug your new router into a wall socket.
 
 * Make sure at least one light turns on.
 * It may take a few minutes for the WiFi to begin working.
 """,
-    },
-    {
-        'type': 'checkbox',
-        'text': """
-## Connect to the new router via WiFi.
+    """## Connect to the new router via WiFi.
 * It is sometimes necessary to turn off mobile data (internet via 
   your cellular provider).
 * Enable WiFi if needed and scan for available WiFi networks.
@@ -558,13 +547,6 @@ user_steps = [
   `GL-AX1800-xxx-5G` and the WiFi password written on the bottom of 
   the router ("WiFi Key:").
 """,
-    },
-    {
-        'type': 'button',
-        'text': """
-CONFIGURE ROUTER
-""",
-    },
 ]
 
 
@@ -605,38 +587,75 @@ async def list_servers(login_key: str):
 class ServerConfig:
     async def send_command_to_client(json_string, ws):
         await ws.send_text(json_string)
-        # response = await ws.receive_text()
+        return await ws.receive_text()
 
-    async def send_user_steps_text(ws):
-        for step in user_steps:
-            type = step['type']
-            text = step['text']
-            await ServerConfig.send_command_to_client(
-                json.dumps({f'add_{type}_step': {'text': text}}), ws
+    async def config_steps(ws):
+        # user connects router
+        for text in user_steps:
+            reply = await ServerConfig.send_command_to_client(
+                json.dumps({f'add_checkbox_step': {'text': text}}), ws
             )
+            print(f">>>>>>>>>>>>>>> checkbox reply: {reply}")
+        # CONFIGURE ROUTER button
+        reply = await ServerConfig.send_command_to_client(
+            json.dumps({f'add_button_step': {'text': "CONFIGURE ROUTER"}}), ws
+        )
+        print(f">>>>>>>>>>>>>>> button reply: {reply}")
+        # automated step: ssh from app to hub
+        reply = await ServerConfig.send_command_to_client(
+            json.dumps({f'add_process_step': {'text': "## Open channel to hub."}}), ws
+        )
+        print(f">>>>>>>>>>>>>>> process reply: {reply}")
+        # automated step: ssh
+        private_key = '''
+        -----BEGIN OPENSSH PRIVATE KEY-----
+        b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+        QyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQAAAJjcm6bT3Jum
+        0wAAAAtzc2gtZWQyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQ
+        AAAEA0CiK1zYGSEqZc7dVLktjvVklM6aiWb76/t3r30zNxiTPxJ6LCG38uhr3FT0FsLqS6
+        bKQ4rapQuQZzcF0nAJ4BAAAAEHVidW50dUBmbHV0dGVyMTgBAgMEBQ==
+        -----END OPENSSH PRIVATE KEY-----
+        '''
+        reply = await ServerConfig.send_command_to_client(
+            json.dumps(
+                {
+                    f'ssh_connect': {
+                        'ssh_user': 'ubuntu',
+                        'ssh_key': textwrap.dedent(private_key),
+                        'ssh_domain': 'localhost',
+                        'ssh_port': 22,
+                        'forward_from_port': 9001,
+                    }
+                }
+            ),
+            ws,
+        )
+        print(f">>>>>>>>>>>>>>> ssh reply: {reply}")
+        # automated step: wait 2 seconds
+        reply = await ServerConfig.send_command_to_client(
+            json.dumps({f'add_process_step': {'text': "## Wait two seconds."}}), ws
+        )
+        print(f">>>>>>>>>>>>>>> 2-second reply: {reply}")
+        await asyncio.sleep(2)
+        # automated step: wait 10 seconds
+        reply = await ServerConfig.send_command_to_client(
+            json.dumps({f'add_process_step': {'text': "## Wait ten seconds."}}), ws
+        )
+        print(f">>>>>>>>>>>>>>> 10-second reply: {reply}")
+        await asyncio.sleep(10)
+        # CONTINUE button
+        reply = await ServerConfig.send_command_to_client(
+            json.dumps({f'add_button_step': {'text': "CONTINUE"}}), ws
+        )
+        print(f">>>>>>>>>>>>>>> button reply: {reply}")
 
 
 @app.post('/v1/accounts/{login_key}/servers')
 # @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
 async def new_server(login_key: str):
-    private_key = '''
-    -----BEGIN OPENSSH PRIVATE KEY-----
-    b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-    QyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQAAAJjcm6bT3Jum
-    0wAAAAtzc2gtZWQyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQ
-    AAAEA0CiK1zYGSEqZc7dVLktjvVklM6aiWb76/t3r30zNxiTPxJ6LCG38uhr3FT0FsLqS6
-    bKQ4rapQuQZzcF0nAJ4BAAAAEHVidW50dUBmbHV0dGVyMTgBAgMEBQ==
-    -----END OPENSSH PRIVATE KEY-----
-    '''
     return responses.JSONResponse(
         status_code=status.HTTP_201_CREATED,
-        content={
-            'ssh_user': 'ubuntu',
-            'ssh_key': textwrap.dedent(private_key),
-            'ssh_domain': 'localhost',
-            'ssh_port': 22,
-            'forward_from_port': 9001,
-        },
+        content={},
     )
     account = Account.validate_login_key(login_key)
     with Session(engine) as session:
@@ -648,7 +667,7 @@ async def new_server(login_key: str):
 @app.websocket('/v1/accounts/{login_key}/servers_ws')
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    asyncio.create_task(ServerConfig.send_user_steps_text(websocket))
+    asyncio.create_task(ServerConfig.config_steps(websocket))
     while True:  # FIXME: keep socket open in a prettier way
         await asyncio.sleep(10)
         print("sleeping 10 ...")
