@@ -515,24 +515,26 @@ def on_shutdown():
 user_steps = [
     """## Connect your new router to the internet.
 
-* Make a note of the existing set-up in case there is a problem setting 
+* Make a note of the existing configuration in case there is a problem setting 
   up the new router.
-* If possible, install the new router *in place of*  the existing one. 
-  This will be more reliable in the long run, but it is generally only 
-  possible if the existing set-up consists of a modem (DSL, ADSL, cable, 
-  fiber, etc.) and a router, connected by an Ethernet cable. Disconnect 
-  the Ethernet cable from the existing router and connect it to the WAN 
-  jack on your new router. The WAN jack is sometimes labeled "Ethernet 
-  In", "Internet", with a globe symbol, or is unlabeled but uniquely 
-  colored. [More details.](/one-router-details)
-* If you do not have the set-up described above, or you are unsure, 
-  then use the Ethernet cable that came with your new router. Connect 
-  one end to any of the unused LAN jacks on the existing router. 
+* You will need an Ethernet cable. (One may have come with your new router.) 
+  Connect one end to any of the unused LAN jacks on the existing router. 
   Connect the other end to the WAN jack on your new router. The LAN jacks 
   are sometimes labeled "Ethernet" or "Ethernet out" or simply numbered 
   1, 2, etc. The WAN jack is sometimes labeled "Ethernet In", 
   "Internet", with a globe symbol, or is unlabeled but uniquely colored. 
   [More details.](/two-routers-details)
+* In some situations it is possible to install the new router *in place 
+  of*  the existing one, but this can be trickier to set up. Unless you 
+  feel confident doing this, keep your exsiting router as described above 
+  for now. You can change it later. Note, though, that replacing your 
+  existing router will be more reliable in the long run. However, it is 
+  generally only possible if the existing set-up consists of a modem (DSL, 
+  ADSL, cable, fiber, etc.) and a router, connected by an Ethernet cable. 
+  Disconnect the Ethernet cable from the existing router and connect it to 
+  the WAN jack on your new router. The WAN jack is sometimes labeled "Ethernet 
+  In", "Internet", with a globe symbol, or is unlabeled but uniquely 
+  colored. [More details.](/one-router-details)
 """,
     """## Plug your new router into a wall socket.
 
@@ -540,12 +542,12 @@ user_steps = [
 * It may take a few minutes for the WiFi to begin working.
 """,
     """## Connect to the new router via WiFi.
-* It is sometimes necessary to turn off mobile data (internet via 
-  your cellular provider).
 * Enable WiFi if needed and scan for available WiFi networks.
 * For the GL-AX1800, the WiFi name will be `GL-AX1800-xxx` or 
   `GL-AX1800-xxx-5G` and the WiFi password written on the bottom of 
-  the router ("WiFi Key:").
+  the router, labeled "WiFi Key".
+* It is sometimes necessary to turn off mobile data (internet via 
+  your cellular provider).
 """,
 ]
 
