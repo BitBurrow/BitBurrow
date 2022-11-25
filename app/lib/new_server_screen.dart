@@ -82,12 +82,127 @@ class WebSocketMessenger {
   Stream<String> get stream => _inbound.stream;
 }
 
+class BbProxy {
+  var sshUser = '';
+  var sshKey = ''; // contents, not file path
+  var sshDomain = '';
+  var sshPort = 22;
+  ssh.SSHClient? _client;
+
+  /// Establish ssh connection. Return "" on success or error message.
+  Future<String> connect() async {
+    var tries = 0;
+    Stopwatch stopwatch = Stopwatch()..start();
+    var lastError = "";
+    while (true) {
+      var error = await _connectOnce();
+      if (error == "") {
+        return ""; // success
+      }
+      _client = null;
+      if (error == lastError) {
+        return error; // same error twice in a row
+      }
+      lastError = error;
+      tries += 1;
+      if (tries >= 7) {
+        if (stopwatch.elapsedMilliseconds < 2000) {
+          return error; // 7 tries in 2 seconds--giving up;
+        } else {
+          tries = 0;
+          stopwatch = Stopwatch()..start();
+        }
+      }
+    }
+  }
+
+  Future<String> _connectOnce() async {
+    try {
+      final socket = await ssh.SSHSocket.connect(sshDomain, sshPort);
+      _client = ssh.SSHClient(
+        socket,
+        username: sshUser,
+        identities: ssh.SSHKeyPair.fromPem(sshKey),
+      );
+      if (_client == null) {
+        return "B41802 SSHClient null trying $sshDomain:$sshPort";
+      }
+      await _client!.authenticated;
+    } on io.SocketException catch (err) {
+      return "B88675 can't connect to $sshDomain:$sshPort: $err";
+    } on ssh.SSHAuthAbortError catch (err) {
+      return "B31284 can't connect to $sshDomain:$sshPort: $err";
+    } on ssh.SSHAuthFailError catch (err) {
+      return "B61302 bad ssh key: $err";
+    } on ssh.SSHStateError catch (err) {
+      return "B88975 ssh connection failed: $err"; // e.g. server proc killed
+    } catch (err) {
+      return "B50513 can't connect to $sshDomain: $err";
+    }
+    return "";
+  }
+
+  /// Disconnect ssh. Return "" on success or error message.
+  Future<String> disconnect() async {
+    if (_client != null) {
+      try {
+        _client!.close();
+        await _client!.done;
+      } catch (err) {
+        return "B40413 can't close connection to $sshDomain: $err";
+      }
+    }
+    _client = null;
+    return "";
+  }
+
+  /// Ssh-forward port from remote. Return "" on success or error message.
+  Future<String> forwardPort({
+    required int fromPort,
+    String toAddress = '',
+    required int toPort,
+  }) async {
+    try {
+      if (_client == null) {
+        return "B76402 cannot forward port--not yet connected";
+      }
+      final forward = await _client!.forwardRemote(port: fromPort);
+      if (forward == null) {
+        return "B35542 can't forward fromPort $fromPort";
+      }
+      // don't await for connections from hub
+      _waitForConnections(forward, toAddress, toPort);
+      return "";
+    } catch (err) {
+      return "B61661 error forwarding: $err";
+    }
+  }
+
+  async.Future<String> _waitForConnections(forward, toAddress, toPort) async {
+    await for (final connection in forward.connections) {
+      try {
+        // new connection to target for each connection from hub
+        final socket = await io.Socket.connect(
+          toAddress,
+          toPort,
+          timeout: const Duration(seconds: 20),
+        );
+        connection.stream.cast<List<int>>().pipe(socket);
+        socket.pipe(connection.sink);
+      } catch (err) {
+        // print("B58185 can't connect to $toAddress:$toPort: $err");
+        connection.sink.close();
+      }
+    }
+    return "";
+  }
+}
+
 class NewServerFormState extends ParentFormState {
-  Map<String, dynamic>? _sshLogin;
   final _hubMessages = WebSocketMessenger();
+  final _ssh = BbProxy();
   async.Completer _buttonPressed = async.Completer();
   final async.Completer _hubCommanderFinished = async.Completer();
-  final List<Future> _forwardsList = [];
   final List<String> _stepsText = [];
   final List<StepTypes> _stepsType = [];
   int _stepsProgress = 0;
@@ -137,109 +252,6 @@ class NewServerFormState extends ParentFormState {
     loginState.loginKey = value;
   }
 
-  // Future bbProxy() async {
-  //   var error = "";
-  //   try {
-  //     if (_sshLogin != null) {
-  //       sshConnect(
-  //         sshUser: _sshLogin!['ssh_user'],
-  //         sshKey: _sshLogin!['ssh_key'],
-  //         sshDomain: _sshLogin!['ssh_domain'],
-  //         sshPort: _sshLogin!['ssh_port'],
-  //         forwardFromPort: _sshLogin!['forward_from_port'],
-  //       );
-  //     } else {
-  //       error = "B12944 sshLogin is null";
-  //     }
-  //   } catch (err) {
-  //     error = err.toString();
-  //   }
-  //   var displayError = "";
-  // }
-
-  Future sshConnect({
-    sshUser,
-    sshKey, // actual key contents
-    sshDomain,
-    sshPort = 22,
-    forwardFromPort,
-  }) async {
-    var tries = 0;
-    Stopwatch stopwatch = Stopwatch()..start();
-    var error = "never assigned";
-    while (true) {
-      try {
-        final socket = await ssh.SSHSocket.connect(sshDomain, sshPort);
-        final client = ssh.SSHClient(
-          socket,
-          username: sshUser,
-          identities: ssh.SSHKeyPair.fromPem(sshKey),
-        );
-        await client.authenticated;
-        // _forwardsList.add(forwardCommandChannel(
-        //   client: client,
-        //   fromPort: forwardFromPort,
-        // ));
-        // await until hub sends 'exit' command (or an error occurrs)
-        error = await _hubCommanderFinished.future;
-        client.close();
-        await client.done;
-      } on io.SocketException catch (err) {
-        print("B88675 can't connect to $sshDomain:$sshPort: $err");
-      } on ssh.SSHAuthAbortError catch (err) {
-        print("B31284 can't connect to $sshDomain:$sshPort: $err");
-      } on ssh.SSHAuthFailError catch (err) {
-        print("B61302 bad ssh key: $err");
-      } on ssh.SSHStateError catch (err) {
-        print("B88975 ssh connection failed: $err"); // e.g. server proc killed
-      } catch (err) {
-        print("B50513 can't connect to $sshDomain: $err");
-      }
-      if (error.isEmpty) break; // success
-      tries += 1;
-      if (tries >= 7) {
-        if (stopwatch.elapsedMilliseconds < 2000) {
-          print("B34362 7 tries in 2 seconds--giving up");
-          break; // 7 tries in 2 seconds--don't keep trying
-        } else {
-          tries = 0;
-          stopwatch = Stopwatch()..start();
-        }
-      }
-      print("B08226 retrying ssh connection; last error was: $error");
-    }
-  }
-
-  Future<void> forwardToRouter({
-    required ssh.SSHClient client,
-    required int fromPort,
-    required int toPort,
-    String toAddress = '',
-  }) async {
-    final forward = await client.forwardRemote(port: fromPort);
-    if (forward == null) {
-      print("B35542 can't forward fromPort $fromPort");
-      return;
-    }
-    await for (final connection in forward.connections) {
-      try {
-        print("connection from server; trying $toAddress:$toPort");
-        final socket = await io.Socket.connect(
-          toAddress,
-          toPort,
-          timeout: const Duration(seconds: 20),
-        );
-        connection.stream.cast<List<int>>().pipe(socket);
-        socket.pipe(connection.sink);
-        print("connected to $toAddress:$toPort");
-      } catch (err) {
-        print("B58185 can't connect to $toAddress:$toPort: $err");
-        connection.sink.close();
-      }
-    }
-    await Future.wait(_forwardsList);
-  }
-
   Future<void> hubCommander(String json) async {
     // process one command from the hub
     var result = "okay";
@@ -273,24 +285,22 @@ class NewServerFormState extends ParentFormState {
           } else if (key == 'sleep') {
             // delay processing of subsequent commands
             await Future.delayed(Duration(seconds: value['seconds']), () {});
-            // } else if (key == 'ssh_connect') {
-            //   // ssh from app to hub
-            //   FIXME: next line seems to return immediately AND not fail when it can't connect
-            //   await sshConnect(
-            //     sshUser: value['ssh_user'],
-            //     sshKey: value['ssh_key'],
-            //     sshDomain: value['ssh_domain'],
-            //     sshPort: value['ssh_port'],
-            //     forwardFromPort: value['forward_from_port'],
-            //   );
-            // } else if (key == 'ssh_forward') {
-            //   // port-forward port from hub to router over ssh
-            //   forwardToRouter(
-            //     client: client,
-            //     fromPort: value['from_port'],
-            //     toAddress: value['to_address'],
-            //     toPort: value['to_port'],
-            //   );
+          } else if (key == 'ssh_connect') {
+            // ssh from app to hub
+            _ssh.sshUser = value['ssh_user'];
+            _ssh.sshKey = value['ssh_key'];
+            _ssh.sshDomain = value['ssh_domain'];
+            _ssh.sshPort = value['ssh_port'];
+            result = await _ssh.connect();
+            if (result == "") result = "okay";
+          } else if (key == 'ssh_forward') {
+            // port-forward port from hub to router over ssh
+            result = await _ssh.forwardPort(
+              fromPort: value['from_port'],
+              toAddress: value['to_address'],
+              toPort: value['to_port'],
+            );
+            if (result == "") result = "okay";
           } else if (key == 'get_if_list') {
             // return list of network interfaces and IP addresses
             hubWrite(await ifList());

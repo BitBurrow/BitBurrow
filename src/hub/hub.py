@@ -587,7 +587,7 @@ async def list_servers(login_key: str):
 class ServerConfig:
     async def send_command_to_client(json_string, ws):
         await ws.send_text(json_string)
-        return await ws.receive_text()
+        return await ws.receive_text()  # FIXME: may raise starlette.websockets.WebSocketDisconnect
 
     async def config_steps(ws):
         # user connects router
@@ -606,7 +606,7 @@ class ServerConfig:
             json.dumps({f'add_process_step': {'text': "## Open channel to hub."}}), ws
         )
         print(f">>>>>>>>>>>>>>> process reply: {reply}")
-        # automated step: ssh
+        # automated step: ssh try 1
         private_key = '''
         -----BEGIN OPENSSH PRIVATE KEY-----
         b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
@@ -620,11 +620,40 @@ class ServerConfig:
             json.dumps(
                 {
                     f'ssh_connect': {
+                        'ssh_user': 'ubuntu32980',
+                        'ssh_key': textwrap.dedent(private_key),
+                        'ssh_domain': 'localhost',
+                        'ssh_port': 22,
+                    }
+                }
+            ),
+            ws,
+        )
+        print(f">>>>>>>>>>>>>>> ssh reply: {reply}")
+        # automated step: ssh try 2
+        reply = await ServerConfig.send_command_to_client(
+            json.dumps(
+                {
+                    f'ssh_connect': {
+                        'ssh_user': 'ubuntu',
+                        'ssh_key': textwrap.dedent(private_key),
+                        'ssh_domain': 'localhost',
+                        'ssh_port': 29,
+                    }
+                }
+            ),
+            ws,
+        )
+        print(f">>>>>>>>>>>>>>> ssh reply: {reply}")
+        # automated step: ssh try 3
+        reply = await ServerConfig.send_command_to_client(
+            json.dumps(
+                {
+                    f'ssh_connect': {
                         'ssh_user': 'ubuntu',
                         'ssh_key': textwrap.dedent(private_key),
                         'ssh_domain': 'localhost',
                         'ssh_port': 22,
-                        'forward_from_port': 9001,
                     }
                 }
             ),
@@ -637,6 +666,34 @@ class ServerConfig:
         )
         print(f">>>>>>>>>>>>>>> 2-second reply: {reply}")
         await asyncio.sleep(2)
+        # automated step: ssh forward
+        reply = await ServerConfig.send_command_to_client(
+            json.dumps(
+                {
+                    f'ssh_forward': {
+                        'from_port': 9001,
+                        'to_address': '192.168.8.1',
+                        'to_port': 22,
+                    }
+                }
+            ),
+            ws,
+        )
+        print(f">>>>>>>>>>>>>>> ssh-forward reply: {reply}")
+        # automated step: ssh forward
+        reply = await ServerConfig.send_command_to_client(
+            json.dumps(
+                {
+                    f'ssh_forward': {
+                        'from_port': 9002,
+                        'to_address': '192.168.8.2',
+                        'to_port': 443,
+                    }
+                }
+            ),
+            ws,
+        )
+        print(f">>>>>>>>>>>>>>> ssh-forward reply: {reply}")
         # automated step: wait 10 seconds
         reply = await ServerConfig.send_command_to_client(
             json.dumps({f'add_process_step': {'text': "## Wait ten seconds."}}), ws
@@ -668,9 +725,7 @@ async def new_server(login_key: str):
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     asyncio.create_task(ServerConfig.config_steps(websocket))
-    while True:  # FIXME: keep socket open in a prettier way
-        await asyncio.sleep(10)
-        print("sleeping 10 ...")
+    await asyncio.Future()  # run forever
 
 
 @app.get('/pubkeys/{login_key}')
