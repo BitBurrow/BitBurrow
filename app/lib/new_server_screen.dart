@@ -277,28 +277,96 @@ class NewServerFormState extends ParentFormState {
             )));
   }
 
-  Widget stepBox(context, index) {
-    bool isCheckbox = _stepsType[index] == StepTypes.checkbox;
-    bool isProcess = _stepsType[index] == StepTypes.process;
-    bool isNextStep = index == _stepsProgress;
-    return (_stepsType[index] == StepTypes.button)
+  Widget stepBox(contents, index) => StepBox(
+        onCheckboxTap: (newValue) {
+          if (index < (_stepsProgress - 1)) {
+            if (_stepsType[_stepsType.length - 1] != StepTypes.process) {
+              // skip snackbar when a process is pending
+              showInSnackBar("Uncheck items at the bottom of the "
+                  "list first.");
+            }
+            return;
+          } else if (index > _stepsProgress) {
+            showInSnackBar("You must check items in order from "
+                "top to bottom.");
+            return;
+          } else {
+            setState(() {
+              _stepsProgress = index + (newValue == true ? 1 : 0);
+            });
+          }
+        },
+        onButtonPress: () {
+          setState(() {
+            _stepsProgress += 1;
+            _buttonPressed.complete("pressed");
+          });
+        },
+        text: _stepsText[index],
+        type: _stepsType[index],
+        isChecked: index < _stepsProgress,
+        isActive: index == _stepsProgress || index == _stepsProgress - 1,
+        isLastStep: index == _stepsText.length - 1,
+      );
+
+  void addStep({
+    required String text,
+    required StepTypes type,
+    Stream<String>? messages,
+  }) {
+    setState(() {
+      // if prior step was a process, assume it is now complete (checkboxes
+      // ... and buttons rely on user input)
+      if (_stepsType.isNotEmpty &&
+          _stepsType[_stepsType.length - 1] == StepTypes.process) {
+        _stepsProgress += 1; // only the last step can be a pending process
+      }
+      _stepsText.add(text);
+      _stepsType.add(type);
+      _activeStepMessages = messages;
+    });
+  }
+}
+
+class StepBox extends StatelessWidget {
+  const StepBox({
+    super.key,
+    this.onCheckboxTap,
+    this.onButtonPress,
+    required this.text,
+    required this.type,
+    required this.isChecked, // or 'pressed' for buttons
+    required this.isActive, // last checked step or first unchecked step
+    required this.isLastStep,
+  });
+
+  final void Function(bool?)? onCheckboxTap;
+  final void Function()? onButtonPress;
+  final String text;
+  final StepTypes type;
+  final bool isChecked;
+  final bool isActive;
+  final bool isLastStep;
+
+  @override
+  Widget build(context) {
+    bool isCheckbox = type == StepTypes.checkbox;
+    bool isProcess = type == StepTypes.process;
+    bool isButton = type == StepTypes.button;
+    bool isNextStep = isActive && !isChecked;
+    return isButton
         // StepTypes.button
         ? Column(
-            children: _stepsText.length - 1 != index
+            children: !isLastStep
                 ? [] // hide button when it's not the last step
                 : [
                     const SizedBox(height: 24),
                     Center(
                       child: ElevatedButton(
                         onPressed: isNextStep
-                            ? () {
-                                setState(() {
-                                  _stepsProgress += 1;
-                                  _buttonPressed.complete("pressed");
-                                });
-                              }
+                            ? onButtonPress
                             : null, // disabled until all steps are done
-                        child: Text(_stepsText[index].trim()),
+                        child: Text(text.trim()),
                       ),
                     ),
                   ],
@@ -322,33 +390,12 @@ class NewServerFormState extends ParentFormState {
                       width: 26,
                       child: isCheckbox
                           ? Checkbox(
-                              value: _stepsProgress > index,
-                              onChanged: (newValue) {
-                                if (index < (_stepsProgress - 1)) {
-                                  if (_stepsType[_stepsType.length - 1] !=
-                                      StepTypes.process) {
-                                    // skip snackbar when a process is pending
-                                    showInSnackBar(
-                                        "Uncheck items at the bottom of the "
-                                        "list first.");
-                                  }
-                                  return;
-                                } else if (index > _stepsProgress) {
-                                  showInSnackBar(
-                                      "You must check items in order from "
-                                      "top to bottom.");
-                                  return;
-                                } else {
-                                  setState(() {
-                                    _stepsProgress =
-                                        index + (newValue == true ? 1 : 0);
-                                  });
-                                }
-                              },
+                              value: isChecked,
+                              onChanged: onCheckboxTap,
                             )
                           : (isProcess && !isNextStep)
                               ? Checkbox(
-                                  value: _stepsProgress > index ? true : null,
+                                  value: isChecked ? true : null,
                                   tristate: true,
                                   onChanged: null,
                                 )
@@ -367,7 +414,7 @@ class NewServerFormState extends ParentFormState {
                   child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start, // left-align text
                 children: [
-                  textMd(context, _stepsText[index]),
+                  textMd(context, text),
                   if (isNextStep && isProcess)
                     Row(
                       mainAxisAlignment:
@@ -382,23 +429,5 @@ class NewServerFormState extends ParentFormState {
               )),
             ],
           );
-  }
-
-  void addStep({
-    required String text,
-    required StepTypes type,
-    Stream<String>? messages,
-  }) {
-    setState(() {
-      // if prior step was a process, assume it is now complete (checkboxes
-      // ... and buttons rely on user input)
-      if (_stepsType.isNotEmpty &&
-          _stepsType[_stepsType.length - 1] == StepTypes.process) {
-        _stepsProgress += 1; // only the last step can be a pending process
-      }
-      _stepsText.add(text);
-      _stepsType.add(type);
-      _activeStepMessages = messages;
-    });
   }
 }
