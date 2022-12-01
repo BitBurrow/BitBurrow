@@ -7,13 +7,21 @@ enum StepTypes {
   button, // e.g. "CONFIGURE ROUTER"
 }
 
+class StepData {
+  StepData({
+    required this.text,
+    required this.type,
+  });
+  String text;
+  StepTypes type;
+}
+
 class StepBox extends StatelessWidget {
   const StepBox({
     super.key,
     this.onCheckboxTap,
     this.onButtonPress,
-    required this.text,
-    required this.type,
+    required this.data,
     required this.isChecked, // or 'pressed' for buttons
     required this.isActive, // last checked step or first unchecked step
     required this.isLastStep,
@@ -21,17 +29,16 @@ class StepBox extends StatelessWidget {
 
   final void Function(bool?)? onCheckboxTap;
   final void Function()? onButtonPress;
-  final String text;
-  final StepTypes type;
+  final StepData data;
   final bool isChecked;
   final bool isActive;
   final bool isLastStep;
 
   @override
   Widget build(context) {
-    bool isCheckbox = type == StepTypes.checkbox;
-    bool isProcess = type == StepTypes.process;
-    bool isButton = type == StepTypes.button;
+    bool isCheckbox = data.type == StepTypes.checkbox;
+    bool isProcess = data.type == StepTypes.process;
+    bool isButton = data.type == StepTypes.button;
     bool isNextStep = isActive && !isChecked;
     return isButton
         // StepTypes.button
@@ -45,7 +52,7 @@ class StepBox extends StatelessWidget {
                         onPressed: isNextStep
                             ? onButtonPress
                             : null, // disabled until all steps are done
-                        child: Text(text.trim()),
+                        child: Text(data.text.trim()),
                       ),
                     ),
                   ],
@@ -93,7 +100,7 @@ class StepBox extends StatelessWidget {
                   child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start, // left-align text
                 children: [
-                  textMd(context, text),
+                  textMd(context, data.text),
                   if (isNextStep && isProcess)
                     Row(
                       mainAxisAlignment:

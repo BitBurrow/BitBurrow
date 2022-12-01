@@ -83,9 +83,8 @@ class NewServerFormState extends ParentFormState {
   final _ssh = BbProxy();
   async.Completer _buttonPressed = async.Completer();
   final async.Completer _hubCommanderFinished = async.Completer();
-  final List<String> _stepsText = [];
-  final List<StepTypes> _stepsType = [];
-  int _stepsProgress = 0;
+  final List<StepData> _stepsList = [];
+  int _stepsComplete = 0;
   Stream<String>? _activeStepMessages;
 
   @override
@@ -150,14 +149,14 @@ class NewServerFormState extends ParentFormState {
             print("hub: ${value['text']}");
           } else if (key == 'add_checkbox_step') {
             // add a checkbox step to the list of steps displayed for the user
-            addStep(text: value['text'], type: StepTypes.checkbox);
+            addStep(StepData(text: value['text'], type: StepTypes.checkbox));
           } else if (key == 'add_process_step') {
             // ... or a process step
-            addStep(text: value['text'], type: StepTypes.process);
+            addStep(StepData(text: value['text'], type: StepTypes.process));
           } else if (key == 'add_button_step') {
             // ... or a button
             _buttonPressed = async.Completer(); // reset to unpressed state
-            addStep(text: value['text'], type: StepTypes.button);
+            addStep(StepData(text: value['text'], type: StepTypes.button));
             await _buttonPressed.future;
           } else if (key == 'echo') {
             // echo text back to hub
@@ -262,7 +261,7 @@ class NewServerFormState extends ParentFormState {
                   // TODO: use AnimatedList() // https://www.youtube.com/watch?v=ZtfItHwFlZ8
                   ListView.builder(
                     shrinkWrap: true,
-                    itemCount: _stepsText.length,
+                    itemCount: _stepsList.length,
                     padding: const EdgeInsets.symmetric(horizontal: 18),
                     itemBuilder: stepBox,
                   ),
@@ -274,50 +273,47 @@ class NewServerFormState extends ParentFormState {
 
   Widget stepBox(contents, index) => StepBox(
         onCheckboxTap: (newValue) {
-          if (index < (_stepsProgress - 1)) {
-            if (_stepsType[_stepsType.length - 1] != StepTypes.process) {
+          if (index < (_stepsComplete - 1)) {
+            if (_stepsList[_stepsList.length - 1].type != StepTypes.process) {
               // skip snackbar when a process is pending
               showInSnackBar("Uncheck items at the bottom of the "
                   "list first.");
             }
             return;
-          } else if (index > _stepsProgress) {
+          } else if (index > _stepsComplete) {
             showInSnackBar("You must check items in order from "
                 "top to bottom.");
             return;
           } else {
             setState(() {
-              _stepsProgress = index + (newValue == true ? 1 : 0);
+              _stepsComplete = index + (newValue == true ? 1 : 0);
             });
           }
         },
         onButtonPress: () {
           setState(() {
-            _stepsProgress += 1;
+            _stepsComplete += 1;
             _buttonPressed.complete("pressed");
           });
         },
-        text: _stepsText[index],
-        type: _stepsType[index],
-        isChecked: index < _stepsProgress,
-        isActive: index == _stepsProgress || index == _stepsProgress - 1,
-        isLastStep: index == _stepsText.length - 1,
+        data: _stepsList[index],
+        isChecked: index < _stepsComplete,
+        isActive: index == _stepsComplete || index == _stepsComplete - 1,
+        isLastStep: index == _stepsList.length - 1,
       );
 
-  void addStep({
-    required String text,
-    required StepTypes type,
+  void addStep(
+    StepData data, {
     Stream<String>? messages,
   }) {
     setState(() {
       // if prior step was a process, assume it is now complete (checkboxes
       // ... and buttons rely on user input)
-      if (_stepsType.isNotEmpty &&
-          _stepsType[_stepsType.length - 1] == StepTypes.process) {
-        _stepsProgress += 1; // only the last step can be a pending process
+      if (_stepsList.isNotEmpty &&
+          _stepsList[_stepsList.length - 1].type == StepTypes.process) {
+        _stepsComplete += 1; // only the last step can be a pending process
       }
-      _stepsText.add(text);
-      _stepsType.add(type);
+      _stepsList.add(data);
       _activeStepMessages = messages;
     });
   }
