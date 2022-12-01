@@ -86,6 +86,7 @@ class NewServerFormState extends ParentFormState {
   final List<StepData> _stepsList = [];
   int _stepsComplete = 0;
   Stream<String>? _activeStepMessages;
+  bool _needToScrollToBottom = false;
 
   @override
   void initState() {
@@ -224,6 +225,15 @@ class NewServerFormState extends ParentFormState {
 
   @override
   Widget build(BuildContext context) {
+    if (_needToScrollToBottom) {
+      // scroll only after Flutter rebuilt and render; see
+      // https://smarx.com/posts/2020/08/automatic-scroll-to-bottom-in-flutter/
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        scrollController.animateTo(scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 1000), curve: Curves.ease);
+      });
+      _needToScrollToBottom = false;
+    }
     const sizedBoxSpace = SizedBox(height: 24);
     return Form(
         key: formKey,
@@ -258,7 +268,6 @@ class NewServerFormState extends ParentFormState {
                       "your \"VPN home\" location. Check the box on the left "
                       "as you complete each step."),
                   sizedBoxSpace,
-                  // TODO: use AnimatedList() // https://www.youtube.com/watch?v=ZtfItHwFlZ8
                   ListView.builder(
                     shrinkWrap: true,
                     itemCount: _stepsList.length,
@@ -287,6 +296,10 @@ class NewServerFormState extends ParentFormState {
           } else {
             setState(() {
               _stepsComplete = index + (newValue == true ? 1 : 0);
+              // if it's the last checkbox, auto-scroll down
+              if (_stepsComplete >= _stepsList.length - 1) {
+                _needToScrollToBottom = true;
+              }
             });
           }
         },
@@ -315,6 +328,10 @@ class NewServerFormState extends ParentFormState {
       }
       _stepsList.add(data);
       _activeStepMessages = messages;
+      // when all prior steps are complete, auto-scroll down to new one
+      if (_stepsComplete >= _stepsList.length - 1) {
+        _needToScrollToBottom = true;
+      }
     });
   }
 }
