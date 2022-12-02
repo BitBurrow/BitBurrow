@@ -199,7 +199,6 @@ class NewServerFormState extends ParentFormState {
       result = "B50129 illegal command ${json.trim()}: "
           "${err.toString().replaceAll(RegExp(r'[\r\n]+'), ' ¶ ')}";
     }
-    if (result != "okay") print(result);
     hubWrite({'result': result});
   }
 
@@ -329,7 +328,7 @@ class NewServerFormState extends ParentFormState {
       _stepsList.add(data);
       _activeStepMessages = messages;
       // when all prior steps are complete, auto-scroll down to new one
-      if (_stepsComplete >= _stepsList.length - 1) {
+      if (_stepsComplete > 0 && _stepsComplete >= _stepsList.length - 1) {
         _needToScrollToBottom = true;
       }
     });
