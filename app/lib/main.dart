@@ -174,49 +174,6 @@ MarkdownBody textMd(BuildContext context, md) {
   );
 }
 
-Future<void> showPopupDialog({
-  required BuildContext context,
-  String title = "",
-  String text = "",
-  required String buttonText,
-  Stream<String>? messages,
-  // warning: Markdown lists cause a crash: https://github.com/flutter/flutter/issues/114748
-}) =>
-    showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (BuildContext context) => AlertDialog(
-              title: Text(title),
-              content: messages == null
-                  ? Text(text)
-                  : StreamBuilder<String>(
-                      stream: messages,
-                      builder: (context, snapshot) {
-                        if (snapshot.connectionState ==
-                            ConnectionState.waiting) {
-                          return const Text("");
-                        } else if (snapshot.connectionState ==
-                            ConnectionState.done) {
-                          return const Text("");
-                        } else if (snapshot.hasError) {
-                          return const Text("error 5007");
-                        } else {
-                          return textMd(context, snapshot.data ?? "");
-                        }
-                      }),
-              actions: <Widget>[
-                TextButton(
-                  style: TextButton.styleFrom(
-                    textStyle: Theme.of(context).textTheme.labelLarge,
-                  ),
-                  onPressed: () {
-                    Navigator.of(context).pop(context);
-                  },
-                  child: Text(buttonText),
-                )
-              ],
-            ));
-
 Widget ourScreenLayout(BuildContext context, Widget body,
         {Widget? floatingActionButton}) =>
     Scaffold(

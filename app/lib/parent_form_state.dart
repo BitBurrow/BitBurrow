@@ -90,7 +90,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     form.save();
     var hub = getHubValue(); // if user cancels dialog, hub and ...
     // getHubValue() may not be the same because this method is re-entered
-    var connectingDialog = showPopupDialog(
+    var connectingDialog = notificationDialog(
       context: context,
       title: "Connecting to hub ...",
       buttonText: "CANCEL",
@@ -174,7 +174,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       displayError += " Make sure that you typed the hub correctly "
           "and that you are connected to the internet.";
     }
-    await showPopupDialog(
+    await notificationDialog(
       context: context,
       title: "Unable to connect",
       text: '$displayError (Error "$error".)',
@@ -277,6 +277,49 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
           _accountFormatter,
         ],
       );
+
+  Future<void> notificationDialog({
+    required BuildContext context,
+    String title = "",
+    String text = "",
+    required String buttonText,
+    Stream<String>? messages,
+    // warning: Markdown lists cause a crash: https://github.com/flutter/flutter/issues/114748
+  }) =>
+      showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (BuildContext context) => AlertDialog(
+                title: Text(title),
+                content: messages == null
+                    ? Text(text)
+                    : StreamBuilder<String>(
+                        stream: messages,
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState ==
+                              ConnectionState.waiting) {
+                            return const Text("");
+                          } else if (snapshot.connectionState ==
+                              ConnectionState.done) {
+                            return const Text("");
+                          } else if (snapshot.hasError) {
+                            return const Text("error 5007");
+                          } else {
+                            return textMd(context, snapshot.data ?? "");
+                          }
+                        }),
+                actions: <Widget>[
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      textStyle: Theme.of(context).textTheme.labelLarge,
+                    ),
+                    onPressed: () {
+                      Navigator.of(context).pop(context);
+                    },
+                    child: Text(buttonText),
+                  )
+                ],
+              ));
 
   Future<String?> promptDialog({
     required BuildContext context,
