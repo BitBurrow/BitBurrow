@@ -14,7 +14,16 @@ import tempfile
 import textwrap
 from typing import Optional, Final, final
 from unittest import result
-from fastapi import FastAPI, Form, responses, Request, HTTPException, status, WebSocket
+from fastapi import (
+    FastAPI,
+    Form,
+    responses,
+    Request,
+    HTTPException,
+    status,
+    WebSocket,
+    WebSocketDisconnect,
+)
 import slowapi  # https://slowapi.readthedocs.io/en/latest/
 from sqlmodel import Field, Session, SQLModel, create_engine, select, sql
 import sqlalchemy
@@ -587,25 +596,37 @@ async def list_servers(login_key: str):
 
 
 class ServerConfig:
-    async def send_command_to_client(json_string, ws):
-        await ws.send_text(json_string)
-        return await ws.receive_text()  # FIXME: may raise starlette.websockets.WebSocketDisconnect
+    def __init__(self, ws: WebSocket):
+        self._ws = ws
 
-    async def config_steps(ws):
+    async def send_command_to_client(self, json_string):
+        try:
+            await self._ws.send_text(json_string)
+        except Exception as e:
+            print(f"B38260 WebSocket error: {e}")
+        try:
+            return await self._ws.receive_text()
+        except WebSocketDisconnect:
+            print(f"B38261 WebSocket disconnect")
+        except Exception as e:
+            print(f"B38262 WebSocket error: {e}")
+            # self._error_count += 1
+
+    async def config_steps(self):
         # user connects router
         for text in user_steps:
-            reply = await ServerConfig.send_command_to_client(
-                json.dumps({f'add_checkbox_step': {'text': text}}), ws
+            reply = await self.send_command_to_client(
+                json.dumps({f'add_checkbox_step': {'text': text}})
             )
             print(f">>>>>>>>>>>>>>> checkbox reply: {reply}")
         # CONFIGURE ROUTER button
-        reply = await ServerConfig.send_command_to_client(
-            json.dumps({f'add_button_step': {'text': "CONFIGURE ROUTER"}}), ws
+        reply = await self.send_command_to_client(
+            json.dumps({f'add_button_step': {'text': "CONFIGURE ROUTER"}})
         )
         print(f">>>>>>>>>>>>>>> button reply: {reply}")
         # automated step: ssh from app to hub
-        reply = await ServerConfig.send_command_to_client(
-            json.dumps({f'add_process_step': {'text': "## Open channel to hub."}}), ws
+        reply = await self.send_command_to_client(
+            json.dumps({f'add_process_step': {'text': "## Open channel to hub."}})
         )
         print(f">>>>>>>>>>>>>>> process reply: {reply}")
         # automated step: ssh try 1
@@ -618,7 +639,7 @@ class ServerConfig:
         bKQ4rapQuQZzcF0nAJ4BAAAAEHVidW50dUBmbHV0dGVyMTgBAgMEBQ==
         -----END OPENSSH PRIVATE KEY-----
         '''
-        reply = await ServerConfig.send_command_to_client(
+        reply = await self.send_command_to_client(
             json.dumps(
                 {
                     f'ssh_connect': {
@@ -629,11 +650,10 @@ class ServerConfig:
                     }
                 }
             ),
-            ws,
         )
         print(f">>>>>>>>>>>>>>> ssh reply: {reply}")
         # automated step: ssh try 2
-        reply = await ServerConfig.send_command_to_client(
+        reply = await self.send_command_to_client(
             json.dumps(
                 {
                     f'ssh_connect': {
@@ -644,11 +664,10 @@ class ServerConfig:
                     }
                 }
             ),
-            ws,
         )
         print(f">>>>>>>>>>>>>>> ssh reply: {reply}")
         # automated step: ssh try 3
-        reply = await ServerConfig.send_command_to_client(
+        reply = await self.send_command_to_client(
             json.dumps(
                 {
                     f'ssh_connect': {
@@ -659,17 +678,16 @@ class ServerConfig:
                     }
                 }
             ),
-            ws,
         )
         print(f">>>>>>>>>>>>>>> ssh reply: {reply}")
         # automated step: wait 2 seconds
-        reply = await ServerConfig.send_command_to_client(
-            json.dumps({f'add_process_step': {'text': "## Wait two seconds."}}), ws
+        reply = await self.send_command_to_client(
+            json.dumps({f'add_process_step': {'text': "## Wait two seconds."}})
         )
         print(f">>>>>>>>>>>>>>> 2-second reply: {reply}")
         await asyncio.sleep(2)
         # automated step: ssh forward
-        reply = await ServerConfig.send_command_to_client(
+        reply = await self.send_command_to_client(
             json.dumps(
                 {
                     f'ssh_forward': {
@@ -679,11 +697,10 @@ class ServerConfig:
                     }
                 }
             ),
-            ws,
         )
         print(f">>>>>>>>>>>>>>> ssh-forward reply: {reply}")
         # automated step: ssh forward
-        reply = await ServerConfig.send_command_to_client(
+        reply = await self.send_command_to_client(
             json.dumps(
                 {
                     f'ssh_forward': {
@@ -693,18 +710,17 @@ class ServerConfig:
                     }
                 }
             ),
-            ws,
         )
         print(f">>>>>>>>>>>>>>> ssh-forward reply: {reply}")
         # automated step: wait 10 seconds
-        reply = await ServerConfig.send_command_to_client(
-            json.dumps({f'add_process_step': {'text': "## Wait ten seconds."}}), ws
+        reply = await self.send_command_to_client(
+            json.dumps({f'add_process_step': {'text': "## Wait ten seconds."}})
         )
         print(f">>>>>>>>>>>>>>> 10-second reply: {reply}")
         await asyncio.sleep(10)
         # CONTINUE button
-        reply = await ServerConfig.send_command_to_client(
-            json.dumps({f'add_button_step': {'text': "CONTINUE"}}), ws
+        reply = await self.send_command_to_client(
+            json.dumps({f'add_button_step': {'text': "CONTINUE"}})
         )
         print(f">>>>>>>>>>>>>>> button reply: {reply}")
 
@@ -724,10 +740,17 @@ async def new_server(login_key: str):
 
 
 @app.websocket('/v1/accounts/{login_key}/servers_ws')
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, login_key: str):
     await websocket.accept()
-    asyncio.create_task(ServerConfig.config_steps(websocket))
-    await asyncio.Future()  # run forever
+    runTasks = ServerConfig(websocket)
+    try:
+        await runTasks.config_steps()
+    except asyncio.exceptions.CancelledError:
+        print(f"B15058 config canceled")
+    try:
+        await websocket.close()
+    except Exception as e:
+        print(f"B38263 WebSocket error: {e}")  # e.g. websocket already closed
 
 
 @app.get('/pubkeys/{login_key}')
@@ -810,8 +833,7 @@ def entry_point():  # called from setup.cfg
             #     ssl_certfile='../.ssl/certs/fastapiselfsigned.crt',
         )
     except KeyboardInterrupt:
-        on_shutdown()
-        sys.exit()
+        print(f"B23324 KeyboardInterrupt")
     except Exception as e:
-        on_shutdown()
-        raise e
+        print(f"B22237 Uvicorn error: {e}")
+    on_shutdown()
