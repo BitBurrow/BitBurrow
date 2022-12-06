@@ -712,12 +712,34 @@ class ServerConfig:
             ),
         )
         print(f">>>>>>>>>>>>>>> ssh-forward reply: {reply}")
-        # automated step: wait 10 seconds
+        # automated step: wait 5 seconds
         reply = await self.send_command_to_client(
-            json.dumps({f'add_process_step': {'text': "## Wait ten seconds."}})
+            json.dumps({f'add_process_step': {'text': "## Wait 5 seconds."}})
         )
-        print(f">>>>>>>>>>>>>>> 10-second reply: {reply}")
-        await asyncio.sleep(10)
+        print(f">>>>>>>>>>>>>>> 5-second reply: {reply}")
+        await asyncio.sleep(5)
+        # prompt
+        reply = await self.send_command_to_client(
+            json.dumps(
+                {
+                    f'get_user_input': {
+                        'title': "Information needed",
+                        'text': "Enter the router admin password. This is usually different "
+                        "than the WiFi password. It may be written on the bottom of the router.",
+                        'label_text': "Router admin password",
+                        'button_text': "OK",
+                        'cancel_button_text': "I DON'T KNOW IT",
+                    }
+                }
+            ),
+        )
+        print(f">>>>>>>>>>>>>>> button reply: {reply}")
+        # automated step: wait 5 seconds
+        reply = await self.send_command_to_client(
+            json.dumps({f'add_process_step': {'text': "## Wait 5 seconds."}})
+        )
+        print(f">>>>>>>>>>>>>>> 5-second reply: {reply}")
+        await asyncio.sleep(5)
         # CONTINUE button
         reply = await self.send_command_to_client(
             json.dumps({f'add_button_step': {'text': "CONTINUE"}})

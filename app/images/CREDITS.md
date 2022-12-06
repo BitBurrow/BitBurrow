@@ -10,4 +10,5 @@ Image sources in chronological order:
 * `server-32983.svg`: https://pixabay.com/images/download/server-32983.svg
 * `user-check.svg`: https://tabler-icons.io/static/tabler-icons/icons/user-check.svg
 * `device-floppy.svg`: https://tabler-icons.io/static/tabler-icons/icons/device-floppy.svg
+* `router.svg`: https://tabler-icons.io/static/tabler-icons/icons/router.svg
 

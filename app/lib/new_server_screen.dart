@@ -36,6 +36,8 @@ class WebSocketMessenger {
   WebSocketMessenger() {
     final wsPath = '/v1/accounts/${loginState.loginKey}/servers_ws';
     final url = 'ws://${loginState.hub}:8443$wsPath';
+    // fixme: WebSocket.connect() may raise "WebSocketException: Connection
+    //   to ... was not upgraded to websocket" but try-catch misses it
     io.WebSocket.connect(url).then((io.WebSocket socket) async {
       _ws = socket;
       if (_ws == null) {
@@ -159,6 +161,17 @@ class NewServerFormState extends ParentFormState {
             _buttonPressed = async.Completer(); // reset to unpressed state
             addStep(StepData(text: value['text'], type: StepTypes.button));
             await _buttonPressed.future;
+          } else if (key == 'get_user_input') {
+            // prompt user, return response; all args optional
+            result = await promptDialog(
+                  context: context,
+                  title: value['title'],
+                  text: value['text'],
+                  labelText: value['label_text'],
+                  buttonText: value['button_text'],
+                  cancelButtonText: value['cancel_button_text'],
+                ) ??
+                "cancel_button_53526168";
           } else if (key == 'echo') {
             // echo text back to hub
             result = value['text'];

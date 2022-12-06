@@ -62,6 +62,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       RestorableInt(AutovalidateMode.disabled.index);
 
   final GlobalKey<FormState> formKey = GlobalKey<FormState>();
+  final GlobalKey<FormState> dialogFormKey = GlobalKey<FormState>();
   final _AccountTextInputFormatter _accountFormatter =
       _AccountTextInputFormatter();
 
@@ -276,4 +277,83 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
           _accountFormatter,
         ],
       );
+
+  Future<String?> promptDialog({
+    required BuildContext context,
+    String? title,
+    String? text,
+    String? labelText,
+    required String buttonText,
+    String? cancelButtonText,
+  }) async {
+    String? response;
+    await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext context) => AlertDialog(
+              title: title == null ? null : Text(title),
+              content: SingleChildScrollView(
+                child: Form(
+                  key: dialogFormKey,
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (text != null) textMd(context, text),
+                        if (text != null) const SizedBox(height: 12),
+                        TextFormField(
+                          keyboardType: TextInputType.text,
+                          decoration: InputDecoration(
+                            filled: true,
+                            labelText: labelText,
+                            suffixIcon: Container(
+                              margin: const EdgeInsets.all(8.0),
+                              child: SvgPicture.asset(
+                                'images/router.svg',
+                                width: 30,
+                                height: 30,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
+                          ),
+                          onFieldSubmitted: (value) {
+                            response = value;
+                            Navigator.of(context).pop(context);
+                          },
+                          onSaved: (value) {
+                            response = value;
+                          },
+                        )
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              actions: <Widget>[
+                if (cancelButtonText != null)
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      textStyle: Theme.of(context).textTheme.labelLarge,
+                    ),
+                    onPressed: () {
+                      // don't save; return null
+                      Navigator.of(context).pop(context);
+                    },
+                    child: Text(cancelButtonText),
+                  ),
+                TextButton(
+                  style: TextButton.styleFrom(
+                    textStyle: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  onPressed: () {
+                    dialogFormKey.currentState!.save();
+                    Navigator.of(context).pop(context);
+                  },
+                  child: Text(buttonText),
+                ),
+              ],
+            ));
+    return response;
+  }
 }
