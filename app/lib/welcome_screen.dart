@@ -52,7 +52,7 @@ class WelcomeFormState extends ParentFormState {
     final jsonResponse =
         convert.jsonDecode(response.body) as Map<String, dynamic>;
     String? newLoginKey = jsonResponse['login_key'];
-    if (newLoginKey == null || newLoginKey.length != 18) {
+    if (newLoginKey == null || newLoginKey.length != accountLen) {
       return "login_key is $newLoginKey"; // error
     } else {
       loginState.newLoginKey = newLoginKey;

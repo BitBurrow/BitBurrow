@@ -4,8 +4,11 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'main.dart';
 
-//                                               123456789012345678
-// Strip illegal chars, format incoming text as: XXX-XXXX-XXX-XXXXX
+const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
+const int accountLen = 21; // including dashes
+
+//                                               123456789012345678901
+// Strip illegal chars, format incoming text as: XXXX-XXXXX-XXXX-XXXXX
 class _AccountTextInputFormatter extends TextInputFormatter {
   @override
   TextEditingValue formatEditUpdate(
@@ -31,7 +34,7 @@ class _AccountTextInputFormatter extends TextInputFormatter {
       var c = before[i];
       if (base28Digits.contains(c)) after.write(c);
       var l = after.length;
-      if (l == 3 || l == 8 || l == 12) after.write('-');
+      if (l == 4 || l == 10 || l == 15) after.write('-');
     }
     if (beforeLength == beforePos) afterPos = after.length;
     return TextEditingValue(
@@ -46,8 +49,6 @@ extension StringExtension on String {
     return "${this[0].toUpperCase()}${substring(1).toLowerCase()}";
   }
 }
-
-const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
 
 enum DialogStates {
   open,
@@ -218,11 +219,12 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     if (value == null || value.isEmpty) {
       return "${accountKind.capitalize()} is required";
     }
-    if (value.length != 18) {
+    if (value.length != accountLen) {
       return "${accountKind.capitalize()} must be "
-          "exactly 18 characters (including dashes).";
+          "exactly $accountLen characters (including dashes).";
     }
-    final hubExp = RegExp(r'^[' + base28Digits + r'-]{18}$');
+    final hubExp =
+        RegExp(r'^[' + base28Digits + r'-]{' + accountLen.toString() + r'}$');
     if (!hubExp.hasMatch(value)) {
       return "Please use only numbers and letters.";
     }
@@ -270,7 +272,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
             height: 30,
             color: Theme.of(context).colorScheme.primary,
           ),
-          hintText: "xxx-xxxx-xxx-xxxxx",
+          hintText: "xxxx-xxxxx-xxxx-xxxxx",
           labelText: "$accountKind*".capitalize(),
           suffixIcon: isPassword
               ? IconButton(
@@ -289,7 +291,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
         onSaved: (value) {
           setAccountValue(value ?? "");
         },
-        maxLength: 18,
+        maxLength: accountLen,
         maxLengthEnforcement: MaxLengthEnforcement.none,
         validator: (value) => _validateAccount(value, accountKind),
         inputFormatters: <TextInputFormatter>[

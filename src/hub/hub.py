@@ -136,14 +136,15 @@ class Axis(SQLModel, table=True):
 ### DB table 'account' - an administrative login
 ###
 
-# login key, e.g. 'L7V2BCMM3PRKVF2'
-#     → log(28^15)÷log(2) ≈ 72 bits of entropy
+# login key, e.g. 'X88L7V2BCMM3PRKVF2'
+#     → log(28^18)÷log(2) ≈ 87 bits of entropy
 # 6 words from 4000-word dictionary, e.g. 'OstrichPrecipiceWeldLinkRoastedLeopard'
 #     → log(4000^6)÷log(2) ≈ 72 bits of entropy
 # Mullvad 16-digit account number
 #     → log(10^16)÷log(2) ≈ 53 bits of entropy
 # Plus Codes use base 20 ('23456789CFGHJMPQRVWX'): https://en.wikipedia.org/wiki/Open_Location_Code
 base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
+account_len: Final[int] = 18
 
 
 class Account_kind(enum.Enum):
@@ -158,7 +159,7 @@ class Account(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     login_key: str = Field(  # e.g. 'L7V2BCMM3PRKVF2'
         index=True,
-        default_factory=lambda: ''.join(secrets.choice(base28_digits) for i in range(15)),
+        default_factory=lambda: ''.join(secrets.choice(base28_digits) for i in range(account_len)),
     )
     clients_max: int = 7
     created_at: DateTime = Field(
@@ -180,15 +181,15 @@ class Account(SQLModel, table=True):
     comment: str = ""
 
     @staticmethod
-    def dress_login_key(k):  # display version, e.g. 'L7V-2BCM-M3P-RKVF2'
-        assert len(k) == 15
-        return f'{k[0:3]}-{k[3:7]}-{k[7:10]}-{k[10:15]}'
+    def dress_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'
+        assert len(k) == account_len
+        return f'{k[0:4]}-{k[4:9]}-{k[9:13]}-{k[13:account_len]}'
 
     @staticmethod
     def validate_login_key(display_key):
         key = re.sub(r'[.:_ -]', '', display_key)  # allow these 5 separators
-        if len(key) != 15:
-            raise HTTPException(status_code=422, detail="Login key length must be 15")
+        if len(key) != account_len:
+            raise HTTPException(status_code=422, detail=f"Login key length must be {account_len}")
         if not set(base28_digits).issuperset(key):
             raise HTTPException(status_code=422, detail="Invalid login key characters")
         with Session(engine) as session:
@@ -528,7 +529,7 @@ def on_shutdown():
 async def create_account(login_key: str):
     return responses.JSONResponse(
         status_code=status.HTTP_201_CREATED,
-        content={'login_key': Account.dress_login_key('NWXL8GNXK33XXXX')},
+        content={'login_key': Account.dress_login_key('NWXL8GNXK33XXXXYM7')},
     )
     account = Account.validate_login_key(login_key)
     with Session(engine) as session:
