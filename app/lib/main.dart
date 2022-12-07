@@ -196,22 +196,3 @@ Widget ourScreenLayout(BuildContext context, Widget body,
       body: body,
       floatingActionButton: floatingActionButton,
     );
-
-extension StringExtension on String {
-  String capitalize() {
-    return "${this[0].toUpperCase()}${substring(1).toLowerCase()}";
-  }
-}
-
-abstract class ParentForm extends StatefulWidget {
-  const ParentForm({Key? key}) : super(key: key);
-}
-
-const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
-
-enum DialogStates {
-  open,
-  closing,
-  closed,
-  canceled,
-}

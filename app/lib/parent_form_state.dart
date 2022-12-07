@@ -41,6 +41,25 @@ class _AccountTextInputFormatter extends TextInputFormatter {
   }
 }
 
+extension StringExtension on String {
+  String capitalize() {
+    return "${this[0].toUpperCase()}${substring(1).toLowerCase()}";
+  }
+}
+
+const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
+
+enum DialogStates {
+  open,
+  closing,
+  closed,
+  canceled,
+}
+
+abstract class ParentForm extends StatefulWidget {
+  const ParentForm({Key? key}) : super(key: key);
+}
+
 abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
   // based on https://github.com/flutter/gallery/blob/d030f1e5316310c48fc725f619eb980a0597366d/lib/demos/material/text_field_demo.dart
   bool _isObscure = true;
