@@ -34,7 +34,7 @@ class WebSocketMessenger {
   final _inbound = async.StreamController<String>();
 
   WebSocketMessenger() {
-    final wsPath = '/v1/accounts/${loginState.loginKey}/servers_ws';
+    final wsPath = '/v1/accounts/${loginState.loginKey}/servers/18/setup_ws';
     final url = 'ws://${loginState.hub}:8443$wsPath';
     // fixme: WebSocket.connect() may raise "WebSocketException: Connection
     //   to ... was not upgraded to websocket" but try-catch misses it
@@ -177,7 +177,9 @@ class NewServerFormState extends ParentFormState {
             result = value['text'];
           } else if (key == 'sleep') {
             // delay processing of subsequent commands
-            await Future.delayed(Duration(seconds: value['seconds']), () {});
+            int seconds = value['seconds'] ?? 0;
+            int ms = value['ms'] ?? 0 + seconds * 1000;
+            await Future.delayed(Duration(milliseconds: ms), () {});
           } else if (key == 'ssh_connect') {
             // ssh from app to hub
             _ssh.sshUser = value['ssh_user'];

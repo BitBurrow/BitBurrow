@@ -27,6 +27,7 @@ from fastapi import (
 import slowapi  # https://slowapi.readthedocs.io/en/latest/
 from sqlmodel import Field, Session, SQLModel, create_engine, select, sql
 import sqlalchemy
+import yaml
 
 assert sys.version_info >= (3, 8)
 sql.expression.Select.inherit_cache = False  # https://github.com/tiangolo/sqlmodel/issues/189
@@ -518,50 +519,6 @@ def on_shutdown():
 
 
 ###
-### user-facing instructions
-###
-
-user_steps = [
-    """## Connect your new router to the internet.
-
-* Make a note of the existing configuration in case there is a problem setting 
-  up the new router.
-* You will need an Ethernet cable. (One may have come with your new router.) 
-  Connect one end to any of the unused LAN jacks on the existing router. 
-  Connect the other end to the WAN jack on your new router. The LAN jacks 
-  are sometimes labeled "Ethernet" or "Ethernet out" or simply numbered 
-  1, 2, etc. The WAN jack is sometimes labeled "Ethernet In", 
-  "Internet", with a globe symbol, or is unlabeled but uniquely colored. 
-  [More details.](/two-routers-details)
-* In some situations it is possible to install the new router *in place 
-  of*  the existing one, but this can be trickier to set up. Unless you 
-  feel confident doing this, keep your exsiting router as described above 
-  for now. You can change it later. Note, though, that replacing your 
-  existing router will be more reliable in the long run. However, it is 
-  generally only possible if the existing set-up consists of a modem (DSL, 
-  ADSL, cable, fiber, etc.) and a router, connected by an Ethernet cable. 
-  Disconnect the Ethernet cable from the existing router and connect it to 
-  the WAN jack on your new router. The WAN jack is sometimes labeled "Ethernet 
-  In", "Internet", with a globe symbol, or is unlabeled but uniquely 
-  colored. [More details.](/one-router-details)
-""",
-    """## Plug your new router into a wall socket.
-
-* Make sure at least one light turns on.
-* It may take a few minutes for the WiFi to begin working.
-""",
-    """## Connect to the new router via WiFi.
-* Enable WiFi if needed and scan for available WiFi networks.
-* For the GL-AX1800, the WiFi name will be `GL-AX1800-xxx` or 
-  `GL-AX1800-xxx-5G` and the WiFi password written on the bottom of 
-  the router, labeled "WiFi Key".
-* It is sometimes necessary to turn off mobile data (internet via 
-  your cellular provider).
-""",
-]
-
-
-###
 ### web API
 ###
 
@@ -595,7 +552,7 @@ async def list_servers(login_key: str):
         return [c.pubkey for c in results]
 
 
-class ServerConfig:
+class ServerSetup:
     def __init__(self, ws: WebSocket):
         self._ws = ws
 
@@ -614,137 +571,15 @@ class ServerConfig:
 
     async def config_steps(self):
         # user connects router
-        for text in user_steps:
-            reply = await self.send_command_to_client(
-                json.dumps({f'add_checkbox_step': {'text': text}})
-            )
-            print(f">>>>>>>>>>>>>>> checkbox reply: {reply}")
-        # CONFIGURE ROUTER button
-        reply = await self.send_command_to_client(
-            json.dumps({f'add_button_step': {'text': "CONFIGURE ROUTER"}})
-        )
-        print(f">>>>>>>>>>>>>>> button reply: {reply}")
-        # automated step: ssh from app to hub
-        reply = await self.send_command_to_client(
-            json.dumps({f'add_process_step': {'text': "## Open channel to hub."}})
-        )
-        print(f">>>>>>>>>>>>>>> process reply: {reply}")
-        # automated step: ssh try 1
-        private_key = '''
-        -----BEGIN OPENSSH PRIVATE KEY-----
-        b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-        QyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQAAAJjcm6bT3Jum
-        0wAAAAtzc2gtZWQyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQ
-        AAAEA0CiK1zYGSEqZc7dVLktjvVklM6aiWb76/t3r30zNxiTPxJ6LCG38uhr3FT0FsLqS6
-        bKQ4rapQuQZzcF0nAJ4BAAAAEHVidW50dUBmbHV0dGVyMTgBAgMEBQ==
-        -----END OPENSSH PRIVATE KEY-----
-        '''
-        reply = await self.send_command_to_client(
-            json.dumps(
-                {
-                    f'ssh_connect': {
-                        'ssh_user': 'ubuntu32980',
-                        'ssh_key': textwrap.dedent(private_key),
-                        'ssh_domain': 'localhost',
-                        'ssh_port': 22,
-                    }
-                }
-            ),
-        )
-        print(f">>>>>>>>>>>>>>> ssh reply: {reply}")
-        # automated step: ssh try 2
-        reply = await self.send_command_to_client(
-            json.dumps(
-                {
-                    f'ssh_connect': {
-                        'ssh_user': 'ubuntu',
-                        'ssh_key': textwrap.dedent(private_key),
-                        'ssh_domain': 'localhost',
-                        'ssh_port': 29,
-                    }
-                }
-            ),
-        )
-        print(f">>>>>>>>>>>>>>> ssh reply: {reply}")
-        # automated step: ssh try 3
-        reply = await self.send_command_to_client(
-            json.dumps(
-                {
-                    f'ssh_connect': {
-                        'ssh_user': 'ubuntu',
-                        'ssh_key': textwrap.dedent(private_key),
-                        'ssh_domain': 'localhost',
-                        'ssh_port': 22,
-                    }
-                }
-            ),
-        )
-        print(f">>>>>>>>>>>>>>> ssh reply: {reply}")
-        # automated step: wait 2 seconds
-        reply = await self.send_command_to_client(
-            json.dumps({f'add_process_step': {'text': "## Wait two seconds."}})
-        )
-        print(f">>>>>>>>>>>>>>> 2-second reply: {reply}")
-        await asyncio.sleep(2)
-        # automated step: ssh forward
-        reply = await self.send_command_to_client(
-            json.dumps(
-                {
-                    f'ssh_forward': {
-                        'from_port': 9001,
-                        'to_address': '192.168.8.1',
-                        'to_port': 22,
-                    }
-                }
-            ),
-        )
-        print(f">>>>>>>>>>>>>>> ssh-forward reply: {reply}")
-        # automated step: ssh forward
-        reply = await self.send_command_to_client(
-            json.dumps(
-                {
-                    f'ssh_forward': {
-                        'from_port': 9002,
-                        'to_address': '192.168.8.2',
-                        'to_port': 443,
-                    }
-                }
-            ),
-        )
-        print(f">>>>>>>>>>>>>>> ssh-forward reply: {reply}")
-        # automated step: wait 5 seconds
-        reply = await self.send_command_to_client(
-            json.dumps({f'add_process_step': {'text': "## Wait 5 seconds."}})
-        )
-        print(f">>>>>>>>>>>>>>> 5-second reply: {reply}")
-        await asyncio.sleep(5)
-        # prompt
-        reply = await self.send_command_to_client(
-            json.dumps(
-                {
-                    f'get_user_input': {
-                        'title': "Information needed",
-                        'text': "Enter the router admin password. This is usually different "
-                        "than the WiFi password. It may be written on the bottom of the router.",
-                        'label_text': "Router admin password",
-                        'button_text': "OK",
-                        'cancel_button_text': "I DON'T KNOW IT",
-                    }
-                }
-            ),
-        )
-        print(f">>>>>>>>>>>>>>> button reply: {reply}")
-        # automated step: wait 5 seconds
-        reply = await self.send_command_to_client(
-            json.dumps({f'add_process_step': {'text': "## Wait 5 seconds."}})
-        )
-        print(f">>>>>>>>>>>>>>> 5-second reply: {reply}")
-        await asyncio.sleep(5)
-        # CONTINUE button
-        reply = await self.send_command_to_client(
-            json.dumps({f'add_button_step': {'text': "CONTINUE"}})
-        )
-        print(f">>>>>>>>>>>>>>> button reply: {reply}")
+        f_path = f'{os.path.dirname(__file__)}/server_setup_steps.yaml'
+        with open(f_path, "r") as f:
+            server_setup_steps = yaml.safe_load(f)
+        priorId = 0
+        for step in server_setup_steps:
+            assert step['id'] > priorId
+            priorId = step['id']
+            reply = await self.send_command_to_client(json.dumps({step['key']: step['value']}))
+            print(f">>>>>>>>>>>>>>> reply: {reply}")
 
 
 @app.post('/v1/accounts/{login_key}/servers')
@@ -761,10 +596,10 @@ async def new_server(login_key: str):
         return [c.pubkey for c in results]
 
 
-@app.websocket('/v1/accounts/{login_key}/servers_ws')
-async def websocket_endpoint(websocket: WebSocket, login_key: str):
+@app.websocket('/v1/accounts/{login_key}/servers/{server_id}/setup_ws')
+async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
     await websocket.accept()
-    runTasks = ServerConfig(websocket)
+    runTasks = ServerSetup(websocket)
     try:
         await runTasks.config_steps()
     except asyncio.exceptions.CancelledError:
