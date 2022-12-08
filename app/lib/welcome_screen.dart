@@ -33,7 +33,7 @@ class WelcomeFormState extends ParentFormState {
   @override
   Future<http.Response?> callApi() => http.post(Uri.http(
         '${loginState.hub}:8443',
-        '/v1/accounts/${loginState.coupon}/accounts',
+        '/v1/accounts/${loginState.pureCoupon}/accounts',
       ));
 
   @override
@@ -51,15 +51,15 @@ class WelcomeFormState extends ParentFormState {
   String processApiResponse(response) {
     final jsonResponse =
         convert.jsonDecode(response.body) as Map<String, dynamic>;
-    String? newLoginKey = jsonResponse['login_key'];
-    if (newLoginKey == null || newLoginKey.length != accountLen) {
-      return "login_key is $newLoginKey"; // error
-    } else {
-      loginState.newLoginKey = newLoginKey;
-      loginState.loginKey = ''; // force user to type it
-      loginState.loginKeyVerified = false;
-      return "";
+    String? pureLoginKey = jsonResponse['login_key'];
+    // API response is without the 3 dashes
+    if (pureLoginKey == null || pureLoginKey.length != accountLen - 3) {
+      return "login_key is $pureLoginKey"; // error
     }
+    loginState.newLoginKey = loginState.dressLoginKey(pureLoginKey);
+    loginState.loginKey = ''; // force user to type it
+    loginState.loginKeyVerified = false;
+    return "";
   }
 
   @override

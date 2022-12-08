@@ -34,7 +34,8 @@ class WebSocketMessenger {
   final _inbound = async.StreamController<String>();
 
   WebSocketMessenger() {
-    final wsPath = '/v1/accounts/${loginState.loginKey}/servers/18/setup_ws';
+    final wsPath =
+        '/v1/accounts/${loginState.pureLoginKey}/servers/18/setup_ws';
     final url = 'ws://${loginState.hub}:8443$wsPath';
     // fixme: WebSocket.connect() may raise "WebSocketException: Connection
     //   to ... was not upgraded to websocket" but try-catch misses it

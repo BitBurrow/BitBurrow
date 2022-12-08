@@ -1,12 +1,9 @@
 // ignore_for_file: avoid_print
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
-import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:go_router/go_router.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
 import 'dart:io' as io;
 import 'welcome_screen.dart';
@@ -32,6 +29,14 @@ class LoginState {
 
   bool isSignedIn() => loginKeyVerified;
   bool isNotSignedIn() => !loginKeyVerified;
+  String get pureCoupon => coupon.replaceAll('-', ''); // for API calls
+  String get pureLoginKey => loginKey.replaceAll('-', ''); // for API calls
+
+  // convert to display version used in this app, e.g. 'X88L-7V2BC-MM3P-RKVF2'
+  String dressLoginKey(String pureLoginKey) {
+    return '${pureLoginKey.substring(0, 4)}-${pureLoginKey.substring(4, 9)}-'
+        '${pureLoginKey.substring(9, 13)}-${pureLoginKey.substring(13)}';
+  }
 }
 
 var loginState = LoginState();

@@ -42,7 +42,7 @@ class SignInFormState extends ParentFormState {
   @override
   Future<http.Response?> callApi() => http.get(Uri.http(
         '${loginState.hub}:8443',
-        '/v1/accounts/${loginState.loginKey}/servers',
+        '/v1/accounts/${loginState.pureLoginKey}/servers',
       ));
 
   @override

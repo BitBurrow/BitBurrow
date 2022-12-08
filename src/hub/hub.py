@@ -135,21 +135,23 @@ login_key_len: Final[int] = 18
 login_len: Final[int] = 4  # digits from beginning of login_key, used like a username
 key_len: Final[int] = 14  # remaining digits of login_key, used like a password
 
+
 def generate_login_key(len=login_key_len):  # create new login_key
     return ''.join(secrets.choice(base28_digits) for i in range(len))
 
-def dress_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'
-    assert len(k) == login_key_len
-    return f'{k[0:4]}-{k[4:9]}-{k[9:13]}-{k[13:login_key_len]}'
 
-def validate_login_key(display_key):
-    key = re.sub(r'[.:_ -]', '', display_key)  # allow these 5 separators
-    if len(key) != login_key_len:
+# def dress_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'
+#    assert len(k) == login_key_len
+#    return f'{k[0:4]}-{k[4:9]}-{k[9:13]}-{k[13:login_key_len]}'
+
+
+def validate_login_key(login_key):
+    if len(login_key) != login_key_len:
         raise HTTPException(status_code=422, detail=f"Login key length must be {login_key_len}")
-    if not set(base28_digits).issuperset(key):
+    if not set(base28_digits).issuperset(login_key):
         raise HTTPException(status_code=422, detail="Invalid login key characters")
     with Session(engine) as session:
-        statement = select(Account).where(Account.login_key == key)
+        statement = select(Account).where(Account.login_key == login_key)
         result = session.exec(statement).one_or_none()
     if result is None:
         raise HTTPException(status_code=422, detail="Login key not found")
@@ -172,10 +174,10 @@ class Hub(SQLModel, table=True):
     db_version: int = 1
 
 
-
 ###
 ### DB table 'account' - an administrative login, coupon code, manager, or user
 ###
+
 
 class Account_kind(enum.Enum):
     ADMIN = 0  # can create, edit, and delete coupon codes; can edit and delete managers and users
@@ -547,7 +549,7 @@ def on_shutdown():
 async def create_account(login_key: str):
     return responses.JSONResponse(
         status_code=status.HTTP_201_CREATED,
-        content={'login_key': Account.dress_login_key('NWXL8GNXK33XXXXYM7')},
+        content={'login_key': 'NWXL8GNXK33XXXXYM7'},
     )
     account = Account.validate_login_key(login_key)
     with Session(engine) as session:
