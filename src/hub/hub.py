@@ -25,7 +25,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 import slowapi  # https://slowapi.readthedocs.io/en/latest/
-from sqlmodel import Field, Session, SQLModel, create_engine, select, sql
+from sqlmodel import Field, Session, SQLModel, create_engine, select, sql, JSON, Column
 import sqlalchemy
 import yaml
 
@@ -120,20 +120,7 @@ def cli(return_help_text=False):
 
 
 ###
-### DB table 'axis' - website configuration; should be exactly 1 row
-###
-
-
-class Axis(SQLModel, table=True):
-    id: Optional[int] = Field(primary_key=True, default=None)
-    url: str = ""  # website url in form example.com or node.example.com
-    # FIXME: add note--recommend url not contain `vpn` or `proxy` for firewalls of clients to block
-    name: str = ""  # displayed at the top of the home screen
-    image: str = ""  # base64-encoded; displayed at the top of the home screen
-
-
-###
-### DB table 'account' - an administrative login
+### login key details (used for coupon codes too)
 ###
 
 # login key, e.g. 'X88L7V2BCMM3PRKVF2'
@@ -144,23 +131,69 @@ class Axis(SQLModel, table=True):
 #     → log(10^16)÷log(2) ≈ 53 bits of entropy
 # Plus Codes use base 20 ('23456789CFGHJMPQRVWX'): https://en.wikipedia.org/wiki/Open_Location_Code
 base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
-account_len: Final[int] = 18
+login_key_len: Final[int] = 18
+login_len: Final[int] = 4  # digits from beginning of login_key, used like a username
+key_len: Final[int] = 14  # remaining digits of login_key, used like a password
 
+def generate_login_key(len=login_key_len):  # create new login_key
+    return ''.join(secrets.choice(base28_digits) for i in range(len))
+
+def dress_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'
+    assert len(k) == login_key_len
+    return f'{k[0:4]}-{k[4:9]}-{k[9:13]}-{k[13:login_key_len]}'
+
+def validate_login_key(display_key):
+    key = re.sub(r'[.:_ -]', '', display_key)  # allow these 5 separators
+    if len(key) != login_key_len:
+        raise HTTPException(status_code=422, detail=f"Login key length must be {login_key_len}")
+    if not set(base28_digits).issuperset(key):
+        raise HTTPException(status_code=422, detail="Invalid login key characters")
+    with Session(engine) as session:
+        statement = select(Account).where(Account.login_key == key)
+        result = session.exec(statement).one_or_none()
+    if result is None:
+        raise HTTPException(status_code=422, detail="Login key not found")
+    if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
+        raise HTTPException(status_code=422, detail="Login key expired")
+    # FIXME: verify pubkey limit
+    return result
+
+
+###
+### DB table 'hub' - details for this BitBurrow hub; should be exactly 1 row
+###
+
+
+class Hub(SQLModel, table=True):
+    id: Optional[int] = Field(primary_key=True, default=None)
+    domain: str = ''  # API url in form example.com or node.example.com
+    # FIXME: add note--recommend url not contain `vpn` or `proxy` for firewalls of clients to block
+    hub_number = generate_login_key()  # uniquely identify this hub
+    db_version: int = 1
+
+
+
+###
+### DB table 'account' - an administrative login, coupon code, manager, or user
+###
 
 class Account_kind(enum.Enum):
     ADMIN = 0  # can create, edit, and delete coupon codes; can edit and delete managers and users
     COUPON = 100  # can create managers (that's all)
     MANAGER = 200  # can set up, edit, and delete servers and clients
     USER = 300  # can set up, edit, and delete clients for a specific netif_id on 1 server
+    NONE = 9999
 
 
 class Account(SQLModel, table=True):
-    __table_args__ = (sqlalchemy.UniqueConstraint('login_key'),)  # must have a unique login key
+    __table_args__ = (sqlalchemy.UniqueConstraint('login'),)  # must have a unique login
     id: Optional[int] = Field(primary_key=True, default=None)
-    login_key: str = Field(  # e.g. 'L7V2BCMM3PRKVF2'
+    # FIXME: retry or increment on non-unique login
+    login: str = Field(  # used like a username
         index=True,
-        default_factory=lambda: ''.join(secrets.choice(base28_digits) for i in range(account_len)),
+        default_factory=lambda: generate_login_key(login_len),
     )
+    key_hash: str = ''  # Argon2 hash of key (used like a hashed password)
     clients_max: int = 7
     created_at: DateTime = Field(
         sa_column=sqlalchemy.Column(
@@ -176,31 +209,9 @@ class Account(SQLModel, table=True):
             default=lambda: DateTime.utcnow() + TimeDelta(days=3650),
         )
     )
-    # kind: Account_kind
-    # netif_id: int = Field(foreign_key='netif.id')  # used only if kind == USER
+    kind: Account_kind = Account_kind.NONE
+    netif_id: Optional[int] = Field(foreign_key='netif.id')  # used only if kind == USER
     comment: str = ""
-
-    @staticmethod
-    def dress_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'
-        assert len(k) == account_len
-        return f'{k[0:4]}-{k[4:9]}-{k[9:13]}-{k[13:account_len]}'
-
-    @staticmethod
-    def validate_login_key(display_key):
-        key = re.sub(r'[.:_ -]', '', display_key)  # allow these 5 separators
-        if len(key) != account_len:
-            raise HTTPException(status_code=422, detail=f"Login key length must be {account_len}")
-        if not set(base28_digits).issuperset(key):
-            raise HTTPException(status_code=422, detail="Invalid login key characters")
-        with Session(engine) as session:
-            statement = select(Account).where(Account.login_key == key)
-            result = session.exec(statement).one_or_none()
-        if result is None:
-            raise HTTPException(status_code=422, detail="Login key not found")
-        if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise HTTPException(status_code=422, detail="Login key expired")
-        # FIXME: verify pubkey limit
-        return result
 
     @staticmethod
     def startup():
@@ -236,15 +247,18 @@ reserved_ips = 38
 
 class Netif(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
-    # server_id: int = Field(index=True, foreign_key='server.id')  # server this netif is on
+    server_id: Optional[int] = Field(index=True, foreign_key='server.id')  # server this netif is on
     ipv4_base: str
     ipv6_base: str
     privkey: str
     pubkey: str
-    listening_port: int
+    listening_port: int  # on LAN
+    # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
+    public_ports: list[int] = Field(sa_column=Column(JSON))  # on server's public IP
     comment: str = ""
 
     def __init__(self):
+        self.server_id = None
         # IPv4 base is 10. + random xx.xx. + 0
         self.ipv4_base = str(ipaddress.ip_address('10.0.0.0') + secrets.randbelow(2**16) * 2**8)
         # IPv6 base is prefix + 2 random groups + 5 0000 groups
@@ -253,6 +267,10 @@ class Netif(SQLModel, table=True):
         self.privkey = sudo_wg(['genkey'])
         self.pubkey = sudo_wg(['pubkey'], input=self.privkey)
         self.listening_port = 123
+        self.public_ports = [123]
+
+    class Config:  # needed for Column(JSON)
+        arbitrary_types_allowed = True
 
     def iface(self):
         return f'{wgif_prefix}{self.id}'  # interface name and Netif.id match
@@ -330,8 +348,8 @@ class Client(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     netif_id: int = Field(foreign_key='netif.id')  # the server interface this client connects to
     pubkey: str
-    # preshared_key: str
-    # keepalive: int
+    preshared_key: str
+    keepalive: int = 23  # 0==disabled
     account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager or user
     comment: str = ""
 
