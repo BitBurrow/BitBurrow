@@ -1,14 +1,15 @@
-// ignore_for_file: avoid_print
-
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
+import 'package:logging/logging.dart';
 import 'dart:convert' as convert;
 import 'dart:math';
 import 'main.dart';
 import 'parent_form_state.dart';
+
+final _log = Logger('sign_in_screen');
 
 class SignInScreen extends StatelessWidget {
   const SignInScreen({Key? key}) : super(key: key);
@@ -40,10 +41,12 @@ class SignInFormState extends ParentFormState {
   String get restorationId => 'sign_in_form';
 
   @override
-  Future<http.Response?> callApi() => http.get(Uri.http(
-        '${loginState.hub}:8443',
-        '/v1/accounts/${loginState.pureLoginKey}/servers',
-      ));
+  Future<http.Response?> callApi() {
+    String domain = '${loginState.hub}:8443';
+    String path = '/v1/accounts/${loginState.pureLoginKey}/servers';
+    _log.info("GET http $domain$path");
+    return http.get(Uri.http(domain, path));
+  }
 
   @override
   String validateStatusCode(status) {
@@ -58,8 +61,11 @@ class SignInFormState extends ParentFormState {
     // if loginState.saveLoginKey == false, values have already been cleared
     if (loginState.saveLoginKey && loginState.loginKeyVerified) {
       // only save login key if user opts in AND login key is valid
+      _log.info("Saving to secure storage: hub ${loginState.hub}");
       keyStore.write(key: 'hub', value: loginState.hub);
+      _log.info("Saving to secure storage: login key ${loginState.loginKey}");
       keyStore.write(key: 'login_key', value: loginState.loginKey);
+      _log.info("Saving to secure storage: verification state 'true'");
       keyStore.write(key: 'login_key_verified', value: 'true');
     }
     if (serverError) {
@@ -185,7 +191,10 @@ class SignInFormState extends ParentFormState {
               sizedBoxSpace,
               Center(
                 child: ElevatedButton(
-                  onPressed: signIn,
+                  onPressed: () {
+                    _log.fine("ElevatedButton 'SIGN IN' onPressed()");
+                    return signIn();
+                  },
                   child: const Text("SIGN IN"),
                 ),
               ),

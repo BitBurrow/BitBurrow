@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:logging/logging.dart';
 import 'main.dart';
+
+final _log = Logger('step_box');
 
 enum StepTypes {
   checkbox, // user can check, uncheck
@@ -107,7 +110,10 @@ class StepBox extends StatelessWidget {
                           MainAxisAlignment.end, // right-align button
                       children: [
                         TextButton(
-                            onPressed: () {}, child: const Text("CANCEL"))
+                            onPressed: () {
+                              _log.fine("TextButton 'CANCEL' onPressed()");
+                            },
+                            child: const Text("CANCEL"))
                       ],
                     ),
                   const SizedBox(height: 16), // spacing between steps

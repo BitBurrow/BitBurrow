@@ -1,18 +1,23 @@
-// ignore_for_file: avoid_print
-
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:logging/logging.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
 import 'dart:io' as io;
 import 'welcome_screen.dart';
+import 'logger_manager.dart';
 import 'new_login_key_screen.dart';
 import 'sign_in_screen.dart';
 import 'servers_screen.dart';
 import 'new_server_screen.dart';
 
+final _log = Logger('main');
+late final LoggerManager _logMan;
+
 void main() async {
+  _logMan = LoggerManager();
+  _log.info("starting");
   WidgetsFlutterBinding.ensureInitialized();
   await onAppStart();
   runApp(App());
@@ -42,37 +47,45 @@ class LoginState {
 var loginState = LoginState();
 
 Future<void> onAppStart() async {
+  _log.fine("begin onAppStart()");
   // fixme: user sees blank screen until this completes; implement a loading
   // ... screen if this method takes too long
   try {
     var keyStore = const storage.FlutterSecureStorage();
     loginState.hub = (await keyStore.read(key: 'hub')) ?? "";
+    _log.info("Loaded from secure storage: hub ${loginState.hub}");
     loginState.loginKey = (await keyStore.read(key: 'login_key')) ?? "";
+    _log.info("Loaded from secure storage: login key ${loginState.loginKey}");
     loginState.loginKeyVerified =
         (await keyStore.read(key: 'login_key_verified') == 'true');
+    _log.info("Loaded from secure storage: "
+        "verified status '${loginState.loginKeyVerified}'");
     // login key is saved if and only if it's verified and user opts to store it
     loginState.saveLoginKey = loginState.loginKeyVerified;
   } catch (err) {
     if (io.Platform.environment['DBUS_SESSION_BUS_ADDRESS'] == 'disabled:') {
-      // VSCode Linux issue - https://github.com/electron/electron/issues/31981
-      // add this to .bashrc: unset DBUS_SESSION_BUS_ADDRESS
-      print("B70101 D-Bus has been disabled: $err");
+      _log.warning("B70101 D-Bus has been disabled; add this to .bashrc: "
+          "`unset DBUS_SESSION_BUS_ADDRESS` (VSCode Linux issue - "
+          "https://github.com/electron/electron/issues/31981)");
     } else {
-      print("B52325 can't read from secure storage: $err");
+      _log.warning("B52325 can't read from secure storage: $err");
     }
     return;
   }
+  _log.fine("end onAppStart()");
 }
 
 Page<void> ourPageBuilder(
-        BuildContext context, GoRouterState state, Widget child) =>
-    CustomTransitionPage<void>(
-      key: state.pageKey,
-      child: child,
-      transitionsBuilder: // change the default MaterialApp transition
-          (context, animation, secondaryAnimation, child) =>
-              FadeTransition(opacity: animation, child: child),
-    );
+    BuildContext context, GoRouterState state, Widget child) {
+  _log.info("$gorouterLogMessage $child");
+  return CustomTransitionPage<void>(
+    key: state.pageKey,
+    child: child,
+    transitionsBuilder: // change the default MaterialApp transition
+        (context, animation, secondaryAnimation, child) =>
+            FadeTransition(opacity: animation, child: child),
+  );
+}
 
 class App extends StatelessWidget {
   App({Key? key}) : super(key: key);
@@ -119,38 +132,36 @@ class App extends StatelessWidget {
     routes: <GoRoute>[
       GoRoute(
         path: '/',
-        pageBuilder: (context, state) =>
-            ourPageBuilder(context, state, const WelcomeScreen()),
+        pageBuilder: (c, s) => ourPageBuilder(c, s, const WelcomeScreen()),
       ),
       GoRoute(
         path: '/new-login-key',
-        pageBuilder: (context, state) =>
-            ourPageBuilder(context, state, const NewLoginKeyScreen()),
+        pageBuilder: (c, s) => ourPageBuilder(c, s, const NewLoginKeyScreen()),
       ),
       GoRoute(
         path: '/sign-in',
-        pageBuilder: (context, state) =>
-            ourPageBuilder(context, state, const SignInScreen()),
+        pageBuilder: (c, s) => ourPageBuilder(c, s, const SignInScreen()),
       ),
       GoRoute(
         path: '/servers',
-        pageBuilder: (context, state) =>
-            ourPageBuilder(context, state, const ServersScreen()),
+        pageBuilder: (c, s) => ourPageBuilder(c, s, const ServersScreen()),
       ),
       GoRoute(
         path: '/new-server',
-        pageBuilder: (context, state) =>
-            ourPageBuilder(context, state, const NewServerScreen()),
+        pageBuilder: (c, s) => ourPageBuilder(c, s, const NewServerScreen()),
       ),
     ],
     redirect: (state) {
+      if (state.location != state.subloc) {
+        _log.finer("GoRouter() redirect; location==${state.location}");
+      }
+      _log.finer("GoRouter() redirect; subloc==${state.subloc}");
       if (state.subloc == '/' && loginState.loginKeyVerified) {
         // if we have valid login key, skip welcome screen and proceed with automatic sign-in
         return '/sign-in';
       }
       return null;
     },
-
     urlPathStrategy:
         UrlPathStrategy.path, // turn off the extra `#/` in the URLs
   );
@@ -191,12 +202,15 @@ Widget ourScreenLayout(BuildContext context, Widget body,
                   icon: const Icon(Icons.login),
                   tooltip: "Sign in",
                   onPressed: () {
+                    _log.fine("IconButton 'Sign in' onPressed()");
                     context.push('/sign-in');
                   }),
             IconButton(
                 icon: const Icon(Icons.more_vert),
                 tooltip: "More",
-                onPressed: () {}),
+                onPressed: () {
+                  _log.fine("IconButton 'More' onPressed()");
+                }),
           ]),
       body: body,
       floatingActionButton: floatingActionButton,

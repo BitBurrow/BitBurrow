@@ -4,10 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
+import 'package:logging/logging.dart';
 import 'dart:math';
 import 'dart:convert' as convert;
 import 'main.dart';
 import 'parent_form_state.dart';
+
+final _log = Logger('servers_screen');
 
 class ServersScreen extends StatelessWidget {
   const ServersScreen({Key? key}) : super(key: key);
@@ -28,10 +31,12 @@ class ServersFormState extends ParentFormState {
   String get restorationId => 'servers_form';
 
   @override
-  Future<http.Response?> callApi() => http.post(Uri.http(
-        '${loginState.hub}:8443',
-        '/v1/accounts/${loginState.pureLoginKey}/servers',
-      ));
+  Future<http.Response?> callApi() {
+    String domain = '${loginState.hub}:8443';
+    String path = '/v1/accounts/${loginState.pureLoginKey}/servers';
+    _log.info("POST http $domain$path");
+    return http.post(Uri.http(domain, path));
+  }
 
   @override
   String validateStatusCode(status) {
@@ -121,7 +126,10 @@ class ServersFormState extends ParentFormState {
         ),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: handleSubmitted,
+        onPressed: () {
+          _log.fine("floatingActionButton onPressed()");
+          return handleSubmitted();
+        },
         tooltip: 'Set up a new server',
         backgroundColor: Theme.of(context).colorScheme.primary,
         child: const Icon(Icons.add),

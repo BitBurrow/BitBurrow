@@ -2,10 +2,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:logging/logging.dart';
 import 'main.dart';
+
+final _log = Logger('parent_form_state');
 
 const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
 const int accountLen = 21; // including dashes
+const String aBase28Digit = '[$base28Digits]';
+var accountRE = RegExp(
+    '($aBase28Digit{4})-$aBase28Digit{5}-$aBase28Digit{4}-$aBase28Digit{5}');
+String accountREReplace(Match m) => "${m[1]}-.....-....-.....";
+var pureAccountRE = RegExp(
+    '($aBase28Digit{4})$aBase28Digit{5}$aBase28Digit{4}$aBase28Digit{5}');
+String pureAccountREReplace(Match m) => "${m[1]}..............";
 
 //                                               123456789012345678901
 // Strip illegal chars, format incoming text as: XXXX-XXXXX-XXXX-XXXXX
@@ -67,6 +77,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
   final scrollController = ScrollController();
 
   void showInSnackBar(String value) {
+    _log.fine("showInSnackBar() $value");
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(value),
@@ -118,14 +129,13 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     var dialogState = DialogStates.open;
     connectingDialog.whenComplete(() {
       if (dialogState == DialogStates.open) {
-        print("user canceled dialog before request completed");
+        _log.info("user canceled dialog before request completed");
         dialogState = DialogStates.canceled;
       } else {
         dialogState = DialogStates.closed;
       }
     });
     var futureDelay = Future.delayed(const Duration(seconds: 1), () {});
-    print("calling http $hub ...");
     http.Response? response;
     var error = "";
     try {
@@ -137,11 +147,12 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     await futureDelay; // ensure user always sees that something is happening
     if (dialogState == DialogStates.canceled) {
       // ignore user-canceled result, successful or not
-      print("(finished http $hub but ignoring because it was user-canceled)");
+      _log.info(
+          "(finished http $hub but ignoring because it was user-canceled)");
       return;
     }
     if (!mounted) {
-      print("B25600 finished http $hub but !mounted");
+      _log.warning("B25600 finished http $hub but !mounted");
       return;
     }
     dialogState = DialogStates.closing;
@@ -149,11 +160,11 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     var displayError = "";
     if (error.isEmpty) {
       if (response == null) {
-        error = "B29348";
+        error = "B29348 response is null";
       } else {
         displayError = validateStatusCode(response.statusCode);
         if (displayError.isNotEmpty) {
-          error = "invalid status code ${response.statusCode}";
+          error = "B14514 invalid status code ${response.statusCode}";
         } else {
           // status code is okay
           try {
@@ -162,7 +173,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
               displayError = "Received invalid data from the hub. Contact the "
                   "hub administrator.";
             } else {
-              print("successful connection to $hub, "
+              _log.fine("successful connection to $hub, "
                   "status code ${response.statusCode}");
             }
           } catch (err) {
@@ -183,7 +194,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       nextScreen();
       return;
     }
-    print("finished http $hub: $error");
+    _log.warning("finished http $hub: $error");
     if (displayError.isEmpty) {
       if (error.startsWith("Failed host lookup:") ||
           error == "Network is unreachable") {
@@ -335,6 +346,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
                       textStyle: Theme.of(context).textTheme.labelLarge,
                     ),
                     onPressed: () {
+                      _log.fine("TextButton '$buttonText' onPressed()");
                       Navigator.of(context).pop(context);
                     },
                     child: Text(buttonText),
@@ -401,6 +413,8 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
                       textStyle: Theme.of(context).textTheme.labelLarge,
                     ),
                     onPressed: () {
+                      _log.fine("cancel TextButton '$cancelButtonText' "
+                          "onPressed()");
                       // don't save; return null
                       Navigator.of(context).pop(context);
                     },
@@ -411,6 +425,8 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
                     textStyle: Theme.of(context).textTheme.labelLarge,
                   ),
                   onPressed: () {
+                    _log.fine("okay TextButton '$cancelButtonText' "
+                        "onPressed()");
                     dialogFormKey.currentState!.save();
                     Navigator.of(context).pop(context);
                   },

@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:logging/logging.dart';
 import 'dart:math';
 import 'main.dart';
+
+final _log = Logger('new_login_key_screen');
 
 class NewLoginKeyScreen extends StatelessWidget {
   const NewLoginKeyScreen({Key? key}) : super(key: key);
@@ -57,6 +60,8 @@ class NewLoginKeyScreen extends StatelessWidget {
             Center(
               child: ElevatedButton(
                 onPressed: () {
+                  _log.fine(
+                      "ElevatedButton 'I HAVE WRITTEN IT DOWN' onPressed()");
                   context.push('/sign-in');
                 },
                 child: const Text("I HAVE WRITTEN IT DOWN"),

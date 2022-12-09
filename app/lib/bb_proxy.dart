@@ -1,6 +1,9 @@
 import 'dart:io' as io;
 import 'dart:async' as async;
 import 'package:dartssh2/dartssh2.dart' as ssh;
+import 'package:logging/logging.dart';
+
+final _log = Logger('bb_proxy');
 
 class BbProxy {
   var sshUser = '';
@@ -110,7 +113,7 @@ class BbProxy {
         connection.stream.cast<List<int>>().pipe(socket);
         socket.pipe(connection.sink);
       } catch (err) {
-        // print("B58185 can't connect to $toAddress:$toPort: $err");
+        _log.warning("B58185 can't connect to $toAddress:$toPort: $err");
         connection.sink.close();
       }
     }

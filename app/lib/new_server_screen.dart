@@ -1,8 +1,7 @@
-// ignore_for_file: avoid_print
-
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:logging/logging.dart';
 import 'dart:io' as io;
 import 'dart:async' as async;
 import 'dart:convert' as convert;
@@ -10,6 +9,8 @@ import 'main.dart';
 import 'parent_form_state.dart';
 import 'bb_proxy.dart';
 import 'step_box.dart';
+
+final _log = Logger('new_server_screen');
 
 class NewServerScreen extends StatelessWidget {
   const NewServerScreen({Key? key}) : super(key: key);
@@ -42,7 +43,7 @@ class WebSocketMessenger {
     io.WebSocket.connect(url).then((io.WebSocket socket) async {
       _ws = socket;
       if (_ws == null) {
-        print("B10647 WebSocket can't connect");
+        _log.warning("B10647 WebSocket can't connect");
         return;
       }
       _connected.complete('connected');
@@ -51,10 +52,10 @@ class WebSocketMessenger {
           _inbound.sink.add(message);
         },
         onError: (err) {
-          print("B4745 WebSocket: $err");
+          _log.warning("B47455 WebSocket: $err");
         },
         onDone: () {
-          print('connection to server closed');
+          _log.info('connection to server closed');
         },
       );
     });
@@ -63,7 +64,7 @@ class WebSocketMessenger {
   Future<void> add(message) async {
     await _connected.future; // wait until connected
     if (_ws == null) {
-      print("B10648 WebSocket can't connect");
+      _log.warning("B10648 WebSocket can't connect");
     } else {
       _ws!.add(message);
     }
@@ -72,7 +73,7 @@ class WebSocketMessenger {
   Future<void> close(message) async {
     await _connected.future; // wait until connected
     if (_ws == null) {
-      print("B10649 WebSocket can't connect");
+      _log.warning("B10649 WebSocket can't connect");
     } else {
       _ws!.close;
     }
@@ -137,6 +138,7 @@ class NewServerFormState extends ParentFormState {
 
   Future<void> hubCommander(String json) async {
     // process one command from the hub
+    _log.info("hubCommand ${json.trim().characters.take(90)}"); // max 2 lines
     var result = "okay";
     try {
       var command = convert.jsonDecode(json);
@@ -149,8 +151,8 @@ class NewServerFormState extends ParentFormState {
         var value = e.value;
         try {
           if (key == 'print') {
-            // print text in app console
-            print("hub: ${value['text']}");
+            // print text to logging system
+            _log.info("hub: ${value['text']}");
           } else if (key == 'add_checkbox_step') {
             // add a checkbox step to the list of steps displayed for the user
             addStep(StepData(text: value['text'], type: StepTypes.checkbox));
@@ -208,13 +210,14 @@ class NewServerFormState extends ParentFormState {
             result = "B19842 unknown command: $key";
           }
         } catch (err) {
-          result = "B18332 illegal arguments ${json.trim()}: $err";
+          result = "B18332 illegal arguments: $err";
         }
       }
     } catch (err) {
-      result = "B50129 illegal command ${json.trim()}: "
+      result = "B50129 illegal command: "
           "${err.toString().replaceAll(RegExp(r'[\r\n]+'), ' ¶ ')}";
     }
+    _log.info("hubCommand result: $result");
     hubWrite({'result': result});
   }
 
@@ -228,9 +231,7 @@ class NewServerFormState extends ParentFormState {
     Map<String, dynamic> result = {};
     for (var interface in interfaces) {
       List<String> i = [];
-      print("${interface.name} →");
       for (var address in interface.addresses) {
-        print("    ${address.address}");
         i.add(address.address.toString());
       }
       result[interface.name] = i;
@@ -297,6 +298,8 @@ class NewServerFormState extends ParentFormState {
 
   Widget stepBox(contents, index) => StepBox(
         onCheckboxTap: (newValue) {
+          _log.fine("CheckBox index $index tap; now $newValue; "
+              "complete $_stepsComplete");
           if (index < (_stepsComplete - 1)) {
             if (_stepsList[_stepsList.length - 1].type != StepTypes.process) {
               // skip snackbar when a process is pending
@@ -319,6 +322,8 @@ class NewServerFormState extends ParentFormState {
           }
         },
         onButtonPress: () {
+          _log.fine("ElevatedButton '${_stepsList[index].text.trim()}' "
+              "onPressed()");
           setState(() {
             _stepsComplete += 1;
             _buttonPressed.complete("pressed");

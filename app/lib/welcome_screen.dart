@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:logging/logging.dart';
 import 'dart:convert' as convert;
 import 'dart:math';
 import 'main.dart';
 import 'parent_form_state.dart';
+
+final _log = Logger('welcome_screen');
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({Key? key}) : super(key: key);
@@ -31,10 +34,12 @@ class WelcomeFormState extends ParentFormState {
   String get restorationId => 'welcome_form';
 
   @override
-  Future<http.Response?> callApi() => http.post(Uri.http(
-        '${loginState.hub}:8443',
-        '/v1/accounts/${loginState.pureCoupon}/accounts',
-      ));
+  Future<http.Response?> callApi() {
+    String domain = '${loginState.hub}:8443';
+    String path = '/v1/accounts/${loginState.pureCoupon}/accounts';
+    _log.info("POST http $domain$path");
+    return http.post(Uri.http(domain, path));
+  }
 
   @override
   String validateStatusCode(status) {
@@ -171,6 +176,7 @@ class WelcomeFormState extends ParentFormState {
               Center(
                 child: ElevatedButton(
                   onPressed: () {
+                    _log.fine("ElevatedButton 'SUBMIT' onPressed()");
                     var err = "";
                     if (validateTextFields()) {
                       err = "Please fix the errors in red before submitting.";
