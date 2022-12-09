@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
 import 'dart:io' as io;
+import 'global.dart' as global;
 import 'welcome_screen.dart';
 import 'logger_manager.dart';
 import 'new_login_key_screen.dart';
@@ -13,10 +14,9 @@ import 'servers_screen.dart';
 import 'new_server_screen.dart';
 
 final _log = Logger('main');
-late final LoggerManager _logMan;
 
 void main() async {
-  _logMan = LoggerManager();
+  global.logMan = LoggerManager();
   _log.info("starting");
   WidgetsFlutterBinding.ensureInitialized();
   await onAppStart();
@@ -44,24 +44,23 @@ class LoginState {
   }
 }
 
-var loginState = LoginState();
-
 Future<void> onAppStart() async {
   _log.fine("begin onAppStart()");
   // fixme: user sees blank screen until this completes; implement a loading
   // ... screen if this method takes too long
   try {
     var keyStore = const storage.FlutterSecureStorage();
-    loginState.hub = (await keyStore.read(key: 'hub')) ?? "";
-    _log.info("Loaded from secure storage: hub ${loginState.hub}");
-    loginState.loginKey = (await keyStore.read(key: 'login_key')) ?? "";
-    _log.info("Loaded from secure storage: login key ${loginState.loginKey}");
-    loginState.loginKeyVerified =
+    global.loginState.hub = (await keyStore.read(key: 'hub')) ?? "";
+    _log.info("Loaded from secure storage: hub ${global.loginState.hub}");
+    global.loginState.loginKey = (await keyStore.read(key: 'login_key')) ?? "";
+    _log.info("Loaded from secure storage: "
+        "login key ${global.loginState.loginKey}");
+    global.loginState.loginKeyVerified =
         (await keyStore.read(key: 'login_key_verified') == 'true');
     _log.info("Loaded from secure storage: "
-        "verified status '${loginState.loginKeyVerified}'");
+        "verified status '${global.loginState.loginKeyVerified}'");
     // login key is saved if and only if it's verified and user opts to store it
-    loginState.saveLoginKey = loginState.loginKeyVerified;
+    global.loginState.saveLoginKey = global.loginState.loginKeyVerified;
   } catch (err) {
     if (io.Platform.environment['DBUS_SESSION_BUS_ADDRESS'] == 'disabled:') {
       _log.warning("B70101 D-Bus has been disabled; add this to .bashrc: "
@@ -156,7 +155,7 @@ class App extends StatelessWidget {
         _log.finer("GoRouter() redirect; location==${state.location}");
       }
       _log.finer("GoRouter() redirect; subloc==${state.subloc}");
-      if (state.subloc == '/' && loginState.loginKeyVerified) {
+      if (state.subloc == '/' && global.loginState.loginKeyVerified) {
         // if we have valid login key, skip welcome screen and proceed with automatic sign-in
         return '/sign-in';
       }

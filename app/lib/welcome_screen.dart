@@ -5,6 +5,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
 import 'dart:convert' as convert;
 import 'dart:math';
+import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
 
@@ -35,8 +36,8 @@ class WelcomeFormState extends ParentFormState {
 
   @override
   Future<http.Response?> callApi() {
-    String domain = '${loginState.hub}:8443';
-    String path = '/v1/accounts/${loginState.pureCoupon}/accounts';
+    String domain = '${global.loginState.hub}:8443';
+    String path = '/v1/accounts/${global.loginState.pureCoupon}/accounts';
     _log.info("POST http $domain$path");
     return http.post(Uri.http(domain, path));
   }
@@ -61,9 +62,10 @@ class WelcomeFormState extends ParentFormState {
     if (pureLoginKey == null || pureLoginKey.length != accountLen - 3) {
       return "login_key is $pureLoginKey"; // error
     }
-    loginState.newLoginKey = loginState.dressLoginKey(pureLoginKey);
-    loginState.loginKey = ''; // force user to type it
-    loginState.loginKeyVerified = false;
+    global.loginState.newLoginKey =
+        global.loginState.dressLoginKey(pureLoginKey);
+    global.loginState.loginKey = ''; // force user to type it
+    global.loginState.loginKeyVerified = false;
     return "";
   }
 
@@ -71,11 +73,11 @@ class WelcomeFormState extends ParentFormState {
   nextScreen() => context.push('/new-login-key');
 
   @override
-  String getHubValue() => loginState.hub;
+  String getHubValue() => global.loginState.hub;
 
   @override
   void setHubValue(value) {
-    loginState.hub = value;
+    global.loginState.hub = value;
   }
 
   @override
@@ -83,7 +85,7 @@ class WelcomeFormState extends ParentFormState {
 
   @override
   void setAccountValue(value) {
-    loginState.coupon = value;
+    global.loginState.coupon = value;
   }
 
   @override

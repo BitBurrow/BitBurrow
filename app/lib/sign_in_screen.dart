@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
 import 'package:logging/logging.dart';
 import 'dart:convert' as convert;
 import 'dart:math';
+import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
 
@@ -42,8 +43,8 @@ class SignInFormState extends ParentFormState {
 
   @override
   Future<http.Response?> callApi() {
-    String domain = '${loginState.hub}:8443';
-    String path = '/v1/accounts/${loginState.pureLoginKey}/servers';
+    String domain = '${global.loginState.hub}:8443';
+    String path = '/v1/accounts/${global.loginState.pureLoginKey}/servers';
     _log.info("GET http $domain$path");
     return http.get(Uri.http(domain, path));
   }
@@ -52,19 +53,20 @@ class SignInFormState extends ParentFormState {
   String validateStatusCode(status) {
     bool serverError;
     if (status == 200 || status == 403) {
-      loginState.loginKeyVerified = status == 200;
+      global.loginState.loginKeyVerified = status == 200;
       serverError = false;
     } else {
       serverError = true;
     }
     const keyStore = storage.FlutterSecureStorage();
     // if loginState.saveLoginKey == false, values have already been cleared
-    if (loginState.saveLoginKey && loginState.loginKeyVerified) {
+    if (global.loginState.saveLoginKey && global.loginState.loginKeyVerified) {
       // only save login key if user opts in AND login key is valid
-      _log.info("Saving to secure storage: hub ${loginState.hub}");
-      keyStore.write(key: 'hub', value: loginState.hub);
-      _log.info("Saving to secure storage: login key ${loginState.loginKey}");
-      keyStore.write(key: 'login_key', value: loginState.loginKey);
+      _log.info("Saving to secure storage: hub ${global.loginState.hub}");
+      keyStore.write(key: 'hub', value: global.loginState.hub);
+      _log.info("Saving to secure storage: "
+          "login key ${global.loginState.loginKey}");
+      keyStore.write(key: 'login_key', value: global.loginState.loginKey);
       _log.info("Saving to secure storage: verification state 'true'");
       keyStore.write(key: 'login_key_verified', value: 'true');
     }
@@ -73,7 +75,7 @@ class SignInFormState extends ParentFormState {
           "Make sure you typed the hub correctly, try again later, or "
           "contact the hub administrator.";
     } else {
-      if (loginState.loginKeyVerified) {
+      if (global.loginState.loginKeyVerified) {
         return "";
       } else {
         return "Invalid login key. Please check what you typed "
@@ -86,7 +88,7 @@ class SignInFormState extends ParentFormState {
   String processApiResponse(response) {
     final jsonResponse =
         convert.jsonDecode(response.body)['servers'] as List<dynamic>;
-    loginState.servers = List<int>.from(jsonResponse);
+    global.loginState.servers = List<int>.from(jsonResponse);
     return "";
   }
 
@@ -94,19 +96,19 @@ class SignInFormState extends ParentFormState {
   nextScreen() => context.push('/servers');
 
   @override
-  String getHubValue() => loginState.hub;
+  String getHubValue() => global.loginState.hub;
 
   @override
   void setHubValue(value) {
-    loginState.hub = value;
+    global.loginState.hub = value;
   }
 
   @override
-  String getAccountValue() => loginState.loginKey;
+  String getAccountValue() => global.loginState.loginKey;
 
   @override
   void setAccountValue(value) {
-    loginState.loginKey = value;
+    global.loginState.loginKey = value;
   }
 
   @override
@@ -176,10 +178,10 @@ class SignInFormState extends ParentFormState {
                           controlAffinity: ListTileControlAffinity.leading,
                           contentPadding: EdgeInsets.zero,
                           dense: true,
-                          value: loginState.saveLoginKey,
+                          value: global.loginState.saveLoginKey,
                           onChanged: (value) {
                             setState(() {
-                              loginState.saveLoginKey = value == true;
+                              global.loginState.saveLoginKey = value == true;
                             });
                           },
                         ),
@@ -212,7 +214,7 @@ class SignInFormState extends ParentFormState {
   }
 
   void signIn() {
-    if (loginState.saveLoginKey == false) {
+    if (global.loginState.saveLoginKey == false) {
       const keyStore = storage.FlutterSecureStorage();
       // if box not checked, clear stored login key even before trying server
       // no need: keyStore.write(key: 'hub', value: '');
@@ -230,7 +232,7 @@ class SignInFormState extends ParentFormState {
 
   void checkLoginState(context) {
     // if login key is verified, press the sign-in button (virtually)
-    if (loginState.loginKeyVerified) {
+    if (global.loginState.loginKeyVerified) {
       signIn();
     }
   }

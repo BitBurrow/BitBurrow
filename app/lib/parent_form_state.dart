@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
+import 'global.dart' as global;
 import 'main.dart';
 
 final _log = Logger('parent_form_state');
@@ -10,10 +11,10 @@ final _log = Logger('parent_form_state');
 const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
 const int accountLen = 21; // including dashes
 const String aBase28Digit = '[$base28Digits]';
-var accountRE = RegExp(
+final accountRE = RegExp(
     '($aBase28Digit{4})-$aBase28Digit{5}-$aBase28Digit{4}-$aBase28Digit{5}');
 String accountREReplace(Match m) => "${m[1]}-.....-....-.....";
-var pureAccountRE = RegExp(
+final pureAccountRE = RegExp(
     '($aBase28Digit{4})$aBase28Digit{5}$aBase28Digit{4}$aBase28Digit{5}');
 String pureAccountREReplace(Match m) => "${m[1]}..............";
 
@@ -186,8 +187,8 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       }
     }
     if (error.isEmpty) {
-      if (loginState.hub != hub) {
-        error = "B99034 '${loginState.hub}'!='$hub'";
+      if (global.loginState.hub != hub) {
+        error = "B99034 '${global.loginState.hub}'!='$hub'";
       }
     }
     if (error.isEmpty) {

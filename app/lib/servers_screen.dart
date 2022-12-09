@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:logging/logging.dart';
 import 'dart:math';
 import 'dart:convert' as convert;
+import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
 
@@ -32,8 +33,8 @@ class ServersFormState extends ParentFormState {
 
   @override
   Future<http.Response?> callApi() {
-    String domain = '${loginState.hub}:8443';
-    String path = '/v1/accounts/${loginState.pureLoginKey}/servers';
+    String domain = '${global.loginState.hub}:8443';
+    String path = '/v1/accounts/${global.loginState.pureLoginKey}/servers';
     _log.info("POST http $domain$path");
     return http.post(Uri.http(domain, path));
   }
@@ -65,11 +66,11 @@ class ServersFormState extends ParentFormState {
   nextScreen() => context.push('/new-server');
 
   @override
-  String getHubValue() => loginState.hub;
+  String getHubValue() => global.loginState.hub;
 
   @override
   void setHubValue(value) {
-    loginState.hub = value;
+    global.loginState.hub = value;
   }
 
   @override
@@ -77,7 +78,7 @@ class ServersFormState extends ParentFormState {
 
   @override
   void setAccountValue(value) {
-    loginState.loginKey = value;
+    global.loginState.loginKey = value;
   }
 
   @override
@@ -93,7 +94,7 @@ class ServersFormState extends ParentFormState {
             sizedBoxSpace,
             FractionallySizedBox(
               widthFactor: 0.8,
-              child: loginState.servers.isEmpty
+              child: global.loginState.servers.isEmpty
                   ? Text("You have no VPN servers set up.",
                       textAlign: TextAlign.center,
                       textScaleFactor: 1.8,
@@ -114,7 +115,7 @@ class ServersFormState extends ParentFormState {
                 child: SizedBox(
                   width: min(MediaQuery.of(context).size.width, 700),
                   child: ListView.builder(
-                    itemCount: loginState.servers.length,
+                    itemCount: global.loginState.servers.length,
                     padding: const EdgeInsets.symmetric(horizontal: 18),
                     itemBuilder: (context, index) =>
                         vpnServerCard(context, index),
@@ -154,7 +155,7 @@ class ServersFormState extends ParentFormState {
                       width: 42,
                     ),
                     title: Text(
-                      "VPN server ${loginState.servers[index]}",
+                      "VPN server ${global.loginState.servers[index]}",
                       style: const TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.bold,

@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 import 'dart:io' as io;
 import 'dart:async' as async;
 import 'dart:convert' as convert;
+import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
 import 'bb_proxy.dart';
@@ -36,8 +37,8 @@ class WebSocketMessenger {
 
   WebSocketMessenger() {
     final wsPath =
-        '/v1/accounts/${loginState.pureLoginKey}/servers/18/setup_ws';
-    final url = 'ws://${loginState.hub}:8443$wsPath';
+        '/v1/accounts/${global.loginState.pureLoginKey}/servers/18/setup_ws';
+    final url = 'ws://${global.loginState.hub}:8443$wsPath';
     // fixme: WebSocket.connect() may raise "WebSocketException: Connection
     //   to ... was not upgraded to websocket" but try-catch misses it
     io.WebSocket.connect(url).then((io.WebSocket socket) async {
@@ -121,11 +122,11 @@ class NewServerFormState extends ParentFormState {
   }
 
   @override
-  String getHubValue() => loginState.hub;
+  String getHubValue() => global.loginState.hub;
 
   @override
   void setHubValue(value) {
-    loginState.hub = value;
+    global.loginState.hub = value;
   }
 
   @override
@@ -133,7 +134,7 @@ class NewServerFormState extends ParentFormState {
 
   @override
   void setAccountValue(value) {
-    loginState.loginKey = value;
+    global.loginState.loginKey = value;
   }
 
   Future<void> hubCommander(String json) async {
