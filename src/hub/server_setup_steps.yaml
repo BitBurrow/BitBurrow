@@ -142,4 +142,6 @@
   key: add_button_step
   value:
     text: CONTINUE
-
+- id: 368
+  key: dump_and_clear_log
+  value: none

@@ -62,12 +62,12 @@ class SignInFormState extends ParentFormState {
     // if loginState.saveLoginKey == false, values have already been cleared
     if (global.loginState.saveLoginKey && global.loginState.loginKeyVerified) {
       // only save login key if user opts in AND login key is valid
-      _log.info("Saving to secure storage: hub ${global.loginState.hub}");
+      _log.info("Save to secure storage: hub ${global.loginState.hub}");
       keyStore.write(key: 'hub', value: global.loginState.hub);
-      _log.info("Saving to secure storage: "
+      _log.info("Save to secure storage: "
           "login key ${global.loginState.loginKey}");
       keyStore.write(key: 'login_key', value: global.loginState.loginKey);
-      _log.info("Saving to secure storage: verification state 'true'");
+      _log.info("Save to secure storage: verification state 'true'");
       keyStore.write(key: 'login_key_verified', value: 'true');
     }
     if (serverError) {
@@ -216,6 +216,7 @@ class SignInFormState extends ParentFormState {
   void signIn() {
     if (global.loginState.saveLoginKey == false) {
       const keyStore = storage.FlutterSecureStorage();
+      _log.info("Clear stored login key from secure storage");
       // if box not checked, clear stored login key even before trying server
       // no need: keyStore.write(key: 'hub', value: '');
       keyStore.write(key: 'login_key', value: '');

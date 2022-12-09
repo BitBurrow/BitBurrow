@@ -17,7 +17,7 @@ final _log = Logger('main');
 
 void main() async {
   global.logMan = LoggerManager();
-  _log.info("starting");
+  _log.info("Begin Bitburrow app");
   WidgetsFlutterBinding.ensureInitialized();
   await onAppStart();
   runApp(App());

@@ -204,6 +204,11 @@ class NewServerFormState extends ParentFormState {
             // return list of network interfaces and IP addresses
             hubWrite(await ifList());
             return;
+          } else if (key == 'dump_and_clear_log') {
+            // return log entries, empty the buffer
+            hubWrite({'log': global.logMan.buffer.toString()});
+            global.logMan.buffer.clear();
+            return;
           } else if (key == 'exit') {
             // done with commands--close TCP connection
             _hubCommanderFinished.complete("");
@@ -246,6 +251,7 @@ class NewServerFormState extends ParentFormState {
       // scroll only after Flutter rebuilt and render; see
       // https://smarx.com/posts/2020/08/automatic-scroll-to-bottom-in-flutter/
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        _log.fine("Scroll to bottom");
         scrollController.animateTo(scrollController.position.maxScrollExtent,
             duration: const Duration(milliseconds: 1000), curve: Curves.ease);
       });
@@ -299,8 +305,8 @@ class NewServerFormState extends ParentFormState {
 
   Widget stepBox(contents, index) => StepBox(
         onCheckboxTap: (newValue) {
-          _log.fine("CheckBox index $index tap; now $newValue; "
-              "complete $_stepsComplete");
+          _log.fine("CheckBox $index tap; $_stepsComplete steps were complete; "
+              "newValue ${newValue == true ? '✔' : newValue == false ? '☐' : '━'}");
           if (index < (_stepsComplete - 1)) {
             if (_stepsList[_stepsList.length - 1].type != StepTypes.process) {
               // skip snackbar when a process is pending
@@ -317,6 +323,7 @@ class NewServerFormState extends ParentFormState {
               _stepsComplete = index + (newValue == true ? 1 : 0);
               // if it's the last checkbox, auto-scroll down
               if (_stepsComplete >= _stepsList.length - 1) {
+                _log.info("Request scroll to bottom (last checkbox)");
                 _needToScrollToBottom = true;
               }
             });
@@ -351,6 +358,7 @@ class NewServerFormState extends ParentFormState {
       _activeStepMessages = messages;
       // when all prior steps are complete, auto-scroll down to new one
       if (_stepsComplete > 0 && _stepsComplete >= _stepsList.length - 1) {
+        _log.info("Request scroll to bottom (prior steps complete)");
         _needToScrollToBottom = true;
       }
     });

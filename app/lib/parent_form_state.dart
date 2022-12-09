@@ -78,7 +78,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
   final scrollController = ScrollController();
 
   void showInSnackBar(String value) {
-    _log.fine("showInSnackBar() $value");
+    _log.fine("showInSnackBar: $value");
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(value),
@@ -174,8 +174,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
               displayError = "Received invalid data from the hub. Contact the "
                   "hub administrator.";
             } else {
-              _log.fine("successful connection to $hub, "
-                  "status code ${response.statusCode}");
+              _log.fine("$hub returned status code ${response.statusCode}");
             }
           } catch (err) {
             displayError = "Unable to parse the hub's response. Make sure "
