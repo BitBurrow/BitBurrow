@@ -8,6 +8,7 @@ import os
 import platformdirs
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import tempfile
@@ -503,18 +504,32 @@ def db_pathname(create_dir=False):
 
 
 engine = None
+is_worker_zero = False
 app = FastAPI()
 limiter = slowapi.Limiter(key_func=slowapi.util.get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(slowapi.errors.RateLimitExceeded, slowapi._rate_limit_exceeded_handler)
 
 
+def get_lock(process_name):  # source: https://stackoverflow.com/a/7758075
+    # hold a reference to our socket so it does not get garbage collected when the function exits
+    get_lock._lock_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        # the null byte (\0) means the socket is created in the abstract namespace instead of being
+        # created on the file system itself;  works only in Linux
+        get_lock._lock_socket.bind('\0' + process_name)
+    except socket.error:
+        return False
+    return True
+
+
 @app.on_event('startup')
 def on_startup():
+    global is_worker_zero
+    is_worker_zero = get_lock('worker_init_lock_BMADCTCY')
     args = cli()  # https://www.uvicorn.org/deployment/#running-programmatically
     global engine
-    if engine:  # initialize once
-        return
+    assert engine is None
     if args.dbfile == '':  # use default location
         db_file = db_pathname(create_dir=True)
     elif args.dbfile == '-':
@@ -522,21 +537,26 @@ def on_startup():
     else:
         db_file = args.dbfile
     engine = create_engine(f'sqlite:///{db_file}', echo=(args.log_level >= 4))
-    SQLModel.metadata.create_all(engine)
-    try:
-        wgif = Netif.startup()  # configure new WireGuard interface
-        Account.startup()  # add master login key on first run
-        Client.startup(wgif)  # add peers to WireGuard interface
-    except Exception as e:
-        on_shutdown()
-        raise e
+    if is_worker_zero:
+        # avoid race condition creating tables: OperationalError: table ... already exists
+        SQLModel.metadata.create_all(engine)
+    if is_worker_zero:
+        # only first worker does network set-up, tear-down; avoid "RTNETLINK answers: File exists"
+        try:
+            wgif = Netif.startup()  # configure new WireGuard interface
+            Account.startup()  # add master login key on first run
+            Client.startup(wgif)  # add peers to WireGuard interface
+        except Exception as e:
+            on_shutdown()
+            raise e
     logger = logging.getLogger(app_name())
     logger.debug(f"initialization complete")
 
 
 @app.on_event('shutdown')
 def on_shutdown():
-    Netif.shutdown()
+    if is_worker_zero:
+        Netif.shutdown()
 
 
 ###
@@ -699,8 +719,7 @@ def entry_point():  # called from setup.cfg
             f'{app_name()}:app',
             host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
             port=8443,
-            # workers=3,  # FIXME
-            workers=1,
+            workers=3,
             log_level='info'
             # FIXME: generate self-signed TLS cert based on IP address:
             #     mkdir -p ../.ssl/private ../.ssl/certs
