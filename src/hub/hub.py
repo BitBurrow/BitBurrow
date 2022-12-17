@@ -325,7 +325,7 @@ class Netif(SQLModel, table=True):
         sudo_iptables(
             '--table nat'.split(' ')
             + '--append POSTROUTING'.split(' ')
-            + ['--out-interface', ip_route_show('dev')]  # name of interface with default route
+            + ['--out-interface', default_route_interface()]
             + '--jump MASQUERADE'.split(' ')
         )
         return i
@@ -404,12 +404,44 @@ class Client(SQLModel, table=True):
 ###
 
 
-def ip_route_show(item: str):  # name of interface ('dev') or IP ('via') with default route
-    droute = ip(['route', 'show', 'to', '0.0.0.0/0'])
-    # example output: default via 192.168.8.1 dev wlp58s0 proto dhcp metric 600
-    dev_portion = re.search(r'\s' + item + r'\s(\S+)', droute)
-    assert dev_portion is not None, f"ip route returned: {droute}"
-    return dev_portion[1]
+def random_free_port(use_udp):
+    # for TCP, set use_udp to False
+    min = 2000
+    max = 65536  # min <= port < max
+    attempts = 0
+    default_route_ip = default_route_local_ip()
+    while True:  # try ports until we find one that's available
+        port = secrets.randbelow(max - min) + min
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM if use_udp else socket.SOCK_STREAM)
+        try:
+            sock.bind((default_route_ip, port))
+            sock.close()
+            break
+        except Exception:  # probably errno.EADDRINUSE (port in use)
+            pass
+        attempts += 1
+        assert attempts <= 99
+    return port
+
+
+def default_route_interface():  # network interface of default route
+    return ip_route_get('dev')
+
+
+def default_route_local_ip():  # local IP address of default route
+    return ip_route_get('src')
+
+
+def default_route_gateway():  # default gateway IP adddress
+    return ip_route_get('via')
+
+
+def ip_route_get(item: str):  # get default route
+    droute = ip(['route', 'get', '1.0.0.0'])
+    # example output: 1.0.0.0 via 192.168.8.1 dev wlp58s0 src 192.168.8.101 uid 1000
+    value_portion = re.search(r'\s' + item + r'\s(\S+)', droute)
+    assert value_portion is not None, f"ip route returned: {droute}"
+    return value_portion[1]
 
 
 def sudo_sysctl(args):
@@ -781,24 +813,24 @@ def uvicorn_log_config():
 def entry_point():  # called from setup.cfg
     import uvicorn  # https://www.uvicorn.org/
 
-    try:
-        uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
-            f'{app_name()}:app',
-            host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
-            port=8443,
-            workers=3,
-            log_level='info',
-            log_config=uvicorn_log_config(),
-            # FIXME: generate self-signed TLS cert based on IP address:
-            #     mkdir -p ../.ssl/private ../.ssl/certs
-            #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
-            #     openssl req -new -x509 -nodes -days 3650 -newkey rsa:2048 -keyout ../.ssl/private/fastapiselfsigned.key -out ../.ssl/certs/fastapiselfsigned.crt -subj "/C=  /ST=  /L=   /O=   /OU=   /CN=$IP"
-            # enable TLS in uvicorn.run():
-            #     ssl_keyfile='../.ssl/private/fastapiselfsigned.key',
-            #     ssl_certfile='../.ssl/certs/fastapiselfsigned.crt',
-        )
-    except KeyboardInterrupt:
-        print(f"B23324 KeyboardInterrupt")
-    except Exception as e:
-        print(f"B22237 Uvicorn error: {e}")
+        try:
+            uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
+                f'{app_name()}:app',
+                host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
+                port=8443,
+                workers=3,
+                log_level='info',
+                log_config=uvicorn_log_config(),
+                # FIXME: generate self-signed TLS cert based on IP address:
+                #     mkdir -p ../.ssl/private ../.ssl/certs
+                #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
+                #     openssl req -new -x509 -nodes -days 3650 -newkey rsa:2048 -keyout ../.ssl/private/fastapiselfsigned.key -out ../.ssl/certs/fastapiselfsigned.crt -subj "/C=  /ST=  /L=   /O=   /OU=   /CN=$IP"
+                # enable TLS in uvicorn.run():
+                #     ssl_keyfile='../.ssl/private/fastapiselfsigned.key',
+                #     ssl_certfile='../.ssl/certs/fastapiselfsigned.crt',
+            )
+        except KeyboardInterrupt:
+            print(f"B23324 KeyboardInterrupt")
+        except Exception as e:
+            print(f"B22237 Uvicorn error: {e}")
     on_shutdown()
