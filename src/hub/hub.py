@@ -135,6 +135,12 @@ base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1
 login_key_len: Final[int] = 18
 login_len: Final[int] = 4  # digits from beginning of login_key, used like a username
 key_len: Final[int] = 14  # remaining digits of login_key, used like a password
+base28_digit: Final[str] = f'[{base28_digits}]'
+x4: Final[str] = '{4}'
+x5: Final[str] = '{5}'
+login_key_re: Final[re.Pattern] = re.compile(  # capture first 4 digits ('login' portion)
+    f'({base28_digit}{x4}){base28_digit}{x5}{base28_digit}{x4}{base28_digit}{x5}'
+)
 
 
 def generate_login_key(len=login_key_len):  # create new login_key
@@ -711,6 +717,67 @@ async def error_test():
     raise HTTPException(status_code=404, detail="Test exception from /raise_error/")
 
 
+# for security, partially redact anything that looks like a login key
+class RedactingFilter(logging.Filter):
+    # based on: https://relaxdiego.com/2014/07/logging-in-python.html
+
+    def __init__(self):
+        super(RedactingFilter, self).__init__()
+
+    def filter(self, record):
+        record.msg = self.redact(record.msg)
+        if isinstance(record.args, dict):
+            for k in record.args.keys():
+                record.args[k] = self.redact(record.args[k])
+        else:
+            record.args = tuple(self.redact(arg) for arg in record.args)
+        return True
+
+    @staticmethod
+    def redact(msg):
+        if not isinstance(msg, str):
+            return msg
+        return login_key_re.sub(r'\1..............', msg)
+
+
+def uvicorn_log_config():
+    # docs: https://docs.python.org/3/library/logging.config.html
+    return yaml.safe_load(
+        textwrap.dedent(
+            '''
+                version: 1
+                disable_existing_loggers: true
+                formatters:
+                    console_log_format:
+                        format: '%(levelname)s: %(message)s'
+                    file_log_format:
+                        format: '%(asctime)s %(levelname)s %(message)s'
+                        datefmt: '%Y-%m-%d %H:%M:%S'
+                filters:
+                    redact_login_keys:
+                        (): hub.hub.RedactingFilter
+                handlers:
+                    console:
+                        class : logging.StreamHandler
+                        formatter: console_log_format
+                        level   : INFO
+                        filters: [redact_login_keys]
+                        #stream  : ext://sys.stdout
+                    #file:
+                    #    class : logging.handlers.RotatingFileHandler
+                    #    formatter: file_log_format
+                    #    filters: [redact_login_keys]
+                    #    filename: bitburrow.log
+                    #    maxBytes: 1024
+                    #    backupCount: 3
+                loggers:
+                    root:
+                        handlers: [console]
+            '''
+        )
+    )
+
+
 def entry_point():  # called from setup.cfg
     import uvicorn  # https://www.uvicorn.org/
 
@@ -720,7 +787,8 @@ def entry_point():  # called from setup.cfg
             host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
             port=8443,
             workers=3,
-            log_level='info'
+            log_level='info',
+            log_config=uvicorn_log_config(),
             # FIXME: generate self-signed TLS cert based on IP address:
             #     mkdir -p ../.ssl/private ../.ssl/certs
             #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
