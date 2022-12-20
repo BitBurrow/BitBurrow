@@ -57,6 +57,44 @@ def cli(return_help_text=False):
         prog=app_name(),
         formatter_class=formatter_class,
     )
+    parser.add_argument(
+        "--set-domain",
+        type=str,
+        default='',
+        help="domain to access hub api and for VPN client subdomains, e.g. a19.example.org",
+    )
+    parser.add_argument(
+        "--get-domain",
+        action='store_true',
+        help="print domain and exit",
+    )
+    parser.add_argument(
+        "--set-ssh-port",
+        type=int,
+        default=0,
+        help="TCP port used when configuring VPN servers; default: random [2000,65535]",
+    )
+    parser.add_argument(
+        "--get-ssh-port",
+        action='store_true',
+        help="print ssh port and exit",
+    )
+    parser.add_argument(
+        "--set-wg-port",
+        type=int,
+        default=0,
+        help="UDP port used by VPN servers; default: random [2000,65535]",
+    )
+    parser.add_argument(
+        "--get-wg-port",
+        action='store_true',
+        help="print wg port and exit",
+    )
+    parser.add_argument(
+        "--api",
+        action='store_true',
+        help="Listen on API port for requests from the app",
+    )
     db_file_display = db_pathname().replace(os.path.expanduser('~'), '~')
     parser.add_argument(
         "--dbfile",
@@ -176,9 +214,38 @@ def validate_login_key(login_key):
 class Hub(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     domain: str = ''  # API url in form example.com or node.example.com
+    ssh_port: int = 0
+    wg_port: int = 0
     # FIXME: add note--recommend url not contain `vpn` or `proxy` for firewalls of clients to block
     hub_number = generate_login_key()  # uniquely identify this hub
     db_version: int = 1
+
+    @staticmethod
+    def startup():
+        logger = logging.getLogger(app_name())
+        with Session(engine) as session:
+            hub_count = session.query(Hub).count()
+        if hub_count == 0:
+            with Session(engine) as session:
+                hub = Hub()
+                hub.ssh_port = random_free_port(use_udp=False, avoid=[8443])
+                hub.wg_port = random_free_port(use_udp=True, avoid=[5353])
+                session.add(hub)
+                session.commit()
+                logger.debug(f"hub row created; ssh_port {hub.ssh_port}; wg_port {hub.wg_port}")
+
+    @staticmethod
+    def state():
+        with Session(engine) as session:
+            statement = select(Hub).where(Hub.id == 1)
+            result = session.exec(statement).one_or_none()
+            assert result is not None
+            return result
+
+    def update(self):
+        with Session(engine) as session:
+            session.add(self)
+            session.commit()
 
 
 ###
@@ -404,7 +471,7 @@ class Client(SQLModel, table=True):
 ###
 
 
-def random_free_port(use_udp):
+def random_free_port(use_udp, avoid=None):
     # for TCP, set use_udp to False
     min = 2000
     max = 65536  # min <= port < max
@@ -412,6 +479,10 @@ def random_free_port(use_udp):
     default_route_ip = default_route_local_ip()
     while True:  # try ports until we find one that's available
         port = secrets.randbelow(max - min) + min
+        attempts += 1
+        assert attempts <= 99
+        if avoid is not None and port in avoid:
+            continue
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM if use_udp else socket.SOCK_STREAM)
         try:
             sock.bind((default_route_ip, port))
@@ -419,8 +490,6 @@ def random_free_port(use_udp):
             break
         except Exception:  # probably errno.EADDRINUSE (port in use)
             pass
-        attempts += 1
-        assert attempts <= 99
     return port
 
 
@@ -542,7 +611,8 @@ def db_pathname(create_dir=False):
 
 
 engine = None
-is_worker_zero = False
+is_worker_zero: bool = True
+hub_state: Hub = None
 app = FastAPI()
 limiter = slowapi.Limiter(key_func=slowapi.util.get_remote_address)
 app.state.limiter = limiter
@@ -561,11 +631,7 @@ def get_lock(process_name):  # source: https://stackoverflow.com/a/7758075
     return True
 
 
-@app.on_event('startup')
-def on_startup():
-    global is_worker_zero
-    is_worker_zero = get_lock('worker_init_lock_BMADCTCY')
-    args = cli()  # https://www.uvicorn.org/deployment/#running-programmatically
+def init(args):
     global engine
     assert engine is None
     if args.dbfile == '':  # use default location
@@ -578,11 +644,21 @@ def on_startup():
     if is_worker_zero:
         # avoid race condition creating tables: OperationalError: table ... already exists
         SQLModel.metadata.create_all(engine)
+    Hub.startup()  # initialize hub data if needed
+    global hub_state
+    hub_state = Hub.state()
+    Account.startup()
+
+
+@app.on_event('startup')
+def on_startup():
+    global is_worker_zero
+    is_worker_zero = get_lock('worker_init_lock_BMADCTCY')
+    init(cli())
     if is_worker_zero:
         # only first worker does network set-up, tear-down; avoid "RTNETLINK answers: File exists"
         try:
             wgif = Netif.startup()  # configure new WireGuard interface
-            Account.startup()  # add master login key on first run
             Client.startup(wgif)  # add peers to WireGuard interface
         except Exception as e:
             on_shutdown()
@@ -813,24 +889,53 @@ def uvicorn_log_config():
 def entry_point():  # called from setup.cfg
     import uvicorn  # https://www.uvicorn.org/
 
-        try:
-            uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
-                f'{app_name()}:app',
-                host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
-                port=8443,
-                workers=3,
-                log_level='info',
-                log_config=uvicorn_log_config(),
-                # FIXME: generate self-signed TLS cert based on IP address:
-                #     mkdir -p ../.ssl/private ../.ssl/certs
-                #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
-                #     openssl req -new -x509 -nodes -days 3650 -newkey rsa:2048 -keyout ../.ssl/private/fastapiselfsigned.key -out ../.ssl/certs/fastapiselfsigned.crt -subj "/C=  /ST=  /L=   /O=   /OU=   /CN=$IP"
-                # enable TLS in uvicorn.run():
-                #     ssl_keyfile='../.ssl/private/fastapiselfsigned.key',
-                #     ssl_certfile='../.ssl/certs/fastapiselfsigned.crt',
+    args = cli()
+    init(args)
+    logger = logging.getLogger(app_name())
+    arg_combo_okay = False
+    if args.set_domain != '':
+        hub_state.domain = args.set_domain
+    if args.get_domain:
+        print(hub_state.domain)
+    if args.set_ssh_port != 0:
+        hub_state.ssh_port = args.set_ssh_port
+    if args.get_ssh_port:
+        print(hub_state.ssh_port)
+    if args.set_wg_port != 0:
+        hub_state.wg_port = args.set_wg_port
+    if args.get_wg_port:
+        print(hub_state.wg_port)
+    if args.set_domain or args.set_ssh_port or args.set_wg_port:
+        hub_state.update()
+        arg_combo_okay = True
+    if args.get_domain or args.get_ssh_port or args.get_wg_port:
+        arg_combo_okay = True
+    if arg_combo_okay:
+        if args.api:
+            logger.warning(
+                "Argument '--api' ignored because '--get-xxx' or '--set-xxx' was specified."
             )
-        except KeyboardInterrupt:
-            print(f"B23324 KeyboardInterrupt")
-        except Exception as e:
-            print(f"B22237 Uvicorn error: {e}")
-    on_shutdown()
+        sys.exit()
+    if not args.api:
+        logger.error("Argument '--api' not specified.")
+        sys.exit()
+    try:
+        uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
+            f'{app_name()}:app',
+            host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
+            port=8443,
+            workers=3,
+            log_level='info',
+            log_config=uvicorn_log_config(),
+            # FIXME: generate self-signed TLS cert based on IP address:
+            #     mkdir -p ../.ssl/private ../.ssl/certs
+            #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
+            #     openssl req -new -x509 -nodes -days 3650 -newkey rsa:2048 -keyout ../.ssl/private/fastapiselfsigned.key -out ../.ssl/certs/fastapiselfsigned.crt -subj "/C=  /ST=  /L=   /O=   /OU=   /CN=$IP"
+            # enable TLS in uvicorn.run():
+            #     ssl_keyfile='../.ssl/private/fastapiselfsigned.key',
+            #     ssl_certfile='../.ssl/certs/fastapiselfsigned.crt',
+        )
+    except KeyboardInterrupt:
+        print(f"B23324 KeyboardInterrupt")
+    except Exception as e:
+        print(f"B22237 Uvicorn error: {e}")
