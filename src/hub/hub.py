@@ -103,13 +103,6 @@ def cli(return_help_text=False):
         help=f"path for database file ('-' for memory-only; default: {db_file_display})",
     )
     parser.add_argument(
-        "-l",
-        "--logfile",
-        type=str,
-        default='-',
-        help="path for log file (default: write to STDERR)",
-    )
-    parser.add_argument(
         "-q",
         "--quiet",
         action='append_const',
@@ -129,17 +122,9 @@ def cli(return_help_text=False):
     args = parser.parse_args()
     args.log_level = 2 + (0 if args.verbose is None else sum(args.verbose))
     del args.verbose
-    if args.log_level >= 3:  # info or debug
-        log_format = '%(asctime)s.%(msecs)03d %(levelname)s %(message)s'
-    else:
-        log_format = '%(message)s'
-    logging.basicConfig(
-        format=log_format,
-        datefmt='%H:%M:%S',
-        filename=args.logfile if args.logfile != '-' else None,
-        filemode='a',
-    )
-    logger = logging.getLogger(app_name())
+    global logger
+    assert logger is None
+    logger = logging.getLogger(__name__)
     log_levels = [
         logging.CRITICAL,
         logging.ERROR,
@@ -155,6 +140,7 @@ def cli(return_help_text=False):
         error = "Invalid log level"
         logger.error(error)
         raise ValueError(error)
+    logging.config.dictConfig(logging_config())
     return args
 
 
@@ -222,7 +208,6 @@ class Hub(SQLModel, table=True):
 
     @staticmethod
     def startup():
-        logger = logging.getLogger(app_name())
         with Session(engine) as session:
             hub_count = session.query(Hub).count()
         if hub_count == 0:
@@ -362,7 +347,6 @@ class Netif(SQLModel, table=True):
 
     @staticmethod
     def startup():
-        logger = logging.getLogger(app_name())
         sudo_sysctl('net.ipv4.ip_forward=1')
         sudo_sysctl('net.ipv6.conf.all.forwarding=1')
         with Session(engine) as session:
@@ -375,7 +359,7 @@ class Netif(SQLModel, table=True):
         with Session(engine) as session:
             statement = select(Netif)
             i = session.exec(statement).one_or_none()  # for the time being, support 1 wg interface
-        Netif.delete_our_wgif(logger)
+        Netif.delete_our_wgif(isShutdown=False)
         wgif = i.iface()
         # configure wgif; see `systemctl status wg-quick@wg0.service`
         sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
@@ -398,20 +382,22 @@ class Netif(SQLModel, table=True):
         return i
 
     @staticmethod
-    def delete_our_wgif(logger=None):  # clean up wg network interfaces
+    def delete_our_wgif(isShutdown):  # clean up wg network interfaces
         for s in re.split(r'(?:^|\n)interface:\s*', sudo_wg()):
             if s == '' or s == '\n':
                 continue
             if_name = re.match(r'\S+', s).group(0)
             if if_name.startswith(wgif_prefix):  # if it was ours, it's safe to delete
-                if logger is not None:
+                if isShutdown:
+                    logger.debug(f"Removing wg interface {if_name}")
+                else:
                     logger.warning(f"Removing abandoned wg interface {if_name}")
                 sudo_ip(['link', 'del', 'dev', if_name])
 
     @staticmethod
     def shutdown():
         sudo_undo_iptables()
-        Netif.delete_our_wgif()
+        Netif.delete_our_wgif(isShutdown=True)
 
 
 ###
@@ -566,7 +552,6 @@ def sudo_wg(args=[], input=None):
 
 
 def run_external(args, input=None):
-    logger = logging.getLogger(app_name())
     log_detail = f"running: {'␣'.join(args)}"  # alternatives: ␣⋄∘•⁕⁔⁃–
     logger.info(log_detail if len(log_detail) < 170 else log_detail[:168] + "…")
     exec_count = 2 if args[0] == 'sudo' else 1
@@ -610,6 +595,7 @@ def db_pathname(create_dir=False):
     return os.path.join(config_dir, f'data.sqlite')
 
 
+logger = None
 engine = None
 is_worker_zero: bool = True
 hub_state: Hub = None
@@ -663,7 +649,8 @@ def on_startup():
         except Exception as e:
             on_shutdown()
             raise e
-    logger = logging.getLogger(app_name())
+    if is_worker_zero:
+        print(f"API listening on port 8443")
     logger.debug(f"initialization complete")
 
 
@@ -715,13 +702,13 @@ class ServerSetup:
         try:
             await self._ws.send_text(json_string)
         except Exception as e:
-            print(f"B38260 WebSocket error: {e}")
+            logger.error(f"B38260 WebSocket error: {e}")
         try:
             return await self._ws.receive_text()
         except WebSocketDisconnect:
-            print(f"B38261 WebSocket disconnect")
+            logger.info(f"B38261 WebSocket disconnect")
         except Exception as e:
-            print(f"B38262 WebSocket error: {e}")
+            logger.error(f"B38262 WebSocket error: {e}")
             # self._error_count += 1
 
     async def config_steps(self):
@@ -734,7 +721,7 @@ class ServerSetup:
             assert step['id'] > priorId
             priorId = step['id']
             reply = await self.send_command_to_client(json.dumps({step['key']: step['value']}))
-            print(f">>>>>>>>>>>>>>> reply: {reply}")
+            logger.info(f"app WebSocket reply: {reply}")
 
 
 @app.post('/v1/accounts/{login_key}/servers')
@@ -758,11 +745,11 @@ async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: in
     try:
         await runTasks.config_steps()
     except asyncio.exceptions.CancelledError:
-        print(f"B15058 config canceled")
+        logger.info(f"B15058 config canceled")
     try:
         await websocket.close()
     except Exception as e:
-        print(f"B38263 WebSocket error: {e}")  # e.g. websocket already closed
+        logger.error(f"B38263 WebSocket error: {e}")  # e.g. websocket already closed
 
 
 @app.get('/pubkeys/{login_key}')
@@ -848,50 +835,70 @@ class RedactingFilter(logging.Filter):
         return login_key_re.sub(r'\1..............', msg)
 
 
-def uvicorn_log_config():
+# use only base logger name, e.g. 'uvicorn.error' → 'uvicorn'
+class LoggerRootnameFilter(logging.Filter):
+    def filter(self, record):
+        record.rootname = record.name.rsplit('.', 1)[0]
+        return True
+
+
+def logging_config():
     # docs: https://docs.python.org/3/library/logging.config.html
-    return yaml.safe_load(
+    config_data = yaml.safe_load(
         textwrap.dedent(
             '''
                 version: 1
-                disable_existing_loggers: true
+                disable_existing_loggers: false
                 formatters:
                     console_log_format:
-                        format: '%(levelname)s: %(message)s'
+                        format: '%(asctime)s.%(msecs)03d %(levelname)s %(message)s'
+                        datefmt: '%H:%M:%S'
                     file_log_format:
-                        format: '%(asctime)s %(levelname)s %(message)s'
-                        datefmt: '%Y-%m-%d %H:%M:%S'
+                        format: '%(asctime)s.%(msecs)03d %(rootname)s %(levelname)s %(message)s'
+                        datefmt: '%Y-%m-%d_%H:%M:%S'
                 filters:
                     redact_login_keys:
                         (): hub.hub.RedactingFilter
+                    logger_rootname:
+                        (): hub.hub.LoggerRootnameFilter
                 handlers:
                     console:
                         class : logging.StreamHandler
                         formatter: console_log_format
-                        level   : INFO
-                        filters: [redact_login_keys]
-                        #stream  : ext://sys.stdout
-                    #file:
-                    #    class : logging.handlers.RotatingFileHandler
-                    #    formatter: file_log_format
-                    #    filters: [redact_login_keys]
-                    #    filename: bitburrow.log
-                    #    maxBytes: 1024
-                    #    backupCount: 3
+                        level   : <set below>
+                        filters:
+                        - redact_login_keys
+                        stream  : ext://sys.stdout
+                    file:
+                        class : logging.handlers.TimedRotatingFileHandler
+                        formatter: file_log_format
+                        level: INFO
+                        filters:
+                        - redact_login_keys
+                        - logger_rootname
+                        filename: bitburrow.log
+                        when: midnight
+                        utc: true
+                        backupCount: 31
                 loggers:
                     root:
-                        handlers: [console]
+                        handlers:
+                        - console
+                        - file
             '''
         )
     )
+    # set log level in config_data to current level
+    config_data['handlers']['console']['level'] = logging.getLevelName(logger.getEffectiveLevel())
+    return config_data
 
 
 def entry_point():  # called from setup.cfg
     import uvicorn  # https://www.uvicorn.org/
 
     args = cli()
+    logger.info("❚ Starting BitBurrow hub")
     init(args)
-    logger = logging.getLogger(app_name())
     arg_combo_okay = False
     if args.set_domain != '':
         hub_state.domain = args.set_domain
@@ -926,7 +933,7 @@ def entry_point():  # called from setup.cfg
             port=8443,
             workers=3,
             log_level='info',
-            log_config=uvicorn_log_config(),
+            log_config=logging_config(),
             # FIXME: generate self-signed TLS cert based on IP address:
             #     mkdir -p ../.ssl/private ../.ssl/certs
             #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
@@ -936,6 +943,6 @@ def entry_point():  # called from setup.cfg
             #     ssl_certfile='../.ssl/certs/fastapiselfsigned.crt',
         )
     except KeyboardInterrupt:
-        print(f"B23324 KeyboardInterrupt")
+        logger.info(f"B23324 KeyboardInterrupt")
     except Exception as e:
-        print(f"B22237 Uvicorn error: {e}")
+        logger.exception(f"B22237 Uvicorn error: {e}")
