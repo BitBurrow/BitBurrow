@@ -1,3 +1,4 @@
+import argon2
 import asyncio
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import enum
@@ -62,12 +63,12 @@ def cli(return_help_text=False):
         "--set-domain",
         type=str,
         default='',
-        help="domain to access hub api and for VPN client subdomains, e.g. a19.example.org",
+        help="Domain to access hub api and for VPN client subdomains, e.g. a19.example.org",
     )
     parser.add_argument(
         "--get-domain",
         action='store_true',
-        help="print domain and exit",
+        help="Display the configured domain and exit",
     )
     parser.add_argument(
         "--set-ssh-port",
@@ -78,7 +79,7 @@ def cli(return_help_text=False):
     parser.add_argument(
         "--get-ssh-port",
         action='store_true',
-        help="print ssh port and exit",
+        help="Display ssh port and exit",
     )
     parser.add_argument(
         "--set-wg-port",
@@ -89,7 +90,12 @@ def cli(return_help_text=False):
     parser.add_argument(
         "--get-wg-port",
         action='store_true',
-        help="print wg port and exit",
+        help="Display wg port and exit",
+    )
+    parser.add_argument(
+        "--create-admin-account",
+        action='store_true',
+        help="Create a new admin account and display its login key; KEEP THIS LOGIN KEY SAFE",
     )
     parser.add_argument(
         "--api",
@@ -101,7 +107,7 @@ def cli(return_help_text=False):
         "--dbfile",
         type=str,
         default='',  # need to call db_pathname() again later with create_dir=True
-        help=f"path for database file ('-' for memory-only; default: {db_file_display})",
+        help=f"Path for database file ('-' for memory-only; default: {db_file_display})",
     )
     parser.add_argument(
         "-q",
@@ -109,14 +115,14 @@ def cli(return_help_text=False):
         action='append_const',
         const=-1,
         dest="verbose",  # mapping:  "-q"->ERROR / ""->WARNING / "-v"->INFO / "-vv"->DEBUG
-        help="silence warning messages",
+        help="Silence warning messages",
     )
     parser.add_argument(
         "-v",
         "--verbose",
         action='append_const',
         const=1,
-        help="increase verbosity",
+        help="Increase verbosity",
     )
     if return_help_text:  # used by README.py
         return parser.format_help()
@@ -140,22 +146,6 @@ def cli(return_help_text=False):
     args.console_log_level = log_levels[log_index]
     logging.config.dictConfig(logs.logging_config(console_log_level=args.console_log_level))
     return args
-
-
-def validate_login_key(login_key):
-    if len(login_key) != login_key_len:
-        raise HTTPException(status_code=422, detail=f"Login key length must be {login_key_len}")
-    if not set(base28_digits).issuperset(login_key):
-        raise HTTPException(status_code=422, detail="Invalid login key characters")
-    with Session(engine) as session:
-        statement = select(Account).where(Account.login_key == login_key)
-        result = session.exec(statement).one_or_none()
-    if result is None:
-        raise HTTPException(status_code=422, detail="Login key not found")
-    if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-        raise HTTPException(status_code=422, detail="Login key expired")
-    # FIXME: verify pubkey limit
-    return result
 
 
 ###
@@ -211,6 +201,19 @@ class Account_kind(enum.Enum):
     USER = 300  # can set up, edit, and delete clients for a specific netif_id on 1 server
     NONE = 9999
 
+    def __str__(self):
+        str_map = {
+            0: "admin account",
+            100: "coupon",
+            200: "manager account",
+            300: "user account",
+        }
+        try:
+            return str_map[self.value]
+        except:
+            pass
+        return "none"
+
 
 class Account(SQLModel, table=True):
     __table_args__ = (sqlalchemy.UniqueConstraint('login'),)  # must have a unique login
@@ -241,16 +244,64 @@ class Account(SQLModel, table=True):
     comment: str = ""
 
     @staticmethod
-    def startup():
+    def count(account_kind=Account_kind.NONE):
         with Session(engine) as session:
-            account_count = session.query(Account).count()
-        if account_count == 0:  # first run--need to define a master login key
-            with Session(engine) as session:
-                account = Account()
-                account.clients_max = 0  # reserve master login key for login key creation, not VPNs
-                account.comment = "master login key"
-                session.add(account)
-                session.commit()
+            if account_kind == Account_kind.NONE:
+                return session.query(Account).count()
+            return session.query(Account).filter(Account.kind == account_kind).count()
+
+    @staticmethod
+    def newAccount(kind):  # create a new account and return its login key
+        account = Account()
+        key = generate_login_key(key_len)
+        hasher = argon2.PasswordHasher()
+        account.key_hash = hasher.hash(key)
+        if kind == Account_kind.ADMIN:
+            account.clients_max = 0  # admins cannot create VPN clients
+        account.kind = kind
+        login_key = account.login + key  # avoids: sqlalchemy.orm.exc.DetachedInstanceError
+        account.update()
+        logger.info(f"Created new {kind} {login_key}")
+        return login_key
+
+    def update(self):
+        with Session(engine) as session:
+            session.add(self)
+            session.commit()
+
+    @staticmethod
+    def login_portion(login_key):
+        return login_key[0:login_len]
+
+    @staticmethod
+    def key_portion(login_key):
+        return login_key[login_len:]
+
+    @staticmethod
+    def validate_login_key(login_key):
+        if len(login_key) != login_key_len:
+            raise HTTPException(status_code=422, detail=f"Login key length must be {login_key_len}")
+        if not set(base28_digits).issuperset(login_key):
+            raise HTTPException(status_code=422, detail="Invalid login key characters")
+        with Session(engine) as session:
+            statement = select(Account).where(Account.login == Account.login_portion(login_key))
+            result = session.exec(statement).one_or_none()
+        hasher = argon2.PasswordHasher()
+        # attempt near constant-time key checking whether login exsists or not
+        key_hash_to_test = 'x' if result is None else result.key_hash
+        key = Account.key_portion(login_key)
+        try:
+            hasher.verify(key_hash_to_test, key)
+        except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.InvalidHash):
+            raise HTTPException(status_code=422, detail="Login key not found")
+        if hasher.check_needs_rehash(key_hash_to_test):
+            result.key_hash = hasher.hash(key)  # FIXME: untested
+            result.update()
+            logger.info("Rehashed {login_key}")
+        if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
+            raise HTTPException(status_code=422, detail="Login key expired")
+        # FIXME: verify pubkey limit
+        return result
 
 
 ###
@@ -599,7 +650,6 @@ def init(args):
     Hub.startup()  # initialize hub data if needed
     global hub_state
     hub_state = Hub.state()
-    Account.startup()
 
 
 @app.on_event('startup')
@@ -782,7 +832,6 @@ def entry_point():  # called from setup.cfg
     import uvicorn  # https://www.uvicorn.org/
 
     args = cli()
-    logger.info("❚ Starting BitBurrow hub")
     init(args)
     arg_combo_okay = False
     if args.set_domain != '':
@@ -797,10 +846,14 @@ def entry_point():  # called from setup.cfg
         hub_state.wg_port = args.set_wg_port
     if args.get_wg_port:
         print(hub_state.wg_port)
+    if args.create_admin_account:
+        login_key = Account.newAccount(Account_kind.ADMIN)
+        print(f"Login key for your new {Account_kind.ADMIN} (KEEP THIS SAFE!): {login_key}")
+        del login_key  # do not store!
     if args.set_domain or args.set_ssh_port or args.set_wg_port:
         hub_state.update()
         arg_combo_okay = True
-    if args.get_domain or args.get_ssh_port or args.get_wg_port:
+    if args.get_domain or args.get_ssh_port or args.get_wg_port or args.create_admin_account:
         arg_combo_okay = True
     if arg_combo_okay:
         if args.api:
@@ -811,6 +864,11 @@ def entry_point():  # called from setup.cfg
     if not args.api:
         logger.error("Argument '--api' not specified.")
         sys.exit()
+    logger.info(f"❚ Starting BitBurrow hub")
+    logger.info(f"❚   admin accounts: {Account.count(Account_kind.ADMIN)}")
+    logger.info(f"❚   coupons: {Account.count(Account_kind.COUPON)}")
+    logger.info(f"❚   manager accounts: {Account.count(Account_kind.MANAGER)}")
+    logger.info(f"❚   user accounts: {Account.count(Account_kind.USER)}")
     try:
         uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
             f'{app_name()}:app',
