@@ -121,11 +121,12 @@ def cli(return_help_text=False):
     if return_help_text:  # used by README.py
         return parser.format_help()
     args = parser.parse_args()
-    args.log_level = 2 + (0 if args.verbose is None else sum(args.verbose))
+    log_index = 2 + (0 if args.verbose is None else sum(args.verbose))
     del args.verbose
     global logger
     assert logger is None
     logger = logging.getLogger(__name__.split('.')[0])
+    logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
     log_levels = [
         logging.CRITICAL,
         logging.ERROR,
@@ -134,14 +135,10 @@ def cli(return_help_text=False):
         logging.DEBUG,
         logging.DEBUG,  # corresponds to 'trace' in uvicorn
     ]
-    try:
-        logger.setLevel(log_levels[args.log_level])
-    except IndexError:
-        logger.setLevel(logging.WARNING)
-        error = "Invalid log level"
-        logger.error(error)
-        raise ValueError(error)
-    logging.config.dictConfig(logs.logging_config())
+    if log_index < 0 or log_index >= len(log_levels):
+        raise ValueError("Invalid log level")
+    args.console_log_level = log_levels[log_index]
+    logging.config.dictConfig(logs.logging_config(console_log_level=args.console_log_level))
     return args
 
 
@@ -595,7 +592,7 @@ def init(args):
         db_file = ':memory:'
     else:
         db_file = args.dbfile
-    engine = create_engine(f'sqlite:///{db_file}', echo=(args.log_level >= 4))
+    engine = create_engine(f'sqlite:///{db_file}', echo=(args.console_log_level <= logging.DEBUG))
     if is_worker_zero:
         # avoid race condition creating tables: OperationalError: table ... already exists
         SQLModel.metadata.create_all(engine)
@@ -821,7 +818,7 @@ def entry_point():  # called from setup.cfg
             port=8443,
             workers=3,
             log_level='info',
-            log_config=logs.logging_config(),
+            log_config=logs.logging_config(console_log_level=args.console_log_level),
             # FIXME: generate self-signed TLS cert based on IP address:
             #     mkdir -p ../.ssl/private ../.ssl/certs
             #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")

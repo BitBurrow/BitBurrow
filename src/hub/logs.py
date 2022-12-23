@@ -38,7 +38,10 @@ class LoggerRootnameFilter(logging.Filter):
         return True
 
 
-def logging_config():
+def logging_config(
+    console_log_level=logging.WARNING,
+    file_log_level=logging.INFO,
+):
     # docs: https://docs.python.org/3/library/logging.config.html
     config_data = yaml.safe_load(
         textwrap.dedent(
@@ -68,7 +71,7 @@ def logging_config():
                     file:
                         class : logging.handlers.TimedRotatingFileHandler
                         formatter: file_log_format
-                        level: INFO
+                        level: <set below>
                         filters:
                         - redact_login_keys
                         - logger_rootname
@@ -85,6 +88,6 @@ def logging_config():
         )
     )
     # set log level in config_data to current level
-    logger = logging.getLogger(__name__.split('.')[0])
-    config_data['handlers']['console']['level'] = logging.getLevelName(logger.getEffectiveLevel())
+    config_data['handlers']['console']['level'] = logging.getLevelName(console_log_level)
+    config_data['handlers']['file']['level'] = logging.getLevelName(file_log_level)
     return config_data
