@@ -1,20 +1,10 @@
-import argon2
 import asyncio
-from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
-import enum
-import ipaddress
 import json
 import logging
 import os
 import platformdirs
-import re
-import secrets
 import socket
-import subprocess
 import sys
-import tempfile
-from typing import Optional, Final, final
-from unittest import result
 from fastapi import (
     FastAPI,
     Form,
@@ -26,11 +16,13 @@ from fastapi import (
     WebSocketDisconnect,
 )
 import slowapi  # https://slowapi.readthedocs.io/en/latest/
-from sqlmodel import Field, Session, SQLModel, create_engine, select, sql, JSON, Column
-import sqlalchemy
+from sqlmodel import Session, SQLModel, create_engine, select, sql
 import yaml
 import hub.logs as logs
-from hub.login_key import *
+import hub.db as db
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 
 assert sys.version_info >= (3, 8)
 sql.expression.Select.inherit_cache = False  # https://github.com/tiangolo/sqlmodel/issues/189
@@ -129,10 +121,6 @@ def cli(return_help_text=False):
     args = parser.parse_args()
     log_index = 2 + (0 if args.verbose is None else sum(args.verbose))
     del args.verbose
-    global logger
-    assert logger is None
-    logger = logging.getLogger(__name__.split('.')[0])
-    logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
     log_levels = [
         logging.CRITICAL,
         logging.ERROR,
@@ -149,444 +137,15 @@ def cli(return_help_text=False):
 
 
 ###
-### DB table 'hub' - details for this BitBurrow hub; should be exactly 1 row
+### globals
 ###
 
-
-class Hub(SQLModel, table=True):
-    id: Optional[int] = Field(primary_key=True, default=None)
-    domain: str = ''  # API url in form example.com or node.example.com
-    ssh_port: int = 0
-    wg_port: int = 0
-    # FIXME: add note--recommend url not contain `vpn` or `proxy` for firewalls of clients to block
-    hub_number = generate_login_key()  # uniquely identify this hub
-    db_version: int = 1
-
-    @staticmethod
-    def startup():
-        with Session(engine) as session:
-            hub_count = session.query(Hub).count()
-        if hub_count == 0:
-            with Session(engine) as session:
-                hub = Hub()
-                hub.ssh_port = random_free_port(use_udp=False, avoid=[8443])
-                hub.wg_port = random_free_port(use_udp=True, avoid=[5353])
-                session.add(hub)
-                session.commit()
-                logger.debug(f"hub row created; ssh_port {hub.ssh_port}; wg_port {hub.wg_port}")
-
-    @staticmethod
-    def state():
-        with Session(engine) as session:
-            statement = select(Hub).where(Hub.id == 1)
-            result = session.exec(statement).one_or_none()
-            assert result is not None
-            return result
-
-    def update(self):
-        with Session(engine) as session:
-            session.add(self)
-            session.commit()
-
-
-###
-### DB table 'account' - an administrative login, coupon code, manager, or user
-###
-
-
-class Account_kind(enum.Enum):
-    ADMIN = 0  # can create, edit, and delete coupon codes; can edit and delete managers and users
-    COUPON = 100  # can create managers (that's all)
-    MANAGER = 200  # can set up, edit, and delete servers and clients
-    USER = 300  # can set up, edit, and delete clients for a specific netif_id on 1 server
-    NONE = 9999
-
-    def __str__(self):
-        str_map = {
-            0: "admin account",
-            100: "coupon",
-            200: "manager account",
-            300: "user account",
-        }
-        try:
-            return str_map[self.value]
-        except:
-            pass
-        return "none"
-
-
-class Account(SQLModel, table=True):
-    __table_args__ = (sqlalchemy.UniqueConstraint('login'),)  # must have a unique login
-    id: Optional[int] = Field(primary_key=True, default=None)
-    # FIXME: retry or increment on non-unique login
-    login: str = Field(  # used like a username
-        index=True,
-        default_factory=lambda: generate_login_key(login_len),
-    )
-    key_hash: str = ''  # Argon2 hash of key (used like a hashed password)
-    clients_max: int = 7
-    created_at: DateTime = Field(
-        sa_column=sqlalchemy.Column(
-            sqlalchemy.DateTime(timezone=True),
-            # FIXME: don't use utcnow() https://news.ycombinator.com/item?id=33138302
-            default=DateTime.utcnow,
-        )
-    )
-    valid_until: DateTime = Field(
-        sa_column=sqlalchemy.Column(
-            sqlalchemy.DateTime(timezone=True),
-            # FIXME: don't use utcnow() https://news.ycombinator.com/item?id=33138302
-            default=lambda: DateTime.utcnow() + TimeDelta(days=3650),
-        )
-    )
-    kind: Account_kind = Account_kind.NONE
-    netif_id: Optional[int] = Field(foreign_key='netif.id')  # used only if kind == USER
-    comment: str = ""
-
-    @staticmethod
-    def count(account_kind=Account_kind.NONE):
-        with Session(engine) as session:
-            if account_kind == Account_kind.NONE:
-                return session.query(Account).count()
-            return session.query(Account).filter(Account.kind == account_kind).count()
-
-    @staticmethod
-    def newAccount(kind):  # create a new account and return its login key
-        account = Account()
-        key = generate_login_key(key_len)
-        hasher = argon2.PasswordHasher()
-        account.key_hash = hasher.hash(key)
-        if kind == Account_kind.ADMIN:
-            account.clients_max = 0  # admins cannot create VPN clients
-        account.kind = kind
-        login_key = account.login + key  # avoids: sqlalchemy.orm.exc.DetachedInstanceError
-        account.update()
-        logger.info(f"Created new {kind} {login_key}")
-        return login_key
-
-    def update(self):
-        with Session(engine) as session:
-            session.add(self)
-            session.commit()
-
-    @staticmethod
-    def login_portion(login_key):
-        return login_key[0:login_len]
-
-    @staticmethod
-    def key_portion(login_key):
-        return login_key[login_len:]
-
-    @staticmethod
-    def validate_login_key(login_key):
-        if len(login_key) != login_key_len:
-            raise HTTPException(status_code=422, detail=f"Login key length must be {login_key_len}")
-        if not set(base28_digits).issuperset(login_key):
-            raise HTTPException(status_code=422, detail="Invalid login key characters")
-        with Session(engine) as session:
-            statement = select(Account).where(Account.login == Account.login_portion(login_key))
-            result = session.exec(statement).one_or_none()
-        hasher = argon2.PasswordHasher()
-        # attempt near constant-time key checking whether login exsists or not
-        key_hash_to_test = 'x' if result is None else result.key_hash
-        key = Account.key_portion(login_key)
-        try:
-            hasher.verify(key_hash_to_test, key)
-        except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.InvalidHash):
-            raise HTTPException(status_code=422, detail="Login key not found")
-        if hasher.check_needs_rehash(key_hash_to_test):
-            result.key_hash = hasher.hash(key)  # FIXME: untested
-            result.update()
-            logger.info("Rehashed {login_key}")
-        if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise HTTPException(status_code=422, detail="Login key expired")
-        # FIXME: verify pubkey limit
-        return result
-
-
-###
-### DB table 'server' - VPN server device
-###
-
-
-class Server(SQLModel, table=True):
-    id: Optional[int] = Field(primary_key=True, default=None)
-    account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager
-    comment: str = ""
-
-
-###
-### DB table 'netif' - WireGuard network interface
-###
-
-wgif_prefix = 'fdfb'
-reserved_ips = 38
-
-
-class Netif(SQLModel, table=True):
-    id: Optional[int] = Field(primary_key=True, default=None)
-    server_id: Optional[int] = Field(index=True, foreign_key='server.id')  # server this netif is on
-    ipv4_base: str
-    ipv6_base: str
-    privkey: str
-    pubkey: str
-    listening_port: int  # on LAN
-    # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
-    public_ports: list[int] = Field(sa_column=Column(JSON))  # on server's public IP
-    comment: str = ""
-
-    def __init__(self):
-        self.server_id = None
-        # IPv4 base is 10. + random xx.xx. + 0
-        self.ipv4_base = str(ipaddress.ip_address('10.0.0.0') + secrets.randbelow(2**16) * 2**8)
-        # IPv6 base is prefix + 2 random groups + 5 0000 groups
-        seven_groups = secrets.randbelow(2**32) * 2**80
-        self.ipv6_base = str(ipaddress.ip_address(f'{wgif_prefix}::') + seven_groups)
-        self.privkey = sudo_wg(['genkey'])
-        self.pubkey = sudo_wg(['pubkey'], input=self.privkey)
-        self.listening_port = 123
-        self.public_ports = [123]
-
-    class Config:  # needed for Column(JSON)
-        arbitrary_types_allowed = True
-
-    def iface(self):
-        return f'{wgif_prefix}{self.id}'  # interface name and Netif.id match
-
-    def ipv4(self):
-        # ending in '/32' feels cleaner but client can't ping, even if client uses
-        # `ip address add dev wg0 10.110.169.40 peer 10.110.169.1`
-        # fix seems to be `ip -4 route add .../18 dev wg0` on server or use '/18' below
-        return str(ipaddress.ip_address(self.ipv4_base) + 1) + '/18'  # max 16000 clients
-
-    def ipv6(self):
-        return str(ipaddress.ip_address(self.ipv6_base) + 1) + '/114'  # max 16000 clients
-
-    @staticmethod
-    def startup():
-        sudo_sysctl('net.ipv4.ip_forward=1')
-        sudo_sysctl('net.ipv6.conf.all.forwarding=1')
-        with Session(engine) as session:
-            netif_count = session.query(Netif).count()
-        if netif_count == 0:  # first run--need to define a WireGuard interface
-            with Session(engine) as session:
-                new_if = Netif()
-                session.add(new_if)
-                session.commit()
-        with Session(engine) as session:
-            statement = select(Netif)
-            i = session.exec(statement).one_or_none()  # for the time being, support 1 wg interface
-        Netif.delete_our_wgif(isShutdown=False)
-        wgif = i.iface()
-        # configure wgif; see `systemctl status wg-quick@wg0.service`
-        sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
-        sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wgif])
-        sudo_ip(['-4', 'address', 'add', 'dev', wgif, i.ipv4()])
-        sudo_ip(['-6', 'address', 'add', 'dev', wgif, i.ipv6()])
-        sudo_wg(['set', wgif, 'private-key', f'!FILE!{i.privkey}'])
-        sudo_wg(['set', wgif, 'listen-port', str(i.listening_port)])
-        sudo_iptables(
-            '--append FORWARD'.split(' ')
-            + f'--in-interface {wgif}'.split(' ')
-            + '--jump ACCEPT'.split(' ')
-        )
-        sudo_iptables(
-            '--table nat'.split(' ')
-            + '--append POSTROUTING'.split(' ')
-            + ['--out-interface', default_route_interface()]
-            + '--jump MASQUERADE'.split(' ')
-        )
-        return i
-
-    @staticmethod
-    def delete_our_wgif(isShutdown):  # clean up wg network interfaces
-        for s in re.split(r'(?:^|\n)interface:\s*', sudo_wg()):
-            if s == '' or s == '\n':
-                continue
-            if_name = re.match(r'\S+', s).group(0)
-            if if_name.startswith(wgif_prefix):  # if it was ours, it's safe to delete
-                if isShutdown:
-                    logger.debug(f"Removing wg interface {if_name}")
-                else:
-                    logger.warning(f"Removing abandoned wg interface {if_name}")
-                sudo_ip(['link', 'del', 'dev', if_name])
-
-    @staticmethod
-    def shutdown():
-        sudo_undo_iptables()
-        Netif.delete_our_wgif(isShutdown=True)
-
-
-###
-### DB table 'client' - VPN client device
-###
-
-
-class Client(SQLModel, table=True):
-    __table_args__ = (sqlalchemy.UniqueConstraint('pubkey'),)  # no 2 clients may share a key
-    id: Optional[int] = Field(primary_key=True, default=None)
-    netif_id: int = Field(foreign_key='netif.id')  # the server interface this client connects to
-    pubkey: str
-    preshared_key: str
-    keepalive: int = 23  # 0==disabled
-    account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager or user
-    comment: str = ""
-
-    def ip_list(self, wgif: Netif = None):  # calculate client's 2 IP addresses for allowed-ips
-        if wgif is None:
-            with Session(engine) as session:
-                statement = select(Netif).where(Netif.id == self.netif_id)
-                wgif = session.exec(statement).one_or_none()
-        ipv4 = ipaddress.ip_address(wgif.ipv4_base) + (reserved_ips + self.id)
-        ipv6 = ipaddress.ip_address(wgif.ipv6_base) + (reserved_ips + self.id)
-        return f'{ipv4}/32,{ipv6}/128'
-
-    def set_peer(self, wgif: Netif = None):
-        sudo_wg(  # see https://www.man7.org/linux/man-pages/man8/wg.8.html
-            f'set {self.iface()}'.split(' ')
-            + f'peer {self.pubkey}'.split(' ')
-            # consider: + f'preshared-key !FILE!(self.preshared_key)}'  # see man page
-            # consider: + f'persistent-keepalive {self.keepalive}'  # see man page
-            + f'allowed-ips {self.ip_list(wgif)}'.split(' ')
-        )
-
-    def iface(self):
-        return f'{wgif_prefix}{self.netif_id}'  # interface name and Netif.id match
-
-    @staticmethod
-    def validate_pubkey(k):
-        if not (42 <= len(k) < 72):
-            raise HTTPException(status_code=422, detail="Invalid pubkey length")
-        if re.search(r'[^A-Za-z0-9/+=]', k):
-            raise HTTPException(status_code=422, detail="Invalid pubkey characters")
-
-    @staticmethod
-    def startup(wgif):
-        with Session(engine) as session:
-            statement = select(Client)
-            results = session.exec(statement)
-            for c in results:  # let wg know about each valid peer
-                c.set_peer(wgif)
-
-
-###
-### helper methods
-###
-
-
-def random_free_port(use_udp, avoid=None):
-    # for TCP, set use_udp to False
-    min = 2000
-    max = 65536  # min <= port < max
-    attempts = 0
-    default_route_ip = default_route_local_ip()
-    while True:  # try ports until we find one that's available
-        port = secrets.randbelow(max - min) + min
-        attempts += 1
-        assert attempts <= 99
-        if avoid is not None and port in avoid:
-            continue
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM if use_udp else socket.SOCK_STREAM)
-        try:
-            sock.bind((default_route_ip, port))
-            sock.close()
-            break
-        except Exception:  # probably errno.EADDRINUSE (port in use)
-            pass
-    return port
-
-
-def default_route_interface():  # network interface of default route
-    return ip_route_get('dev')
-
-
-def default_route_local_ip():  # local IP address of default route
-    return ip_route_get('src')
-
-
-def default_route_gateway():  # default gateway IP adddress
-    return ip_route_get('via')
-
-
-def ip_route_get(item: str):  # get default route
-    droute = ip(['route', 'get', '1.0.0.0'])
-    # example output: 1.0.0.0 via 192.168.8.1 dev wlp58s0 src 192.168.8.101 uid 1000
-    value_portion = re.search(r'\s' + item + r'\s(\S+)', droute)
-    assert value_portion is not None, f"ip route returned: {droute}"
-    return value_portion[1]
-
-
-def sudo_sysctl(args):
-    arg_list = args if type(args) is list else [args]
-    return run_external(['sudo', 'sysctl'] + arg_list)
-
-
-def sudo_iptables(args):
-    if not hasattr(sudo_iptables, 'log'):
-        sudo_iptables.log = list()
-    sudo_iptables.log.append(args)
-    return run_external(['sudo', 'iptables'] + args)
-
-
-def sudo_undo_iptables():
-    if not hasattr(sudo_iptables, 'log'):
-        return
-    for args in sudo_iptables.log:
-        exec = ['sudo', 'iptables'] + args
-        for i, a in enumerate(exec):  # invert '--append'
-            if a == '--append' or a == '--insert' or a == '-A' or a == '-I':
-                exec[i] = '--delete'
-        run_external(exec)
-    del sudo_iptables.log
-
-
-def ip(args):  # without `sudo`
-    return run_external(['ip'] + args)
-
-
-def sudo_ip(args):
-    return run_external(['sudo', 'ip'] + args)
-
-
-def sudo_wg(args=[], input=None):
-    exec = ['sudo', 'wg'] + args
-    to_delete = list()
-    for i, a in enumerate(exec):  # replace '!FILE!...' args with a temp file
-        if a.startswith('!FILE!'):
-            h = tempfile.NamedTemporaryFile(delete=False)
-            h.write(a[6:].encode())
-            h.close()
-            to_delete.append(h.name)
-            exec[i] = h.name
-    try:
-        r = run_external(exec, input=input)
-    except Exception as e:
-        raise e
-    finally:
-        for f in to_delete:  # remove temp file(s)
-            os.unlink(f)
-    return r
-
-
-def run_external(args, input=None):
-    log_detail = f"running: {'␣'.join(args)}"  # alternatives: ␣⋄∘•⁕⁔⁃–
-    logger.info(log_detail if len(log_detail) < 170 else log_detail[:168] + "…")
-    exec_count = 2 if args[0] == 'sudo' else 1
-    for i, a in enumerate(args[:exec_count]):  # e.g. expand 'wg' to '/usr/bin/wg'
-        for p in '/usr/sbin:/usr/bin:/sbin:/bin'.split(':'):
-            joined = os.path.join(p, a)
-            if os.path.isfile(joined):
-                args[i] = joined
-                break
-    proc = subprocess.run(
-        args,
-        input=None if input is None else input.encode(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"`{' '.join(args)}` returned error: {proc.stderr.decode().rstrip()}")
-    return proc.stdout.decode().rstrip()
+hub_state: db.Hub = None
+app = FastAPI()
+limiter = slowapi.Limiter(key_func=slowapi.util.get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(slowapi.errors.RateLimitExceeded, slowapi._rate_limit_exceeded_handler)
+is_worker_zero: bool = True
 
 
 ###
@@ -612,16 +171,6 @@ def db_pathname(create_dir=False):
     return os.path.join(config_dir, f'data.sqlite')
 
 
-logger = None
-engine = None
-is_worker_zero: bool = True
-hub_state: Hub = None
-app = FastAPI()
-limiter = slowapi.Limiter(key_func=slowapi.util.get_remote_address)
-app.state.limiter = limiter
-app.add_exception_handler(slowapi.errors.RateLimitExceeded, slowapi._rate_limit_exceeded_handler)
-
-
 def get_lock(process_name):  # source: https://stackoverflow.com/a/7758075
     # hold a reference to our socket so it does not get garbage collected when the function exits
     get_lock._lock_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -635,21 +184,22 @@ def get_lock(process_name):  # source: https://stackoverflow.com/a/7758075
 
 
 def init(args):
-    global engine
-    assert engine is None
+    assert db.engine is None
     if args.dbfile == '':  # use default location
         db_file = db_pathname(create_dir=True)
     elif args.dbfile == '-':
         db_file = ':memory:'
     else:
         db_file = args.dbfile
-    engine = create_engine(f'sqlite:///{db_file}', echo=(args.console_log_level <= logging.DEBUG))
+    db.engine = create_engine(
+        f'sqlite:///{db_file}', echo=(args.console_log_level <= logging.DEBUG)
+    )
     if is_worker_zero:
         # avoid race condition creating tables: OperationalError: table ... already exists
-        SQLModel.metadata.create_all(engine)
-    Hub.startup()  # initialize hub data if needed
+        SQLModel.metadata.create_all(db.engine)
+    db.Hub.startup()  # initialize hub data if needed
     global hub_state
-    hub_state = Hub.state()
+    hub_state = db.Hub.state()
 
 
 @app.on_event('startup')
@@ -660,8 +210,8 @@ def on_startup():
     if is_worker_zero:
         # only first worker does network set-up, tear-down; avoid "RTNETLINK answers: File exists"
         try:
-            wgif = Netif.startup()  # configure new WireGuard interface
-            Client.startup(wgif)  # add peers to WireGuard interface
+            wgif = db.Netif.startup()  # configure new WireGuard interface
+            db.Client.startup(wgif)  # add peers to WireGuard interface
         except Exception as e:
             on_shutdown()
             raise e
@@ -673,7 +223,7 @@ def on_startup():
 @app.on_event('shutdown')
 def on_shutdown():
     if is_worker_zero:
-        Netif.shutdown()
+        db.Netif.shutdown()
 
 
 ###
@@ -688,9 +238,9 @@ async def create_account(login_key: str):
         status_code=status.HTTP_201_CREATED,
         content={'login_key': 'NWXL8GNXK33XXXXYM7'},
     )
-    account = Account.validate_login_key(login_key)
-    with Session(engine) as session:
-        statement = select(Client).where(Client.account_id == account.id)
+    account = db.Account.validate_login_key(login_key)
+    with Session(db.engine) as session:
+        statement = select(db.Client).where(db.Client.account_id == account.id)
         results = session.exec(statement)
         return [c.pubkey for c in results]
 
@@ -703,9 +253,9 @@ async def list_servers(login_key: str):
         # status_code=status.HTTP_403_FORBIDDEN,
         content={'servers': [10, 11, 20, 21]},
     )
-    account = Account.validate_login_key(login_key)
-    with Session(engine) as session:
-        statement = select(Client).where(Client.account_id == account.id)
+    account = db.Account.validate_login_key(login_key)
+    with Session(db.engine) as session:
+        statement = select(db.Client).where(db.Client.account_id == account.id)
         results = session.exec(statement)
         return [c.pubkey for c in results]
 
@@ -748,7 +298,7 @@ async def new_server(login_key: str):
         content={},
     )
     account = Account.validate_login_key(login_key)
-    with Session(engine) as session:
+    with Session(db.engine) as session:
         statement = select(Client).where(Client.account_id == account.id)
         results = session.exec(statement)
         return [c.pubkey for c in results]
@@ -771,9 +321,9 @@ async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: in
 @app.get('/pubkeys/{login_key}')
 # @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
 async def get_pubkeys(login_key: str):
-    account = Account.validate_login_key(login_key)
-    with Session(engine) as session:
-        statement = select(Client).where(Client.account_id == account.id)
+    account = db.Account.validate_login_key(login_key)
+    with Session(db.engine) as session:
+        statement = select(db.Client).where(db.Client.account_id == account.id)
         results = session.exec(statement)
         return [c.pubkey for c in results]
 
@@ -781,21 +331,23 @@ async def get_pubkeys(login_key: str):
 @app.post('/wg/', response_class=responses.PlainTextResponse)
 @limiter.limit('100/minute')  # FIXME: reduce to 10
 async def new_client(request: Request, login_key: str = Form(...), pubkey: str = Form(...)):
-    account = Account.validate_login_key(login_key)
-    with Session(engine) as session:
-        account_client_count = session.query(Client).filter(Client.account_id == account.id).count()
+    account = db.Account.validate_login_key(login_key)
+    with Session(db.engine) as session:
+        account_client_count = (
+            session.query(db.Client).filter(db.Client.account_id == account.id).count()
+        )
     if account_client_count >= account.clients_max:
         raise HTTPException(status_code=422, detail="No additional clients are allowed")
-    Client.validate_pubkey(pubkey)
-    with Session(engine) as session:  # look for pubkey in database
-        statement = select(Client).where(Client.pubkey == pubkey)
+    db.Client.validate_pubkey(pubkey)
+    with Session(db.engine) as session:  # look for pubkey in database
+        statement = select(db.Client).where(db.Client.pubkey == pubkey)
         first = session.exec(statement).first()
     if first is not None:
         if first.account_id != account.id:  # different account already has this pubkey
             raise HTTPException(status_code=422, detail="Public key already in use")
         return first.ip_list()  # return existing IPs for this pubkey
-    with Session(engine) as session:
-        client = Client(
+    with Session(db.engine) as session:
+        client = db.Client(
             account_id=account.id,
             pubkey=pubkey,
             netif_id=1,  # FIXME: figure out how to do multiple interfaces
@@ -811,13 +363,13 @@ async def new_client(request: Request, login_key: str = Form(...), pubkey: str =
 async def new_login_key(
     request: Request, master_login_key: str = Form(...), comment: str = Form(...)
 ):
-    master_account = Account.validate_login_key(master_login_key)
+    master_account = db.Account.validate_login_key(master_login_key)
     if master_account.id != 1:
         raise HTTPException(status_code=422, detail="Master login key required")
     if len(comment) > 99:
         raise HTTPException(status_code=422, detail="Comment too long")
-    with Session(engine) as session:
-        login_key = Account(comment=comment)
+    with Session(db.engine) as session:
+        login_key = db.Account(comment=comment)
         session.add(login_key)
         session.commit()
         return login_key.login_key
@@ -847,8 +399,8 @@ def entry_point():  # called from setup.cfg
     if args.get_wg_port:
         print(hub_state.wg_port)
     if args.create_admin_account:
-        login_key = Account.newAccount(Account_kind.ADMIN)
-        print(f"Login key for your new {Account_kind.ADMIN} (KEEP THIS SAFE!): {login_key}")
+        login_key = db.Account.newAccount(db.Account_kind.ADMIN)
+        print(f"Login key for your new {db.Account_kind.ADMIN} (KEEP THIS SAFE!): {login_key}")
         del login_key  # do not store!
     if args.set_domain or args.set_ssh_port or args.set_wg_port:
         hub_state.update()
@@ -865,10 +417,10 @@ def entry_point():  # called from setup.cfg
         logger.error("Argument '--api' not specified.")
         sys.exit()
     logger.info(f"❚ Starting BitBurrow hub")
-    logger.info(f"❚   admin accounts: {Account.count(Account_kind.ADMIN)}")
-    logger.info(f"❚   coupons: {Account.count(Account_kind.COUPON)}")
-    logger.info(f"❚   manager accounts: {Account.count(Account_kind.MANAGER)}")
-    logger.info(f"❚   user accounts: {Account.count(Account_kind.USER)}")
+    logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
+    logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
+    logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
+    logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
     try:
         uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
             f'{app_name()}:app',

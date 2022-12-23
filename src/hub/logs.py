@@ -6,7 +6,7 @@ import logging
 import textwrap
 from typing import Final
 import yaml
-from .login_key import *
+import hub.login_key as lk
 
 # for security, partially redact anything that looks like a login key
 class RedactingFilter(logging.Filter):
@@ -28,7 +28,7 @@ class RedactingFilter(logging.Filter):
     def redact(msg):
         if not isinstance(msg, str):
             return msg
-        return login_key_re.sub(r'\1..............', msg)
+        return lk.login_key_re.sub(r'\1..............', msg)
 
 
 # use only base logger name, e.g. 'uvicorn.error' → 'uvicorn'
