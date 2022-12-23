@@ -12,7 +12,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import textwrap
 from typing import Optional, Final, final
 from unittest import result
 from fastapi import (
@@ -29,6 +28,8 @@ import slowapi  # https://slowapi.readthedocs.io/en/latest/
 from sqlmodel import Field, Session, SQLModel, create_engine, select, sql, JSON, Column
 import sqlalchemy
 import yaml
+import hub.logs as logs
+from hub.login_key import *
 
 assert sys.version_info >= (3, 8)
 sql.expression.Select.inherit_cache = False  # https://github.com/tiangolo/sqlmodel/issues/189
@@ -124,7 +125,7 @@ def cli(return_help_text=False):
     del args.verbose
     global logger
     assert logger is None
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger(__name__.split('.')[0])
     log_levels = [
         logging.CRITICAL,
         logging.ERROR,
@@ -140,40 +141,8 @@ def cli(return_help_text=False):
         error = "Invalid log level"
         logger.error(error)
         raise ValueError(error)
-    logging.config.dictConfig(logging_config())
+    logging.config.dictConfig(logs.logging_config())
     return args
-
-
-###
-### login key details (used for coupon codes too)
-###
-
-# login key, e.g. 'X88L7V2BCMM3PRKVF2'
-#     → log(28^18)÷log(2) ≈ 87 bits of entropy
-# 6 words from 4000-word dictionary, e.g. 'OstrichPrecipiceWeldLinkRoastedLeopard'
-#     → log(4000^6)÷log(2) ≈ 72 bits of entropy
-# Mullvad 16-digit account number
-#     → log(10^16)÷log(2) ≈ 53 bits of entropy
-# Plus Codes use base 20 ('23456789CFGHJMPQRVWX'): https://en.wikipedia.org/wiki/Open_Location_Code
-base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
-login_key_len: Final[int] = 18
-login_len: Final[int] = 4  # digits from beginning of login_key, used like a username
-key_len: Final[int] = 14  # remaining digits of login_key, used like a password
-base28_digit: Final[str] = f'[{base28_digits}]'
-x4: Final[str] = '{4}'
-x5: Final[str] = '{5}'
-login_key_re: Final[re.Pattern] = re.compile(  # capture first 4 digits ('login' portion)
-    f'({base28_digit}{x4}){base28_digit}{x5}{base28_digit}{x4}{base28_digit}{x5}'
-)
-
-
-def generate_login_key(len=login_key_len):  # create new login_key
-    return ''.join(secrets.choice(base28_digits) for i in range(len))
-
-
-# def dress_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'
-#    assert len(k) == login_key_len
-#    return f'{k[0:4]}-{k[4:9]}-{k[9:13]}-{k[13:login_key_len]}'
 
 
 def validate_login_key(login_key):
@@ -812,87 +781,6 @@ async def error_test():
     raise HTTPException(status_code=404, detail="Test exception from /raise_error/")
 
 
-# for security, partially redact anything that looks like a login key
-class RedactingFilter(logging.Filter):
-    # based on: https://relaxdiego.com/2014/07/logging-in-python.html
-
-    def __init__(self):
-        super(RedactingFilter, self).__init__()
-
-    def filter(self, record):
-        record.msg = self.redact(record.msg)
-        if isinstance(record.args, dict):
-            for k in record.args.keys():
-                record.args[k] = self.redact(record.args[k])
-        else:
-            record.args = tuple(self.redact(arg) for arg in record.args)
-        return True
-
-    @staticmethod
-    def redact(msg):
-        if not isinstance(msg, str):
-            return msg
-        return login_key_re.sub(r'\1..............', msg)
-
-
-# use only base logger name, e.g. 'uvicorn.error' → 'uvicorn'
-class LoggerRootnameFilter(logging.Filter):
-    def filter(self, record):
-        record.rootname = record.name.rsplit('.', 1)[0]
-        return True
-
-
-def logging_config():
-    # docs: https://docs.python.org/3/library/logging.config.html
-    config_data = yaml.safe_load(
-        textwrap.dedent(
-            '''
-                version: 1
-                disable_existing_loggers: false
-                formatters:
-                    console_log_format:
-                        format: '%(asctime)s.%(msecs)03d %(levelname)s %(message)s'
-                        datefmt: '%H:%M:%S'
-                    file_log_format:
-                        format: '%(asctime)s.%(msecs)03d %(rootname)s %(levelname)s %(message)s'
-                        datefmt: '%Y-%m-%d_%H:%M:%S'
-                filters:
-                    redact_login_keys:
-                        (): hub.hub.RedactingFilter
-                    logger_rootname:
-                        (): hub.hub.LoggerRootnameFilter
-                handlers:
-                    console:
-                        class : logging.StreamHandler
-                        formatter: console_log_format
-                        level   : <set below>
-                        filters:
-                        - redact_login_keys
-                        stream  : ext://sys.stdout
-                    file:
-                        class : logging.handlers.TimedRotatingFileHandler
-                        formatter: file_log_format
-                        level: INFO
-                        filters:
-                        - redact_login_keys
-                        - logger_rootname
-                        filename: bitburrow.log
-                        when: midnight
-                        utc: true
-                        backupCount: 31
-                loggers:
-                    root:
-                        handlers:
-                        - console
-                        - file
-            '''
-        )
-    )
-    # set log level in config_data to current level
-    config_data['handlers']['console']['level'] = logging.getLevelName(logger.getEffectiveLevel())
-    return config_data
-
-
 def entry_point():  # called from setup.cfg
     import uvicorn  # https://www.uvicorn.org/
 
@@ -933,7 +821,7 @@ def entry_point():  # called from setup.cfg
             port=8443,
             workers=3,
             log_level='info',
-            log_config=logging_config(),
+            log_config=logs.logging_config(),
             # FIXME: generate self-signed TLS cert based on IP address:
             #     mkdir -p ../.ssl/private ../.ssl/certs
             #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
