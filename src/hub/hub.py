@@ -118,6 +118,8 @@ def cli(return_help_text=False):
     )
     if return_help_text:  # used by README.py
         return parser.format_help()
+    if not os.access(os.getcwd(), os.W_OK):  # if cwd is not writable ...
+        os.chdir(os.path.expanduser('~'))  # cd to home directory so we can write log file
     args = parser.parse_args()
     log_index = 2 + (0 if args.verbose is None else sum(args.verbose))
     del args.verbose
