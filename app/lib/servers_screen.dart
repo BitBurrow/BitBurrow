@@ -35,8 +35,8 @@ class ServersFormState extends ParentFormState {
   Future<http.Response?> callApi() {
     String domain = '${global.loginState.hub}:8443';
     String path = '/v1/accounts/${global.loginState.pureLoginKey}/servers';
-    _log.info("POST http $domain$path");
-    return http.post(Uri.http(domain, path));
+    _log.info("POST https $domain$path");
+    return http.post(Uri.https(domain, path));
   }
 
   @override

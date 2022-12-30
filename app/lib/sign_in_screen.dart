@@ -45,8 +45,8 @@ class SignInFormState extends ParentFormState {
   Future<http.Response?> callApi() {
     String domain = '${global.loginState.hub}:8443';
     String path = '/v1/accounts/${global.loginState.pureLoginKey}/servers';
-    _log.info("GET http $domain$path");
-    return http.get(Uri.http(domain, path));
+    _log.info("GET https $domain$path");
+    return http.get(Uri.https(domain, path));
   }
 
   @override

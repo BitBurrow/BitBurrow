@@ -431,13 +431,8 @@ def entry_point():  # called from setup.cfg
             workers=3,
             log_level='info',
             log_config=logs.logging_config(console_log_level=args.console_log_level),
-            # FIXME: generate self-signed TLS cert based on IP address:
-            #     mkdir -p ../.ssl/private ../.ssl/certs
-            #     IP=$(echo $SSH_CONNECTION |grep -Po "^\S+\s+\S+\s+\K\S+")
-            #     openssl req -new -x509 -nodes -days 3650 -newkey rsa:2048 -keyout ../.ssl/private/fastapiselfsigned.key -out ../.ssl/certs/fastapiselfsigned.crt -subj "/C=  /ST=  /L=   /O=   /OU=   /CN=$IP"
-            # enable TLS in uvicorn.run():
-            #     ssl_keyfile='../.ssl/private/fastapiselfsigned.key',
-            #     ssl_certfile='../.ssl/certs/fastapiselfsigned.crt',
+            ssl_keyfile=f'/etc/letsencrypt/live/{hub_state.domain}/privkey.pem',
+            ssl_certfile=f'/etc/letsencrypt/live/{hub_state.domain}/fullchain.pem',
         )
     except KeyboardInterrupt:
         logger.info(f"B23324 KeyboardInterrupt")
