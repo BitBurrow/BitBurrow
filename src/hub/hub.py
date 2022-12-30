@@ -384,6 +384,7 @@ async def error_test():
 
 def entry_point():  # called from setup.cfg
     import uvicorn  # https://www.uvicorn.org/
+    import ssl
 
     args = cli()
     init(args)
@@ -423,6 +424,22 @@ def entry_point():  # called from setup.cfg
     logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
     logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
     logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    strong_ciphers = ':'.join(
+        [
+            cipher['name']
+            for cipher in ctx.get_ciphers()
+            if cipher['name']
+            not in [
+                # remove ciphers considered weak by https://www.ssllabs.com/
+                # SSL Labs says remaining ciphers still work for Android 4.4.2 and iOS 9
+                'ECDHE-ECDSA-AES256-SHA384',
+                'ECDHE-RSA-AES256-SHA384',
+                'ECDHE-ECDSA-AES128-SHA256',
+                'ECDHE-RSA-AES128-SHA256',
+            ]
+        ]
+    )
     try:
         uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
             f'{app_name()}:app',
@@ -433,6 +450,7 @@ def entry_point():  # called from setup.cfg
             log_config=logs.logging_config(console_log_level=args.console_log_level),
             ssl_keyfile=f'/etc/letsencrypt/live/{hub_state.domain}/privkey.pem',
             ssl_certfile=f'/etc/letsencrypt/live/{hub_state.domain}/fullchain.pem',
+            ssl_ciphers=strong_ciphers,
         )
     except KeyboardInterrupt:
         logger.info(f"B23324 KeyboardInterrupt")
