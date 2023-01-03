@@ -26,8 +26,8 @@ login_key_re: Final[re.Pattern] = re.compile(  # capture first 4 digits ('login'
 )
 
 
-def generate_login_key(len=login_key_len):  # create new login_key
-    return ''.join(secrets.choice(base28_digits) for i in range(len))
+def generate_login_key(n):  # create n digits of a new login_key
+    return ''.join(secrets.choice(base28_digits) for i in range(n))
 
 
 # def dress_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'

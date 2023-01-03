@@ -31,7 +31,7 @@ class Hub(SQLModel, table=True):
     ssh_port: int = 0
     wg_port: int = 0
     # FIXME: add note--recommend url not contain `vpn` or `proxy` for firewalls of clients to block
-    hub_number = lk.generate_login_key()  # uniquely identify this hub
+    hub_number = lk.generate_login_key(lk.login_len)  # uniquely identify this hub
     db_version: int = 1
 
     @staticmethod

@@ -422,7 +422,7 @@ def entry_point():  # called from setup.cfg
     if not args.api:
         logger.error("Argument '--api' not specified.")
         sys.exit()
-    logger.info(f"❚ Starting BitBurrow hub")
+    logger.info(f"❚ Starting BitBurrow hub {hub_state.hub_number}")
     logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
     logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
     logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
