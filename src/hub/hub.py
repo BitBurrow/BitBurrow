@@ -143,7 +143,10 @@ def cli(return_help_text=False):
 ###
 
 hub_state: db.Hub = None
-app = FastAPI()
+app = FastAPI(
+    docs_url=None,  # disable "Docs URLs" to help avoid being identified; see
+    redoc_url=None,  # ... https://fastapi.tiangolo.com/tutorial/metadata/#docs-urls
+)
 limiter = slowapi.Limiter(key_func=slowapi.util.get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(slowapi.errors.RateLimitExceeded, slowapi._rate_limit_exceeded_handler)
