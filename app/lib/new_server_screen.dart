@@ -291,12 +291,14 @@ class NewServerFormState extends ParentFormState {
                       "your \"VPN home\" location. Check the box on the left "
                       "as you complete each step."),
                   sizedBoxSpace,
-                  ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: _stepsList.length,
-                    padding: const EdgeInsets.symmetric(horizontal: 18),
-                    itemBuilder: stepBox,
-                  ),
+                  _stepsList.isEmpty
+                      ? textMd(context, "(waiting for hub)")
+                      : ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: _stepsList.length,
+                          padding: const EdgeInsets.symmetric(horizontal: 18),
+                          itemBuilder: stepBox,
+                        ),
                   sizedBoxSpace,
                 ],
               ),
