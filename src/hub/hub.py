@@ -33,6 +33,10 @@ def app_name():
     return os.path.splitext(os.path.basename(__file__))[0]
 
 
+async def not_found_error(request: Request, exc: HTTPException):
+    return responses.PlainTextResponse(content=None, status_code=404)
+
+
 ###
 ### command-line interface
 ###
@@ -144,6 +148,7 @@ def cli(return_help_text=False):
 
 hub_state: db.Hub = None
 app = FastAPI(
+    exception_handlers={404: not_found_error},
     docs_url=None,  # disable "Docs URLs" to help avoid being identified; see
     redoc_url=None,  # ... https://fastapi.tiangolo.com/tutorial/metadata/#docs-urls
 )
@@ -454,6 +459,9 @@ def entry_point():  # called from setup.cfg
             ssl_keyfile=f'/etc/letsencrypt/live/{hub_state.domain}/privkey.pem',
             ssl_certfile=f'/etc/letsencrypt/live/{hub_state.domain}/fullchain.pem',
             ssl_ciphers=strong_ciphers,
+            # to help avoid being identified, don't use these headers
+            date_header=False,
+            server_header=False,  # default 'uvicorn'
         )
     except KeyboardInterrupt:
         logger.info(f"B23324 KeyboardInterrupt")
