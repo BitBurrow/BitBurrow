@@ -427,11 +427,9 @@ def entry_point():  # called from setup.cfg
     if not args.api:
         logger.error("Argument '--api' not specified.")
         sys.exit()
-    logger.info(f"❚ Starting BitBurrow hub {hub_state.hub_number}")
-    logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
-    logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
-    logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
-    logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
+    if hub_state.domain == '':
+        logger.error("Use `--set-domain` to configure your domain name before running API.")
+        sys.exit()
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     strong_ciphers = ':'.join(
         [
@@ -448,6 +446,19 @@ def entry_point():  # called from setup.cfg
             ]
         ]
     )
+    ssl_keyfile = f'/etc/letsencrypt/live/{hub_state.domain}/privkey.pem'
+    ssl_certfile = f'/etc/letsencrypt/live/{hub_state.domain}/fullchain.pem'
+    if not os.access(ssl_keyfile, os.R_OK):
+        logger.error(f"File {ssl_keyfile} is missing or unreadable.")
+        sys.exit()
+    if not os.access(ssl_certfile, os.R_OK):
+        logger.error(f"File {ssl_certfile} is missing or unreadable.")
+        sys.exit()
+    logger.info(f"❚ Starting BitBurrow hub {hub_state.hub_number}")
+    logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
+    logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
+    logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
+    logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
     try:
         uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
             f'{app_name()}:app',
@@ -456,8 +467,8 @@ def entry_point():  # called from setup.cfg
             workers=3,
             log_level='info',
             log_config=logs.logging_config(console_log_level=args.console_log_level),
-            ssl_keyfile=f'/etc/letsencrypt/live/{hub_state.domain}/privkey.pem',
-            ssl_certfile=f'/etc/letsencrypt/live/{hub_state.domain}/fullchain.pem',
+            ssl_keyfile=ssl_keyfile,
+            ssl_certfile=ssl_certfile,
             ssl_ciphers=strong_ciphers,
             # to help avoid being identified, don't use these headers
             date_header=False,
