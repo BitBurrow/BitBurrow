@@ -240,34 +240,55 @@ def on_shutdown():
 ### web API
 ###
 
+#                                              read          create      update†       delete
+# -------------------------------------------- GET --------- POST ------ PATCH ------- DELETE ------
+# ⍉ /v1/managers/🗝                            view self     --          update self   delete self
+# ⍉ /v1/managers/🗝/servers                    list servers  new server  --            --
+# ⍉ /v1/managers/🗝/servers/18                 view server   --          update server delete server
+# ⍉ /v1/managers/🗝/servers/18/clients         list clients  new client  --            --
+# ⍉ /v1/managers/🗝/servers/18/clients/4       view client   --          update client delete client
+# ⍉ /v1/managers/🗝/servers/18/users           list users    new user    --            --
+# ⍉ /v1/managers/🗝/servers/18/v1/users/🗝     view user     --          update user   delete user
+#   /v1/coupons/🧩/managers                    --            new mngr    --            --
+# ⍉ /v1/admins/🔑/managers                     list mngrs    --          --            --
+# ⍉ /v1/admins/🔑/managers/🗝                  view mngr     --          update mngr   delete mngr
+# ⌨ /v1/admins/🔑/coupons                      list coupons  new coupon  --            --
+# ⍉ /v1/admins/🔑/accounts/🗝                  view coupon   --          update coupon delete coupon
+# idempotent                                   ✅            —           ✅            ✅
+# 200 OK                                       ✅            —           ✅            —
+# 201 created                                  —             —           —             —
+# 204 no content                               —             —           —             ✅
+# ⍉ not yet implemented
+# ⌨ CLI only (may implement in app later)
+# 🔑 admin login key
+# 🗝 manager (or admin) login key
+# 🧩 coupon code
+# †  cleint should send only modified fields
+# ‡  new coupon or manager
+# §  delete coupon, manager, or user
+# https://medium.com/hashmapinc/rest-good-practices-for-api-design-881439796dc9
 
-@app.post('/v1/accounts/{login_key}/accounts')
-# @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
-async def create_account(login_key: str):
+
+@app.post('/v1/coupons/{coupon}/managers')
+@limiter.limit('10/minute')
+async def create_manager(request: Request, coupon: str):
+    account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
+    login_key = db.Account.newAccount(db.Account_kind.MANAGER)
     return responses.JSONResponse(
         status_code=status.HTTP_201_CREATED,
-        content={'login_key': 'NWXL8GNXK33XXXXYM7'},
+        content={'login_key': login_key},
     )
-    account = db.Account.validate_login_key(login_key)
-    with Session(db.engine) as session:
-        statement = select(db.Client).where(db.Client.account_id == account.id)
-        results = session.exec(statement)
-        return [c.pubkey for c in results]
+    # do not store login_key!
 
 
-@app.get('/v1/accounts/{login_key}/servers')
-# @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
-async def list_servers(login_key: str):
-    return responses.JSONResponse(
-        status_code=status.HTTP_200_OK,
-        # status_code=status.HTTP_403_FORBIDDEN,
-        content={'servers': [10, 11, 20, 21]},
-    )
-    account = db.Account.validate_login_key(login_key)
+@app.get('/v1/managers/{login_key}/servers')
+@limiter.limit('10/minute')
+async def list_servers(request: Request, login_key: str):
+    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     with Session(db.engine) as session:
-        statement = select(db.Client).where(db.Client.account_id == account.id)
+        statement = select(db.Server).where(db.Server.account_id == account.id)
         results = session.exec(statement)
-        return [c.pubkey for c in results]
+        return {'servers': [c.pubkey for c in results]}
 
 
 class ServerSetup:
@@ -297,7 +318,7 @@ class ServerSetup:
             assert step['id'] > priorId
             priorId = step['id']
             reply = await self.send_command_to_client(json.dumps({step['key']: step['value']}))
-            logger.info(f"app WebSocket reply: {reply}")
+            logger.debug(f"app WebSocket reply: {reply}")
 
 
 @app.post('/v1/accounts/{login_key}/servers')
@@ -366,23 +387,6 @@ async def new_client(request: Request, login_key: str = Form(...), pubkey: str =
         session.commit()  # FIXME: possible race condition where account could exceed clients_max
         client.set_peer()  # configure WireGuard for this peer
         return client.ip_list()
-
-
-@app.post('/new_login_key/', response_class=responses.PlainTextResponse)
-@limiter.limit('100/minute')  # FIXME: reduce to 10
-async def new_login_key(
-    request: Request, master_login_key: str = Form(...), comment: str = Form(...)
-):
-    master_account = db.Account.validate_login_key(master_login_key)
-    if master_account.id != 1:
-        raise HTTPException(status_code=422, detail="Master login key required")
-    if len(comment) > 99:
-        raise HTTPException(status_code=422, detail="Comment too long")
-    with Session(db.engine) as session:
-        login_key = db.Account(comment=comment)
-        session.add(login_key)
-        session.commit()
-        return login_key.login_key
 
 
 @app.get('/raise_error/')

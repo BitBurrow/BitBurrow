@@ -76,7 +76,7 @@ class Account_kind(enum.Enum):
     def __str__(self):
         str_map = {
             0: "admin account",
-            100: "coupon",
+            100: "coupon code",
             200: "manager account",
             300: "user account",
         }
@@ -85,6 +85,10 @@ class Account_kind(enum.Enum):
         except:
             pass
         return "none"
+
+
+admin_or_manager = {Account_kind.ADMIN, Account_kind.MANAGER}
+coupon = {Account_kind.COUPON}
 
 
 class Account(SQLModel, table=True):
@@ -150,7 +154,7 @@ class Account(SQLModel, table=True):
         return login_key[lk.login_len :]
 
     @staticmethod
-    def validate_login_key(login_key):
+    def validate_login_key(login_key, allowed_kinds=None):
         if len(login_key) != lk.login_key_len:
             raise HTTPException(
                 status_code=400, detail=f"Login key length must be {lk.login_key_len}"

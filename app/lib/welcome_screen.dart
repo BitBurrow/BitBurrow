@@ -37,7 +37,7 @@ class WelcomeFormState extends ParentFormState {
   @override
   Future<http.Response?> callApi() {
     String domain = '${global.loginState.hub}:8443';
-    String path = '/v1/accounts/${global.loginState.pureCoupon}/accounts';
+    String path = '/v1/coupons/${global.loginState.pureCoupon}/managers';
     _log.info("POST https $domain$path");
     return http.post(Uri.https(domain, path));
   }
