@@ -94,6 +94,11 @@ def cli(return_help_text=False):
         help="Create a new admin account and display its login key; KEEP THIS LOGIN KEY SAFE",
     )
     parser.add_argument(
+        "--create-coupon-code",
+        action='store_true',
+        help="Create a new coupon and display it; KEEP THIS SAFE",
+    )
+    parser.add_argument(
         "--api",
         action='store_true',
         help="Listen on API port for requests from the app",
@@ -252,14 +257,14 @@ def on_shutdown():
 #   /v1/coupons/🧩/managers                    --            new mngr    --            --
 # ⍉ /v1/admins/🔑/managers                     list mngrs    --          --            --
 # ⍉ /v1/admins/🔑/managers/🗝                  view mngr     --          update mngr   delete mngr
-# ⌨ /v1/admins/🔑/coupons                      list coupons  new coupon  --            --
+# #️⃣ /v1/admins/🔑/coupons                      list coupons  new coupon  --            --
 # ⍉ /v1/admins/🔑/accounts/🗝                  view coupon   --          update coupon delete coupon
 # idempotent                                   ✅            —           ✅            ✅
 # 200 OK                                       ✅            —           ✅            —
 # 201 created                                  —             —           —             —
 # 204 no content                               —             —           —             ✅
 # ⍉ not yet implemented
-# ⌨ CLI only (may implement in app later)
+# #️⃣ CLI only (may implement in app later)
 # 🔑 admin login key
 # 🗝 manager (or admin) login key
 # 🧩 coupon code
@@ -405,22 +410,29 @@ def entry_point():  # called from setup.cfg
         hub_state.domain = args.set_domain
     if args.get_domain:
         print(hub_state.domain)
+        arg_combo_okay = True
     if args.set_ssh_port != 0:
         hub_state.ssh_port = args.set_ssh_port
     if args.get_ssh_port:
         print(hub_state.ssh_port)
+        arg_combo_okay = True
     if args.set_wg_port != 0:
         hub_state.wg_port = args.set_wg_port
     if args.get_wg_port:
         print(hub_state.wg_port)
+        arg_combo_okay = True
     if args.create_admin_account:
         login_key = db.Account.newAccount(db.Account_kind.ADMIN)
         print(f"Login key for your new {db.Account_kind.ADMIN} (KEEP THIS SAFE!): {login_key}")
         del login_key  # do not store!
+        arg_combo_okay = True
+    if args.create_coupon_code:
+        login_key = db.Account.newAccount(db.Account_kind.COUPON)
+        print(f"Your new {db.Account_kind.COUPON} (KEEP IT SAFE): {login_key}")
+        del login_key  # do not store!
+        arg_combo_okay = True
     if args.set_domain or args.set_ssh_port or args.set_wg_port:
         hub_state.update()
-        arg_combo_okay = True
-    if args.get_domain or args.get_ssh_port or args.get_wg_port or args.create_admin_account:
         arg_combo_okay = True
     if arg_combo_okay:
         if args.api:
