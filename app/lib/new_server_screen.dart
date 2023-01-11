@@ -111,7 +111,7 @@ class NewServerFormState extends ParentFormState {
   Future<http.Response?> callApi() => Future<http.Response?>.value(null);
 
   @override
-  String validateStatusCode(status) => "Not implemented.";
+  String statusCodeCheck(status) => "Not implemented.";
 
   @override
   String processApiResponse(response) => "Not implemented.";

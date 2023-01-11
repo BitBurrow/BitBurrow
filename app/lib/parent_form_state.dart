@@ -99,13 +99,44 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       _AccountTextInputFormatter();
 
   Future<http.Response?> callApi();
-  String validateStatusCode(status);
+  String statusCodeCheck(status);
   String processApiResponse(response);
   nextScreen();
   String getHubValue();
   void setHubValue(String value);
   String getAccountValue();
   void setAccountValue(String value);
+
+  String statusCodeMessage(status, {expected = 200, item, fullItem = ""}) {
+    // called from statusCodeCheck()
+    if (status == expected) {
+      return ""; // no error
+    }
+    if (fullItem == "") fullItem = item;
+    // first sentence of returned value, if short, becomes the dialog box title
+    if (status == 401) {
+      return "Invalid $item. Please carefully check that you typed the "
+          "$fullItem correctly and try again.";
+    }
+    if (status == 403) {
+      return "${item.capitalize()} expired. Please use a "
+          "valid $fullItem.";
+    }
+    if (status == 422) {
+      if (item == "coupon") {
+        return "Not a $fullItem. This code is valid but cannot be "
+            "used as a $item. If you want to sign in, use the icon "
+            "near the top of the screen.";
+      } else {
+        return "Not a $fullItem. This code is valid but cannot be "
+            "used as a $item.";
+      }
+    } else {
+      return "Unknown error. The hub responseded with an invalid status code. "
+          "Make sure you typed the hub correctly, try again later, or "
+          "contact the hub administrator.";
+    }
+  }
 
   bool validateTextFields() {
     final form = formKey.currentState!;
@@ -162,27 +193,30 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     if (error.isEmpty) {
       if (response == null) {
         error = "B29348 response is null";
-      } else {
-        displayError = validateStatusCode(response.statusCode);
-        if (displayError.isNotEmpty) {
-          error = "B14514 invalid status code ${response.statusCode}";
+      }
+    }
+    if (error.isEmpty) {
+      // response is not null
+      displayError = statusCodeCheck(response!.statusCode);
+      if (displayError.isNotEmpty) {
+        error = "B14514 invalid status code ${response.statusCode}";
+      }
+    }
+    if (error.isEmpty) {
+      // status code is okay
+      try {
+        error = processApiResponse(response);
+        if (error.isNotEmpty) {
+          displayError = "Unknown error. Received invalid data from the "
+              "hub. Contact the hub administrator.";
         } else {
-          // status code is okay
-          try {
-            error = processApiResponse(response);
-            if (error.isNotEmpty) {
-              displayError = "Received invalid data from the hub. Contact the "
-                  "hub administrator.";
-            } else {
-              _log.fine("$hub returned status code ${response.statusCode}");
-            }
-          } catch (err) {
-            displayError = "Unable to parse the hub's response. Make sure "
-                "you typed the hub correctly, try again later, or contact "
-                "the hub administrator.";
-            error = err.toString();
-          }
+          _log.fine("$hub returned status code ${response!.statusCode}");
         }
+      } catch (err) {
+        error = err.toString();
+        displayError = "Unknown error. Unable to parse the hub's "
+            "response. Make sure you typed the hub correctly, try again "
+            "later, or contact the hub administrator.";
       }
     }
     if (error.isEmpty) {
@@ -205,10 +239,17 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       displayError += " Make sure that you typed the hub correctly "
           "and that you are connected to the internet.";
     }
+    var title = "Unable to connect";
+    var text = '$displayError (Error "$error".)';
+    var titleSplit = RegExp(r'^([^\.]{3,30})\. (.+)$').firstMatch(text);
+    if (titleSplit != null) {
+      title = titleSplit.group(1)!; // first sentence becomes title
+      text = titleSplit.group(2)!;
+    }
     await notificationDialog(
       context: context,
-      title: "Unable to connect",
-      text: '$displayError (Error "$error".)',
+      title: title,
+      text: text,
       buttonText: "OK",
     );
     return;

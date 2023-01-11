@@ -40,13 +40,11 @@ class ServersFormState extends ParentFormState {
   }
 
   @override
-  String validateStatusCode(status) {
-    if (status == 201) return "";
-    if (status == 403) return "Invalid login key. Please sign in again.";
-    return "The hub responseded with an invalid status code. "
-        "Make sure you typed the hub correctly, try again later, or "
-        "contact the hub administrator.";
-  }
+  String statusCodeCheck(status) => statusCodeMessage(
+        status,
+        expected: 201,
+        item: "login key",
+      );
 
   @override
   String processApiResponse(response) {

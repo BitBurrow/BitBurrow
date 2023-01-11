@@ -153,10 +153,10 @@ class Account(SQLModel, table=True):
     def validate_login_key(login_key):
         if len(login_key) != lk.login_key_len:
             raise HTTPException(
-                status_code=422, detail=f"Login key length must be {lk.login_key_len}"
+                status_code=400, detail=f"Login key length must be {lk.login_key_len}"
             )
         if not set(lk.base28_digits).issuperset(login_key):
-            raise HTTPException(status_code=422, detail="Invalid login key characters")
+            raise HTTPException(status_code=400, detail="Invalid login key characters")
         with Session(engine) as session:
             statement = select(Account).where(Account.login == Account.login_portion(login_key))
             result = session.exec(statement).one_or_none()
@@ -167,13 +167,16 @@ class Account(SQLModel, table=True):
         try:
             hasher.verify(key_hash_to_test, key)
         except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.InvalidHash):
-            raise HTTPException(status_code=422, detail="Login key not found")
+            raise HTTPException(status_code=401, detail="Login key not found")
         if hasher.check_needs_rehash(key_hash_to_test):
             result.key_hash = hasher.hash(key)  # FIXME: untested
             result.update()
             logger.info("Rehashed {login_key}")
         if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise HTTPException(status_code=422, detail="Login key expired")
+            raise HTTPException(status_code=403, detail="Login key expired")
+        if allowed_kinds is not None:
+            if result.kind not in allowed_kinds:
+                raise HTTPException(status_code=422, detail="Invalid account kind")
         # FIXME: verify pubkey limit
         return result
 

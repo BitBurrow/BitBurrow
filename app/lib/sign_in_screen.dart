@@ -50,14 +50,9 @@ class SignInFormState extends ParentFormState {
   }
 
   @override
-  String validateStatusCode(status) {
-    bool serverError;
-    if (status == 200 || status == 403) {
-      global.loginState.loginKeyVerified = status == 200;
-      serverError = false;
-    } else {
-      serverError = true;
-    }
+  String statusCodeCheck(status) {
+    var displayError = statusCodeMessage(status, item: "login key");
+    global.loginState.loginKeyVerified = displayError.isEmpty;
     const keyStore = storage.FlutterSecureStorage();
     // if loginState.saveLoginKey == false, values have already been cleared
     if (global.loginState.saveLoginKey && global.loginState.loginKeyVerified) {
@@ -70,18 +65,7 @@ class SignInFormState extends ParentFormState {
       _log.info("Save to secure storage: verification state 'true'");
       keyStore.write(key: 'login_key_verified', value: 'true');
     }
-    if (serverError) {
-      return "The hub responseded with an invalid status code. "
-          "Make sure you typed the hub correctly, try again later, or "
-          "contact the hub administrator.";
-    } else {
-      if (global.loginState.loginKeyVerified) {
-        return "";
-      } else {
-        return "Invalid login key. Please check what you typed "
-            "and try again.";
-      }
-    }
+    return displayError;
   }
 
   @override
