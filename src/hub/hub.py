@@ -67,6 +67,17 @@ def cli(return_help_text=False):
         help="Display the configured domain and exit",
     )
     parser.add_argument(
+        "--set-ip",
+        type=str,
+        default='',
+        help="Public IP address to access hub api",
+    )
+    parser.add_argument(
+        "--get-ip",
+        action='store_true',
+        help="Display the configured public IP address and exit",
+    )
+    parser.add_argument(
         "--set-ssh-port",
         type=int,
         default=0,
@@ -257,7 +268,7 @@ def on_shutdown():
 #   /v1/coupons/🧩/managers                    --            new mngr    --            --
 # ⍉ /v1/admins/🔑/managers                     list mngrs    --          --            --
 # ⍉ /v1/admins/🔑/managers/🗝                  view mngr     --          update mngr   delete mngr
-# #️⃣ /v1/admins/🔑/coupons                      list coupons  new coupon  --            --
+# #️⃣ /v1/admins/🔑/coupons                     list coupons  new coupon  --            --
 # ⍉ /v1/admins/🔑/accounts/🗝                  view coupon   --          update coupon delete coupon
 # idempotent                                   ✅            —           ✅            ✅
 # 200 OK                                       ✅            —           ✅            —
@@ -408,16 +419,29 @@ def entry_point():  # called from setup.cfg
     arg_combo_okay = False
     if args.set_domain != '':
         hub_state.domain = args.set_domain
+        hub_state.update()
+        arg_combo_okay = True
     if args.get_domain:
         print(hub_state.domain)
         arg_combo_okay = True
+    if args.set_ip != '':
+        hub_state.public_ip = args.set_ip
+        hub_state.update()
+        arg_combo_okay = True
+    if args.get_ip:
+        print(hub_state.public_ip)
+        arg_combo_okay = True
     if args.set_ssh_port != 0:
         hub_state.ssh_port = args.set_ssh_port
+        hub_state.update()
+        arg_combo_okay = True
     if args.get_ssh_port:
         print(hub_state.ssh_port)
         arg_combo_okay = True
     if args.set_wg_port != 0:
         hub_state.wg_port = args.set_wg_port
+        hub_state.update()
+        arg_combo_okay = True
     if args.get_wg_port:
         print(hub_state.wg_port)
         arg_combo_okay = True
@@ -431,21 +455,18 @@ def entry_point():  # called from setup.cfg
         print(f"Your new {db.Account_kind.COUPON} (KEEP IT SAFE): {login_key}")
         del login_key  # do not store!
         arg_combo_okay = True
-    if args.set_domain or args.set_ssh_port or args.set_wg_port:
-        hub_state.update()
-        arg_combo_okay = True
     if arg_combo_okay:
         if args.api:
             logger.warning(
                 "Argument '--api' ignored because '--get-xxx' or '--set-xxx' was specified."
             )
-        sys.exit()
+        sys.exit(0)
     if not args.api:
         logger.error("Argument '--api' not specified.")
-        sys.exit()
+        sys.exit(2)
     if hub_state.domain == '':
         logger.error("Use `--set-domain` to configure your domain name before running API.")
-        sys.exit()
+        sys.exit(2)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     strong_ciphers = ':'.join(
         [
@@ -466,10 +487,10 @@ def entry_point():  # called from setup.cfg
     ssl_certfile = f'/etc/letsencrypt/live/{hub_state.domain}/fullchain.pem'
     if not os.access(ssl_keyfile, os.R_OK):
         logger.error(f"File {ssl_keyfile} is missing or unreadable.")
-        sys.exit()
+        sys.exit(1)
     if not os.access(ssl_certfile, os.R_OK):
         logger.error(f"File {ssl_certfile} is missing or unreadable.")
-        sys.exit()
+        sys.exit(1)
     logger.info(f"❚ Starting BitBurrow hub {hub_state.hub_number}")
     logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
     logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")

@@ -28,6 +28,7 @@ engine = None
 class Hub(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     domain: str = ''  # API url in form example.com or node.example.com
+    public_ip: str = ''
     ssh_port: int = 0
     wg_port: int = 0
     # FIXME: add note--recommend url not contain `vpn` or `proxy` for firewalls of clients to block

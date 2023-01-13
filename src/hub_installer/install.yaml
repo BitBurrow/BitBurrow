@@ -1,0 +1,296 @@
+---
+- hosts: localhost
+  become: true
+  tasks:
+
+  - name: Run apt upgrade
+    apt:
+      upgrade: "yes"  # quotes avoid https://github.com/ansible/ansible/issues/56788
+      update_cache: true
+      cache_valid_time: 432000  # ≥5 days
+
+  - name: Install package dependencies
+    apt:
+      name:
+      - unattended-upgrades
+      - python3-pip
+      - wireguard-tools
+      - sqlite3
+      - acl  # `setfacl` below and https://stackoverflow.com/a/56379678
+      state: latest
+
+  - name: Enable automatic security updates
+    # requires package unattended-upgrades
+    # see also https://help.ubuntu.com/community/AutomaticSecurityUpdates
+    copy:
+      content: |
+        APT::Periodic::Update-Package-Lists "1";
+        APT::Periodic::Unattended-Upgrade "1";
+        APT::Periodic::Download-Upgradeable-Packages "1";
+        APT::Periodic::AutocleanInterval "7";
+      dest: /etc/apt/apt.conf.d/20auto-upgrades
+      mode: '0644'
+
+  - name: Add BitBurrow hub user
+    user:
+      name: bitburrow
+      password: '!'  # disabled
+      state: present
+      create_home: true
+      shell: /bin/bash
+
+  - name: Allow sudo without password for specific commands
+    copy:
+      content: |
+        bitburrow  ALL = NOPASSWD: /usr/bin/wg *
+        bitburrow  ALL = NOPASSWD: /bin/ip *
+        bitburrow  ALL = NOPASSWD: /usr/sbin/sysctl *
+        bitburrow  ALL = NOPASSWD: /usr/sbin/iptables *
+      dest: /etc/sudoers.d/bitburrow
+      mode: '0640'
+
+  - name: Install bbhub 🦶1--retrieve git id of most recent commit to main branch
+    command:
+      cmd: "curl -H 'Accept: application/vnd.github.VERSION.sha' https://api.github.com/repos/BitBurrow/BitBurrow/commits/main"
+      warn: false
+    register: bbhub_version_latest
+    changed_when: false
+
+  - name: Install bbhub 🦶2--retrieve git id of installed version
+    command:
+      cmd: cat /home/bitburrow/.bbhub_installed
+    register: bbhub_version_installed
+    changed_when: false
+    failed_when: false
+    become_user: bitburrow
+
+  - name: Install bbhub 🦶3--display bbhub versions
+    debug:
+      msg: "bbhub version: current {{ bbhub_version_installed.stdout }}; available {{ bbhub_version_latest.stdout }}"
+
+  - name: Install bbhub 🦶4--pip install
+    pip:
+      name: git+https://github.com/BitBurrow/BitBurrow.git@main
+      state: forcereinstall  # pip cannot detect git commits
+    become_user: bitburrow
+    when: bbhub_version_installed.stdout != bbhub_version_latest.stdout
+
+  - name: Install bbhub 🦶5--mark hub as updated
+    copy:
+      content: "{{ bbhub_version_latest.stdout }}"
+      dest: /home/bitburrow/.bbhub_installed
+    become_user: bitburrow
+    when: bbhub_version_installed.stdout != bbhub_version_latest.stdout
+
+  - name: Define bbhub path
+    set_fact:
+      bbhub: /home/bitburrow/.local/bin/bbhub
+    changed_when: false
+
+  - name: Set domain
+    command:
+      cmd: "{{ bbhub }} --set-domain {{ domain }}"
+    become_user: bitburrow
+    when: domain is defined
+
+  - name: Define get_domain
+    command:
+      cmd: "{{ bbhub }} --get-domain"
+    register: get_domain
+    changed_when: false
+    become_user: bitburrow
+
+  - name: Set ip
+    command:
+      cmd: "{{ bbhub }} --set-ip {{ ip }}"
+    become_user: bitburrow
+    when: ip is defined
+
+  - name: Define get_ip
+    command:
+      cmd: "{{ bbhub }} --get-ip"
+    register: get_ip
+    changed_when: false
+    become_user: bitburrow
+
+  - name: Define hostname
+    command:
+      cmd: hostname --short
+    register: hostname
+    changed_when: false
+    become_user: bitburrow
+
+  - name: Create port forward script
+    copy:
+      content: |
+        #!/bin/bash
+        ##
+        VMNAME={{ hostname.stdout }}
+        bbhub() { lxc exec $VMNAME -- sudo -u bitburrow /home/bitburrow/.local/bin/bbhub "$1"; }
+        ##
+        ## configure port forwarding from host to container for BitBurrow hub
+        ##
+        APIPORT=8443  # hard-coded in app
+        SSHPORT=$(bbhub --get-ssh-port)
+        WGPORT=$(bbhub --get-wg-port)
+        lxc config device add $VMNAME apiport proxy listen=tcp:0.0.0.0:$APIPORT connect=tcp:127.0.0.1:$APIPORT
+        lxc config device add $VMNAME sshport proxy listen=tcp:0.0.0.0:$SSHPORT connect=tcp:127.0.0.1:$SSHPORT
+        lxc config device add $VMNAME wgport proxy listen=udp:0.0.0.0:$WGPORT connect=udp:127.0.0.1:$WGPORT
+        ##
+        ## allow logging of client IP addresses (otherwise all connections appear to be from 127.0.0.1)
+        ##
+        # from https://discuss.linuxcontainers.org/t/making-sure-that-ips-connected-to-the-containers-gameserver-proxy-shows-users-real-ip/8032/5
+        VMIP=$(lxc list $VMNAME -c4 --format=csv |grep -o '^\S*')
+        lxc stop $VMNAME
+        lxc config device override $VMNAME eth0 ipv4.address=$VMIP
+        lxc config device set $VMNAME apiport nat=true listen=tcp:{{ get_ip.stdout }}:$APIPORT connect=tcp:0.0.0.0:$APIPORT
+        lxc start $VMNAME
+        ##
+        ## configure port forwarding from host to container for BIND
+        ##
+        lxc config device add $VMNAME udpdns proxy listen=udp:{{ get_ip.stdout }}:53 connect=udp:127.0.0.1:53
+        lxc config device add $VMNAME tcpdns proxy listen=tcp:{{ get_ip.stdout }}:53 connect=tcp:127.0.0.1:53
+        ##
+      dest: /home/bitburrow/set_port_forwarding.sh
+      mode: '0755'
+    become_user: bitburrow
+
+  - name: Create systemd service file
+    copy:
+      content: |
+        [Unit]
+        Description=BitBurrow
+        Documentation=https://bitburrow.com
+        After=network.target network-online.target
+        #
+        [Service]
+        Type=exec
+        RestartSec=2s
+        User=bitburrow
+        Group=bitburrow
+        WorkingDirectory=/home/bitburrow
+        ExecStart=/home/bitburrow/.local/bin/bbhub --api
+        Restart=always
+        PrivateTmp=true
+        PrivateDevices=false
+        NoNewPrivileges=false
+        #
+        [Install]
+        WantedBy=multi-user.target
+      dest: /etc/systemd/system/bitburrow.service
+      mode: '0660'
+
+  - name: Enable systemd service file
+    # debugging: sudo systemctl status bitburrow
+    # debugging: sudo journalctl -u bitburrow
+    systemd:
+      name: bitburrow
+      enabled: yes
+      state: started
+      masked: false
+
+  - name: Install BIND 🦶1--install
+    apt:
+      name:
+      - bind9
+      state: latest
+
+  - name: Install BIND 🦶2--disable recursion
+    lineinfile:
+      regexp: '^\s*recursion no;\s*'
+      #line: '{{ "\t" }}recursion no;'  # {{ "\t" }} is tab character
+      line: "\trecursion no;"  # double quotes needed for \t expansion
+      insertbefore: '^};\s*'
+      path: /etc/bind/named.conf.options
+    register: bind_recursion
+
+  - name: Install BIND 🦶3--add zone config
+    blockinfile:
+      block: |
+        zone "{{ get_domain.stdout }}" {
+          type master;
+          file "/var/cache/bind/db.{{ get_domain.stdout }}";
+          allow-transfer { none; };
+          update-policy local;
+        };
+      path: /etc/bind/named.conf.local
+    register: bind_zone_config
+
+  - name: Install BIND 🦶4--add zone file
+    # re CAA record, see https://letsencrypt.org/docs/caa/
+    # FIXME: support ACME-CAA - https://www.devever.net/~hl/acme-caa-live and https://news.ycombinator.com/item?id=34035148
+    copy:
+      content: |
+        ;
+        ; BIND data file for {{ get_domain.stdout }}
+        ;
+        $TTL  500
+        @ IN  SOA  {{ get_domain.stdout }}. root.localhost. (
+                    5    ; Serial
+               604800    ; Refresh
+                86400    ; Retry
+              2419200    ; Expire
+                  500 )  ; Negative Cache TTL
+        ;
+        @ IN  NS   {{ get_domain.stdout }}.
+        @ IN  A    {{ get_ip.stdout }}
+        @ IN  CAA  0 issue "letsencrypt.org"
+      dest: /var/cache/bind/db.{{ get_domain.stdout }}
+      mode: '0644'
+      owner: bind
+      group: bind
+    register: bind_zone_file
+
+  - name: Install BIND 🦶5--restart
+    # debugging: sudo named-checkconf  # should display nothing
+    # debugging: printf "zone rxb.example.org\nupdate delete testa.rxb.example.org.\nupdate add testa.rxb.example.org. 600 IN A 9.9.9.9\nsend\n" |sudo -u bind /usr/bin/nsupdate -l  # substitute your domain; see that no errors are displayed
+    # debugging: dig @127.0.0.1 testa.rxb.example.org +short  # again, substitute your domain
+    systemd:
+      name: bind9
+      enabled: yes
+      state: restarted
+    when: bind_recursion.changed or bind_zone_config.changed or bind_zone_file.changed
+  
+  # FIXME: test if ports are forwarded, BIND working correctly, etc.
+
+  - name: Wildcard TLS cert 🦶1--install certbot
+    # same as: sudo snap install --classic certbot
+    snap:
+      name: certbot
+      classic: yes
+
+  - name: Wildcard TLS cert 🦶2--hook file
+    # debugging: sudo certbot renew --dry-run
+    # debugging: sudo systemctl list-timers snap.certbot.renew.timer
+    copy:
+      content: |
+        #!/bin/bash
+        DNS_ZONE={{ get_domain.stdout }}
+        HOST='_acme-challenge'
+        sudo -u bind /usr/bin/nsupdate -l << EOM
+        zone ${DNS_ZONE}
+        update delete ${HOST}.${CERTBOT_DOMAIN} A
+        update add ${HOST}.${CERTBOT_DOMAIN} 300 TXT "${CERTBOT_VALIDATION}"
+        send
+        EOM
+        sleep 5
+      dest: /opt/certbot_hook.sh
+      mode: '0550'
+      owner: bind
+      group: bind
+
+  - name: Wildcard TLS cert 🦶3--run certbot
+    shell:
+      cmd: >
+        certbot certonly -n --agree-tos
+        --manual --manual-auth-hook=/opt/certbot_hook.sh
+        --preferred-challenge=dns
+        --register-unsafely-without-email --manual-public-ip-logging-ok
+        -d '*.'{{ get_domain.stdout }} -d {{ get_domain.stdout }}
+        --server https://acme-v02.api.letsencrypt.org/directory
+        && touch /etc/letsencrypt/.registered
+      creates: /etc/letsencrypt/.registered
+
+  - name: Wildcard TLS cert 🦶4--fix cert permissions
+    command:
+      cmd: setfacl -Rm d:user:bitburrow:rx,user:bitburrow:rx /etc/letsencrypt/
