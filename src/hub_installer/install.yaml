@@ -10,6 +10,7 @@
       cache_valid_time: 432000  # ≥5 days
 
   - name: Install package dependencies
+    # debugging: df --si /  # check in container *and* on host
     apt:
       name:
       - unattended-upgrades
@@ -128,7 +129,7 @@
         VMNAME={{ hostname.stdout }}
         bbhub() { lxc exec $VMNAME -- sudo -u bitburrow /home/bitburrow/.local/bin/bbhub "$1"; }
         ##
-        ## configure port forwarding from host to container for BitBurrow hub
+        ## Configure port forwarding from host to container for BitBurrow hub
         ##
         APIPORT=8443  # hard-coded in app
         SSHPORT=$(bbhub --get-ssh-port)
@@ -137,7 +138,7 @@
         lxc config device add $VMNAME sshport proxy listen=tcp:0.0.0.0:$SSHPORT connect=tcp:127.0.0.1:$SSHPORT
         lxc config device add $VMNAME wgport proxy listen=udp:0.0.0.0:$WGPORT connect=udp:127.0.0.1:$WGPORT
         ##
-        ## allow logging of client IP addresses (otherwise all connections appear to be from 127.0.0.1)
+        ## Allow logging of client IP addresses (otherwise all connections appear to be from 127.0.0.1)
         ##
         # from https://discuss.linuxcontainers.org/t/making-sure-that-ips-connected-to-the-containers-gameserver-proxy-shows-users-real-ip/8032/5
         VMIP=$(lxc list $VMNAME -c4 --format=csv |grep -o '^\S*')
@@ -146,7 +147,7 @@
         lxc config device set $VMNAME apiport nat=true listen=tcp:{{ get_ip.stdout }}:$APIPORT connect=tcp:0.0.0.0:$APIPORT
         lxc start $VMNAME
         ##
-        ## configure port forwarding from host to container for BIND
+        ## Configure port forwarding from host to container for BIND
         ##
         lxc config device add $VMNAME udpdns proxy listen=udp:{{ get_ip.stdout }}:53 connect=udp:127.0.0.1:53
         lxc config device add $VMNAME tcpdns proxy listen=tcp:{{ get_ip.stdout }}:53 connect=tcp:127.0.0.1:53
@@ -236,6 +237,7 @@
         @ IN  A    {{ get_ip.stdout }}
         @ IN  CAA  0 issue "letsencrypt.org"
       dest: /var/cache/bind/db.{{ get_domain.stdout }}
+      force: false  # do not overwrite if file exists (BIND rewrites this file)
       mode: '0644'
       owner: bind
       group: bind
@@ -279,7 +281,7 @@
       owner: bind
       group: bind
 
-  - name: Wildcard TLS cert 🦶3--run certbot
+  - name: Wildcard TLS cert 🦶3--request cert
     shell:
       cmd: >
         certbot certonly -n --agree-tos
@@ -289,8 +291,9 @@
         -d '*.'{{ get_domain.stdout }} -d {{ get_domain.stdout }}
         --server https://acme-v02.api.letsencrypt.org/directory
         && touch /etc/letsencrypt/.registered
-      creates: /etc/letsencrypt/.registered
+      creates: /etc/letsencrypt/.registered  # once it completes successfully, never run again
 
-  - name: Wildcard TLS cert 🦶4--fix cert permissions
+  - name: Wildcard TLS cert 🦶4--fix permissions so bbhub can read cert
     command:
       cmd: setfacl -Rm d:user:bitburrow:rx,user:bitburrow:rx /etc/letsencrypt/
+    changed_when: false
