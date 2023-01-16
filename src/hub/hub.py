@@ -110,6 +110,12 @@ def cli(return_help_text=False):
         help="Create a new coupon and display it; KEEP THIS SAFE",
     )
     parser.add_argument(
+        "--test",
+        type=str,
+        default='',
+        help="Run internal test TEST",
+    )
+    parser.add_argument(
         "--api",
         action='store_true',
         help="Listen on API port for requests from the app",
@@ -455,6 +461,8 @@ def entry_point():  # called from setup.cfg
         print(f"Your new {db.Account_kind.COUPON} (KEEP IT SAFE): {login_key}")
         del login_key  # do not store!
         arg_combo_okay = True
+    if args.test != '':
+        sys.exit(0 if hub_state.integrity_test_by_id(args.test) else 1)
     if arg_combo_okay:
         if args.api:
             logger.warning(

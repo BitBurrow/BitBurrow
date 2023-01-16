@@ -13,6 +13,7 @@ import sqlalchemy
 from sqlmodel import Field, Session, SQLModel, select, JSON, Column
 import tempfile
 from typing import Optional
+import yaml
 import hub.login_key as lk
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,51 @@ engine = None
 ###
 ### DB table 'hub' - details for this BitBurrow hub; should be exactly 1 row
 ###
+
+integrity_tests_yaml = '''
+# note: the ending "|keep_only 'regex'" is similar to CLI "|grep -o 'regex'" with Python's re
+# localhost domain A record
+- id: bind_a
+  cmd: dig @127.0.0.1 A {domain} +short
+  expected: '{public_ip}'
+# localhost domain NS record
+- id: bind_ns
+  cmd: dig @127.0.0.1 NS {domain} +short
+  expected: '{domain}.'
+# domain A record
+- id: bind_a
+  cmd: dig @{public_ip} A {domain} +short
+  expected: '{public_ip}'
+# domain NS record
+- id: bind_ns
+  cmd: dig @{public_ip} NS {domain} +short
+  expected: '{domain}.'
+# domain SOA record
+- id: bind_soa
+  cmd: dig @{public_ip} SOA {domain} +short |keep_only '^\S*'
+  expected: '{domain}.'
+# global A record
+# FIXME: Is there any reason to get this directly from the nameserver of the parent domain,
+#     i.e. `dig @{parent_domain_ns} {domain} |keep_only '^[0-9a-z\._-]+.*'` shows an A 
+#     record and an NS record?
+- id: global_a
+  cmd: dig A {domain} +short
+  expected: '{public_ip}'
+# global NS record
+- id: global_ns
+  cmd: dig NS {domain} +short
+  expected: '{domain}.'
+# ensure BIND recursive resolver is disabled
+- id: bind_recursive_off
+  cmd: dig @{public_ip} A google.com +short
+  expected: ''
+# ensure zone transfer is disabled (list of VPN servers should not be public)
+- id: bind_axfr_off
+  cmd: dig @{public_ip} {domain} AXFR +short
+  expected: '; Transfer failed.'
+
+'''
+integrity_tests = yaml.safe_load(integrity_tests_yaml)
 
 
 class Hub(SQLModel, table=True):
@@ -60,6 +106,50 @@ class Hub(SQLModel, table=True):
         with Session(engine) as session:
             session.add(self)
             session.commit()
+
+    def integrity_test(self, test):
+        cmd = test['cmd'].format(domain=self.domain, public_ip=self.public_ip)
+        keep_only = None  # support syntax at end of cmd similar to `grep -o`
+        keep_only_search = re.search(r'^(.*?)\s*\|\s*keep_only\s+["\']([^"\']+)["\']$', cmd)
+        if keep_only_search != None:
+            cmd = keep_only_search.group(1)
+            keep_only = keep_only_search.group(2)
+        expected = test['expected'].format(domain=self.domain, public_ip=self.public_ip)
+        try:
+            result = run_external(cmd.split(' '))
+        except RuntimeError:
+            result = 'command exited with non-zero return code'
+            keep_only = None
+        if keep_only != None:
+            first_match = re.search(keep_only, result)
+            if first_match != None:
+                result = first_match.group(0)
+        is_good = expected == result
+        log_level = logging.INFO if is_good else logging.ERROR
+        logger.log(log_level, f"integrity test: {test['id']}")
+        logger.log(log_level, f"    {cmd}")
+        logger.log(log_level, f"    expected result: {expected}")
+        logger.log(log_level, f"    actual result:   {result}")
+        logger.log(log_level, f"    status:          {'good' if is_good else 'TEST FAILED'}")
+        return is_good
+
+    def integrity_test_by_id(self, test_id):
+        # returns True only if there are no failed tests
+        pass_count = 0
+        failed_count = 0
+        for t in integrity_tests:
+            if (
+                test_id == 'all'
+                or test_id == t['id']
+                or (test_id == 'dig' and t['cmd'].startswith('dig '))
+            ):
+                if self.integrity_test(t):
+                    pass_count += 1
+                else:
+                    failed_count += 1
+        if pass_count == 0:
+            logger.warning(f"nonexistent test ID {test_id}")
+        return failed_count == 0
 
 
 ###

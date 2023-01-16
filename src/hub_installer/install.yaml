@@ -18,6 +18,7 @@
       - wireguard-tools
       - sqlite3
       - acl  # `setfacl` below and https://stackoverflow.com/a/56379678
+      - bind9-dnsutils  # `dig` tool
       state: latest
 
   - name: Enable automatic security updates
@@ -253,7 +254,11 @@
       state: restarted
     when: bind_recursion.changed or bind_zone_config.changed or bind_zone_file.changed
   
-  # FIXME: test if ports are forwarded, BIND working correctly, etc.
+  - name: Test BIND and DNS config
+    command:
+      cmd: "{{ bbhub }} --test dig"
+    become_user: bitburrow
+    changed_when: false
 
   - name: Wildcard TLS cert 🦶1--install certbot
     # same as: sudo snap install --classic certbot
