@@ -92,20 +92,28 @@ class ServersFormState extends ParentFormState {
             sizedBoxSpace,
             FractionallySizedBox(
               widthFactor: 0.8,
-              child: global.loginState.servers.isEmpty
-                  ? Text("You have no VPN servers set up.",
+              child: global.loginState.isNotSignedIn()
+                  ? Text("You need to sign in.",
                       textAlign: TextAlign.center,
                       textScaleFactor: 1.8,
                       style: TextStyle(
                         fontStyle: FontStyle.italic,
                         color: Theme.of(context).backgroundColor,
                       ))
-                  : Text(
-                      "Your VPN servers",
-                      textAlign: TextAlign.center,
-                      textScaleFactor: 1.8,
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
+                  : global.loginState.servers.isEmpty
+                      ? Text("You have no VPN servers set up.",
+                          textAlign: TextAlign.center,
+                          textScaleFactor: 1.8,
+                          style: TextStyle(
+                            fontStyle: FontStyle.italic,
+                            color: Theme.of(context).backgroundColor,
+                          ))
+                      : Text(
+                          "Your VPN servers",
+                          textAlign: TextAlign.center,
+                          textScaleFactor: 1.8,
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
             ),
             sizedBoxSpace,
             Expanded(

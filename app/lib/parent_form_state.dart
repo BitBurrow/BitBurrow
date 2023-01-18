@@ -125,8 +125,8 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     if (status == 422) {
       if (item == "coupon") {
         return "Not a $fullItem. This code is valid but cannot be "
-            "used as a $item. If you want to sign in, use the icon "
-            "near the top of the screen.";
+            "used as a $item. If you want to sign in, use the ⋮ icon "
+            "at the top of the screen.";
       } else {
         return "Not a $fullItem. This code is valid but cannot be "
             "used as a $item.";

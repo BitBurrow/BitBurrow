@@ -199,12 +199,7 @@ class SignInFormState extends ParentFormState {
 
   void signIn() {
     if (global.loginState.saveLoginKey == false) {
-      const keyStore = storage.FlutterSecureStorage();
-      _log.info("Clear stored login key from secure storage");
-      // if box not checked, clear stored login key even before trying server
-      // no need: keyStore.write(key: 'hub', value: '');
-      keyStore.write(key: 'login_key', value: '');
-      keyStore.write(key: 'login_key_verified', value: 'false');
+      clearStoredLoginKey();
     }
     var err = "";
     if (validateTextFields()) {
@@ -215,8 +210,24 @@ class SignInFormState extends ParentFormState {
     showInSnackBar(err);
   }
 
+  @override
+  void handleSubmitted() async {
+    global.loginState.signInScreenFormKey = formKey;
+    super.handleSubmitted();
+  }
+
+  static void clearStoredLoginKey() {
+    const keyStore = storage.FlutterSecureStorage();
+    _log.info("Clear stored login key from secure storage");
+    // if box not checked, clear stored login key even before trying server
+    // no need: keyStore.write(key: 'hub', value: '');
+    keyStore.write(key: 'login_key', value: '');
+    keyStore.write(key: 'login_key_verified', value: 'false');
+  }
+
   void checkLoginState(context) {
-    // if login key is verified, press the sign-in button (virtually)
+    // if login key is verified, press the sign-in button (virtually); this
+    // ... is similar to a redirect but if login fails will stay on this screen
     if (global.loginState.loginKeyVerified) {
       signIn();
     }

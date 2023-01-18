@@ -3,6 +3,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:logging/logging.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
 import 'dart:io' as io;
 import 'global.dart' as global;
@@ -30,7 +31,9 @@ class LoginState {
   String loginKey = ""; // saved in secure storage
   bool loginKeyVerified = false; // saved in secure storage
   bool saveLoginKey = false; // user choice to keep login key in secure storage
+  bool skipWelcomeScreen = true; // forward past welcome screen if signed in
   List<int> servers = [];
+  GlobalKey<FormState>? signInScreenFormKey; // to reset state from '⋮' menu
 
   bool isSignedIn() => loginKeyVerified;
   bool isNotSignedIn() => !loginKeyVerified;
@@ -155,8 +158,10 @@ class App extends StatelessWidget {
         _log.finer("GoRouter() redirect; location==${state.location}");
       }
       _log.finer("GoRouter() redirect; subloc==${state.subloc}");
-      if (state.subloc == '/' && global.loginState.loginKeyVerified) {
-        // if we have valid login key, skip welcome screen and proceed with automatic sign-in
+      if (state.subloc == '/' &&
+          global.loginState.loginKeyVerified &&
+          global.loginState.skipWelcomeScreen) {
+        // if we have valid login key, forward to automatic sign-in
         return '/sign-in';
       }
       return null;
@@ -189,6 +194,12 @@ MarkdownBody textMd(BuildContext context, md) {
   );
 }
 
+void clearNavigatorRoutes(context) {
+  while (Navigator.of(context).canPop()) {
+    Navigator.of(context).pop();
+  }
+}
+
 Widget ourScreenLayout(BuildContext context, Widget body,
         {Widget? floatingActionButton}) =>
     Scaffold(
@@ -196,20 +207,70 @@ Widget ourScreenLayout(BuildContext context, Widget body,
           // title: const Text(App.title),
           toolbarHeight: 40.0,
           actions: <Widget>[
-            if (GoRouter.of(context).location != '/sign-in')
-              IconButton(
-                  icon: const Icon(Icons.login),
-                  tooltip: "Sign in",
-                  onPressed: () {
-                    _log.fine("IconButton 'Sign in' onPressed()");
-                    context.push('/sign-in');
-                  }),
-            IconButton(
-                icon: const Icon(Icons.more_vert),
-                tooltip: "More",
-                onPressed: () {
-                  _log.fine("IconButton 'More' onPressed()");
-                }),
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              tooltip: "Menu",
+              onSelected: (String value) {
+                _log.fine("IconButton 'Show menu' onSelected('$value')");
+                switch (value) {
+                  case "Enter a coupon code":
+                    // disable 'skip' so WelcomeScreen doesn't redirect
+                    global.loginState.skipWelcomeScreen = false;
+                    clearNavigatorRoutes(context); // possibly unnecessary
+                    context.go('/');
+                    break;
+                  case "Sign in":
+                    // mark login key NOT verified to skip auto-sign-in
+                    global.loginState.loginKeyVerified = false;
+                    clearNavigatorRoutes(context); // erase history
+                    context.go('/sign-in');
+                    break;
+                  case "Servers":
+                    // don't call clearNavigatorRoutes() to erase history
+                    context.push('/sign-in'); // will auto-sign-in if possible
+                    break;
+                  case "Forget login key":
+                    SignInFormState.clearStoredLoginKey();
+                    global.loginState.saveLoginKey = false;
+                    global.loginState.loginKey = '';
+                    global.loginState.loginKeyVerified = false;
+                    var formKey = global.loginState.signInScreenFormKey;
+                    if (formKey != null && formKey.currentState != null) {
+                      formKey.currentState!.reset();
+                    }
+                    clearNavigatorRoutes(context); // in case login key is there
+                    context.go('/sign-in');
+                    break;
+                }
+              },
+              itemBuilder: (BuildContext context) {
+                return {
+                  "Enter a coupon code": 'images/ticket.svg',
+                  "Sign in": 'images/key.svg',
+                  "Servers": 'images/server.svg',
+                  "Forget login key": 'images/x.svg',
+                }
+                    .entries
+                    .map((item) => PopupMenuItem(
+                          value: item.key,
+                          child: Row(
+                            children: [
+                              SvgPicture.asset(
+                                item.value,
+                                width: 20,
+                                height: 20,
+                                color: item.key == "Forget login key"
+                                    ? Colors.red
+                                    : Theme.of(context).colorScheme.primary,
+                              ),
+                              const SizedBox(width: 7),
+                              Text(item.key),
+                            ],
+                          ),
+                        ))
+                    .toList();
+              },
+            ),
           ]),
       body: body,
       floatingActionButton: floatingActionButton,
