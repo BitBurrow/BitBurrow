@@ -197,14 +197,24 @@
       - bind9
       state: latest
 
-  - name: Install BIND 🦶2--disable recursion
-    lineinfile:
-      regexp: '^\s*recursion no;\s*'
-      #line: '{{ "\t" }}recursion no;'  # {{ "\t" }} is tab character
-      line: "\trecursion no;"  # double quotes needed for \t expansion
-      insertbefore: '^};\s*'
-      path: /etc/bind/named.conf.options
-    register: bind_recursion
+  - name: Install BIND 🦶2--options file
+    # changes from default BIND named.conf.options file:
+    # * remove comments, blank lines
+    # * disable recursive resolver--add line: recursion no;
+    # * disable version, hostname, etc. (`dig @[server ip] hostname.bind TXT CHAOS`)
+    copy:
+      content: |
+        options {
+            directory "/var/cache/bind";
+            dnssec-validation auto;
+            listen-on-v6 { any; };
+            recursion no;
+            version none;
+            hostname none;
+            server-id none;
+        };
+      dest: /etc/bind/named.conf.options
+    register: bind_options
 
   - name: Install BIND 🦶3--add zone config
     blockinfile:
@@ -252,7 +262,7 @@
       name: bind9
       enabled: yes
       state: restarted
-    when: bind_recursion.changed or bind_zone_config.changed or bind_zone_file.changed
+    when: bind_options.changed or bind_zone_config.changed or bind_zone_file.changed
   
   - name: Test BIND and DNS config
     command:
