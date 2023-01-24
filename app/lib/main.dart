@@ -33,7 +33,6 @@ class LoginState {
   bool saveLoginKey = false; // user choice to keep login key in secure storage
   bool skipWelcomeScreen = true; // forward past welcome screen if signed in
   List<int> servers = [];
-  GlobalKey<FormState>? signInScreenFormKey; // to reset state from '⋮' menu
 
   bool isSignedIn() => loginKeyVerified;
   bool isNotSignedIn() => !loginKeyVerified;
@@ -145,6 +144,10 @@ class App extends StatelessWidget {
         pageBuilder: (c, s) => ourPageBuilder(c, s, const SignInScreen()),
       ),
       GoRoute(
+        path: '/forget-login-key',
+        pageBuilder: (c, s) => ourPageBuilder(c, s, const SignInScreen()),
+      ),
+      GoRoute(
         path: '/servers',
         pageBuilder: (c, s) => ourPageBuilder(c, s, const ServersScreen()),
       ),
@@ -194,12 +197,6 @@ MarkdownBody textMd(BuildContext context, md) {
   );
 }
 
-void clearNavigatorRoutes(context) {
-  while (Navigator.of(context).canPop()) {
-    Navigator.of(context).pop();
-  }
-}
-
 Widget ourScreenLayout(BuildContext context, Widget body,
         {Widget? floatingActionButton}) =>
     Scaffold(
@@ -216,13 +213,11 @@ Widget ourScreenLayout(BuildContext context, Widget body,
                   case "Enter a coupon code":
                     // disable 'skip' so WelcomeScreen doesn't redirect
                     global.loginState.skipWelcomeScreen = false;
-                    clearNavigatorRoutes(context); // possibly unnecessary
                     context.go('/');
                     break;
                   case "Sign in":
                     // mark login key NOT verified to skip auto-sign-in
                     global.loginState.loginKeyVerified = false;
-                    clearNavigatorRoutes(context); // erase history
                     context.go('/sign-in');
                     break;
                   case "Servers":
@@ -230,16 +225,7 @@ Widget ourScreenLayout(BuildContext context, Widget body,
                     context.push('/sign-in'); // will auto-sign-in if possible
                     break;
                   case "Forget login key":
-                    SignInFormState.clearStoredLoginKey();
-                    global.loginState.saveLoginKey = false;
-                    global.loginState.loginKey = '';
-                    global.loginState.loginKeyVerified = false;
-                    var formKey = global.loginState.signInScreenFormKey;
-                    if (formKey != null && formKey.currentState != null) {
-                      formKey.currentState!.reset();
-                    }
-                    clearNavigatorRoutes(context); // in case login key is there
-                    context.go('/sign-in');
+                    context.go('/forget-login-key');
                     break;
                 }
               },
