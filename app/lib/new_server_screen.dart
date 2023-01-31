@@ -261,48 +261,47 @@ class NewServerFormState extends ParentFormState {
     return Form(
         key: formKey,
         autovalidateMode: AutovalidateMode.values[autoValidateModeIndex.value],
-        child: Scrollbar(
-            controller: scrollController,
-            child: SingleChildScrollView(
-              restorationId: 'new_server_screen_scroll_view',
-              padding: const EdgeInsets.symmetric(horizontal: 34),
-              controller: scrollController,
-              child: Column(
-                children: [
-                  sizedBoxSpace,
-                  const FractionallySizedBox(
-                    widthFactor: 0.8,
-                    child: Text(
-                      "Set up a BitBurrow VPN server",
-                      textAlign: TextAlign.center,
-                      textScaleFactor: 1.8,
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                  sizedBoxSpace,
-                  FractionallySizedBox(
-                    widthFactor: 0.6,
-                    child: SvgPicture.asset("images/server-32983.svg"),
-                  ),
-                  sizedBoxSpace,
-                  textMd(
-                      context,
-                      "These steps should be done at "
-                      "your \"VPN home\" location. Check the box on the left "
-                      "as you complete each step."),
-                  sizedBoxSpace,
-                  _stepsList.isEmpty
-                      ? textMd(context, "(waiting for hub)")
-                      : ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: _stepsList.length,
-                          padding: const EdgeInsets.symmetric(horizontal: 18),
-                          itemBuilder: stepBox,
-                        ),
-                  sizedBoxSpace,
-                ],
+        child: SingleChildScrollView(
+          restorationId: 'new_server_screen_scroll_view',
+          padding: const EdgeInsets.symmetric(horizontal: 34),
+          controller: scrollController,
+          child: Column(
+            children: [
+              sizedBoxSpace,
+              const FractionallySizedBox(
+                widthFactor: 0.8,
+                child: Text(
+                  "Set up a BitBurrow VPN server",
+                  textAlign: TextAlign.center,
+                  textScaleFactor: 1.8,
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
               ),
-            )));
+              sizedBoxSpace,
+              FractionallySizedBox(
+                widthFactor: 0.6,
+                child: SvgPicture.asset("images/server-32983.svg"),
+              ),
+              sizedBoxSpace,
+              textMd(
+                  context,
+                  "These steps should be done at "
+                  "your \"VPN home\" location. Check the box on the left "
+                  "as you complete each step."),
+              sizedBoxSpace,
+              _stepsList.isEmpty
+                  ? textMd(context, "(waiting for hub)")
+                  : ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _stepsList.length,
+                      padding: const EdgeInsets.symmetric(horizontal: 18),
+                      itemBuilder: stepBox,
+                    ),
+              sizedBoxSpace,
+            ],
+          ),
+        ));
   }
 
   Widget stepBox(contents, index) => StepBox(
