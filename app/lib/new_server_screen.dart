@@ -37,7 +37,7 @@ class WebSocketMessenger {
 
   WebSocketMessenger() {
     final wsPath =
-        '/v1/accounts/${global.loginState.pureLoginKey}/servers/18/setup_ws';
+        '/v1/managers/${global.loginState.pureLoginKey}/servers/18/setup';
     final url = 'wss://${global.loginState.hub}:8443$wsPath';
     // fixme: WebSocket.connect() may raise "WebSocketException: Connection
     //   to ... was not upgraded to websocket" but try-catch misses it

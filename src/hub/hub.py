@@ -165,6 +165,41 @@ def cli(return_help_text=False):
 
 
 ###
+### Server configuration
+###
+
+
+class ServerSetup:
+    def __init__(self, ws: WebSocket):
+        self._ws = ws
+
+    async def send_command_to_client(self, json_string):
+        try:
+            await self._ws.send_text(json_string)
+        except Exception as e:
+            logger.error(f"B38260 WebSocket error: {e}")
+        try:
+            return await self._ws.receive_text()
+        except WebSocketDisconnect:
+            logger.info(f"B38261 WebSocket disconnect")
+        except Exception as e:
+            logger.error(f"B38262 WebSocket error: {e}")
+            # self._error_count += 1
+
+    async def config_steps(self):
+        # user connects router
+        f_path = f'{os.path.dirname(__file__)}/server_setup_steps.yaml'
+        with open(f_path, "r") as f:
+            server_setup_steps = yaml.safe_load(f)
+        priorId = 0
+        for step in server_setup_steps:
+            assert step['id'] > priorId
+            priorId = step['id']
+            reply = await self.send_command_to_client(json.dumps({step['key']: step['value']}))
+            logger.debug(f"app WebSocket reply: {reply}")
+
+
+###
 ### globals
 ###
 
@@ -174,7 +209,7 @@ app = FastAPI(
     docs_url=None,  # disable "Docs URLs" to help avoid being identified; see
     redoc_url=None,  # ... https://fastapi.tiangolo.com/tutorial/metadata/#docs-urls
 )
-limiter = slowapi.Limiter(key_func=slowapi.util.get_remote_address)
+limiter = slowapi.Limiter(key_func=slowapi.util.get_remote_address, default_limits=["10/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(slowapi.errors.RateLimitExceeded, slowapi._rate_limit_exceeded_handler)
 is_worker_zero: bool = True
@@ -292,10 +327,9 @@ def on_shutdown():
 
 
 @app.post('/v1/coupons/{coupon}/managers')
-@limiter.limit('10/minute')
 async def create_manager(request: Request, coupon: str):
     account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
-    login_key = db.Account.newAccount(db.Account_kind.MANAGER)
+    login_key = db.Account.new(db.Account_kind.MANAGER)
     return responses.JSONResponse(
         status_code=status.HTTP_201_CREATED,
         content={'login_key': login_key},
@@ -304,61 +338,28 @@ async def create_manager(request: Request, coupon: str):
 
 
 @app.get('/v1/managers/{login_key}/servers')
-@limiter.limit('10/minute')
 async def list_servers(request: Request, login_key: str):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     with Session(db.engine) as session:
         statement = select(db.Server).where(db.Server.account_id == account.id)
         results = session.exec(statement)
-        return {'servers': [c.pubkey for c in results]}
+        return {'servers': [c.id for c in results]}
 
 
-class ServerSetup:
-    def __init__(self, ws: WebSocket):
-        self._ws = ws
-
-    async def send_command_to_client(self, json_string):
-        try:
-            await self._ws.send_text(json_string)
-        except Exception as e:
-            logger.error(f"B38260 WebSocket error: {e}")
-        try:
-            return await self._ws.receive_text()
-        except WebSocketDisconnect:
-            logger.info(f"B38261 WebSocket disconnect")
-        except Exception as e:
-            logger.error(f"B38262 WebSocket error: {e}")
-            # self._error_count += 1
-
-    async def config_steps(self):
-        # user connects router
-        f_path = f'{os.path.dirname(__file__)}/server_setup_steps.yaml'
-        with open(f_path, "r") as f:
-            server_setup_steps = yaml.safe_load(f)
-        priorId = 0
-        for step in server_setup_steps:
-            assert step['id'] > priorId
-            priorId = step['id']
-            reply = await self.send_command_to_client(json.dumps({step['key']: step['value']}))
-            logger.debug(f"app WebSocket reply: {reply}")
-
-
-@app.post('/v1/accounts/{login_key}/servers')
-# @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
+@app.post('/v1/managers/{login_key}/servers')
 async def new_server(login_key: str):
+    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
+    server_id = db.Server.new(account.id)
     return responses.JSONResponse(
         status_code=status.HTTP_201_CREATED,
-        content={},
+        content={'server_id': server_id},
     )
-    account = Account.validate_login_key(login_key)
-    with Session(db.engine) as session:
-        statement = select(Client).where(Client.account_id == account.id)
-        results = session.exec(statement)
-        return [c.pubkey for c in results]
 
 
-@app.websocket('/v1/accounts/{login_key}/servers/{server_id}/setup_ws')
+@app.websocket('/v1/managers/{login_key}/servers/{server_id}/setup')
+# @limiter.limit('10/minute')  # https://slowapi.readthedocs.io/en/latest/#websocket-endpoints
 async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
+    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     await websocket.accept()
     runTasks = ServerSetup(websocket)
     try:
@@ -371,52 +372,12 @@ async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: in
         logger.error(f"B38263 WebSocket error: {e}")  # e.g. websocket already closed
 
 
-@app.get('/pubkeys/{login_key}')
-# @limiter.limit('10/minute')  # FIXME: uncomment this to make brute-forcing login_key harder
-async def get_pubkeys(login_key: str):
-    account = db.Account.validate_login_key(login_key)
-    with Session(db.engine) as session:
-        statement = select(db.Client).where(db.Client.account_id == account.id)
-        results = session.exec(statement)
-        return [c.pubkey for c in results]
+###
+### Startup (called from setup.cfg)
+###
 
 
-@app.post('/wg/', response_class=responses.PlainTextResponse)
-@limiter.limit('100/minute')  # FIXME: reduce to 10
-async def new_client(request: Request, login_key: str = Form(...), pubkey: str = Form(...)):
-    account = db.Account.validate_login_key(login_key)
-    with Session(db.engine) as session:
-        account_client_count = (
-            session.query(db.Client).filter(db.Client.account_id == account.id).count()
-        )
-    if account_client_count >= account.clients_max:
-        raise HTTPException(status_code=422, detail="No additional clients are allowed")
-    db.Client.validate_pubkey(pubkey)
-    with Session(db.engine) as session:  # look for pubkey in database
-        statement = select(db.Client).where(db.Client.pubkey == pubkey)
-        first = session.exec(statement).first()
-    if first is not None:
-        if first.account_id != account.id:  # different account already has this pubkey
-            raise HTTPException(status_code=422, detail="Public key already in use")
-        return first.ip_list()  # return existing IPs for this pubkey
-    with Session(db.engine) as session:
-        client = db.Client(
-            account_id=account.id,
-            pubkey=pubkey,
-            netif_id=1,  # FIXME: figure out how to do multiple interfaces
-        )
-        session.add(client)
-        session.commit()  # FIXME: possible race condition where account could exceed clients_max
-        client.set_peer()  # configure WireGuard for this peer
-        return client.ip_list()
-
-
-@app.get('/raise_error/')
-async def error_test():
-    raise HTTPException(status_code=404, detail="Test exception from /raise_error/")
-
-
-def entry_point():  # called from setup.cfg
+def entry_point():
     import uvicorn  # https://www.uvicorn.org/
     import ssl
 
@@ -452,12 +413,12 @@ def entry_point():  # called from setup.cfg
         print(hub_state.wg_port)
         arg_combo_okay = True
     if args.create_admin_account:
-        login_key = db.Account.newAccount(db.Account_kind.ADMIN)
+        login_key = db.Account.new(db.Account_kind.ADMIN)
         print(f"Login key for your new {db.Account_kind.ADMIN} (KEEP THIS SAFE!): {login_key}")
         del login_key  # do not store!
         arg_combo_okay = True
     if args.create_coupon_code:
-        login_key = db.Account.newAccount(db.Account_kind.COUPON)
+        login_key = db.Account.new(db.Account_kind.COUPON)
         print(f"Your new {db.Account_kind.COUPON} (KEEP IT SAFE): {login_key}")
         del login_key  # do not store!
         arg_combo_okay = True

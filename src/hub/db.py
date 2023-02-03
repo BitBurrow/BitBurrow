@@ -106,6 +106,7 @@ class Hub(SQLModel, table=True):
         with Session(engine) as session:
             session.add(self)
             session.commit()
+            return self.id
 
     def integrity_test(self, test):
         cmd = test['cmd'].format(domain=self.domain, public_ip=self.public_ip)
@@ -218,7 +219,7 @@ class Account(SQLModel, table=True):
             return session.query(Account).filter(Account.kind == account_kind).count()
 
     @staticmethod
-    def newAccount(kind):  # create a new account and return its login key
+    def new(kind):  # create a new account and return its login key
         account = Account()
         key = lk.generate_login_key(lk.key_len)
         hasher = argon2.PasswordHasher()
@@ -235,6 +236,7 @@ class Account(SQLModel, table=True):
         with Session(engine) as session:
             session.add(self)
             session.commit()
+            return self.id
 
     @staticmethod
     def login_portion(login_key):
@@ -285,6 +287,20 @@ class Server(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager
     comment: str = ""
+
+    @staticmethod
+    def new(account_id):  # create a new server and return its id
+        server = Server()
+        server.account_id = account_id
+        id = server.update()
+        logger.info(f"Created new server {id}")
+        return id
+
+    def update(self):
+        with Session(engine) as session:
+            session.add(self)
+            session.commit()
+            return self.id
 
 
 ###

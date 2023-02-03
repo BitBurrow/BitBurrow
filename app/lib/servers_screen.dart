@@ -34,7 +34,7 @@ class ServersFormState extends ParentFormState {
   @override
   Future<http.Response?> callApi() {
     String domain = '${global.loginState.hub}:8443';
-    String path = '/v1/accounts/${global.loginState.pureLoginKey}/servers';
+    String path = '/v1/managers/${global.loginState.pureLoginKey}/servers';
     _log.info("POST https $domain$path");
     return http.post(Uri.https(domain, path));
   }
@@ -50,14 +50,12 @@ class ServersFormState extends ParentFormState {
   String processApiResponse(response) {
     final jsonResponse =
         convert.jsonDecode(response.body) as Map<String, dynamic>;
-    // String? sshKey = jsonResponse['ssh_key'];
-    // int? sshPort = jsonResponse['ssh_port'];
-    // if (sshKey == null || sshPort == null) {
-    //   return "invalid server response"; // error
-    // } else {
-    //   _sshLogin = jsonResponse;
-    return "";
-    // }
+    int? serverId = jsonResponse['server_id'];
+    if (serverId == null) {
+      return "B91194 invalid server response: $jsonResponse"; // error
+    } else {
+      return "";
+    }
   }
 
   @override
