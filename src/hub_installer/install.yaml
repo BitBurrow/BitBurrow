@@ -133,10 +133,8 @@
         ## Configure port forwarding from host to container for BitBurrow hub
         ##
         APIPORT=8443  # hard-coded in app
-        SSHPORT=$(bbhub --get-ssh-port)
         WGPORT=$(bbhub --get-wg-port)
         lxc config device add $VMNAME apiport proxy listen=tcp:0.0.0.0:$APIPORT connect=tcp:127.0.0.1:$APIPORT
-        lxc config device add $VMNAME sshport proxy listen=tcp:0.0.0.0:$SSHPORT connect=tcp:127.0.0.1:$SSHPORT
         lxc config device add $VMNAME wgport proxy listen=udp:0.0.0.0:$WGPORT connect=udp:127.0.0.1:$WGPORT
         ##
         ## Allow logging of client IP addresses (otherwise all connections appear to be from 127.0.0.1)

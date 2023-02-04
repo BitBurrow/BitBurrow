@@ -78,17 +78,6 @@ def cli(return_help_text=False):
         help="Display the configured public IP address and exit",
     )
     parser.add_argument(
-        "--set-ssh-port",
-        type=int,
-        default=0,
-        help="TCP port used when configuring VPN servers; default: random [2000,65535]",
-    )
-    parser.add_argument(
-        "--get-ssh-port",
-        action='store_true',
-        help="Display ssh port and exit",
-    )
-    parser.add_argument(
         "--set-wg-port",
         type=int,
         default=0,
@@ -197,6 +186,55 @@ class ServerSetup:
             priorId = step['id']
             reply = await self.send_command_to_client(json.dumps({step['key']: step['value']}))
             logger.debug(f"app WebSocket reply: {reply}")
+
+
+class TcpWebSocket:
+    # originally based on https://github.com/jimparis/unwebsockify/blob/master/unwebsockify.py
+    def __init__(self, tcp_address, tcp_port, ws: WebSocket):
+        self._addr = tcp_address
+        self._port = tcp_port
+        self._ws = ws
+
+    async def copy(self, reader, writer):
+        while True:
+            data = await reader()
+            if data == b'':
+                break
+            future = writer(data)
+            if future:
+                await future
+
+    async def handle_client(self, r, w):
+        peer = w.get_extra_info("peername")
+        logger.info(f'TCP connection: {peer}')
+        loop = asyncio.get_event_loop()
+
+        def r_reader():
+            return r.read(65536)
+
+        try:
+            tcp_to_ws = loop.create_task(self.copy(r_reader, self._ws.send_bytes))
+            ws_to_tcp = loop.create_task(self.copy(self._ws.receive_bytes, w.write))
+            done, pending = await asyncio.wait(
+                [tcp_to_ws, ws_to_tcp], return_when=asyncio.FIRST_COMPLETED
+            )
+            for x in done:
+                try:
+                    await x
+                except:
+                    pass
+            for x in pending:
+                x.cancel()
+        except Exception as e:
+            print(f'{peer} exception:', e)
+        w.close()
+        print(f'{peer} closed')
+
+    async def start(self):
+        server = await asyncio.start_server(self.handle_client, self._addr, self._port)
+        logger.debug(f'listening on {self._addr} port {self._port}')
+        async with server:
+            await server.serve_forever()
 
 
 ###
@@ -372,6 +410,18 @@ async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: in
         logger.error(f"B38263 WebSocket error: {e}")  # e.g. websocket already closed
 
 
+@app.websocket('/v1/managers/{login_key}/servers/{server_id}/proxy')
+async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
+    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
+    await websocket.accept()
+    tcp_websocket = TcpWebSocket(tcp_port=30915, tcp_address='127.0.0.1', ws=websocket)
+    await tcp_websocket.start()
+    try:
+        await websocket.close()
+    except Exception as e:
+        logger.error(f"B38264 WebSocket error: {e}")  # e.g. websocket already closed
+
+
 ###
 ### Startup (called from setup.cfg)
 ###
@@ -397,13 +447,6 @@ def entry_point():
         arg_combo_okay = True
     if args.get_ip:
         print(hub_state.public_ip)
-        arg_combo_okay = True
-    if args.set_ssh_port != 0:
-        hub_state.ssh_port = args.set_ssh_port
-        hub_state.update()
-        arg_combo_okay = True
-    if args.get_ssh_port:
-        print(hub_state.ssh_port)
         arg_combo_okay = True
     if args.set_wg_port != 0:
         hub_state.wg_port = args.set_wg_port

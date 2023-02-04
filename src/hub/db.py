@@ -75,7 +75,6 @@ class Hub(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     domain: str = ''  # API url in form example.com or node.example.com
     public_ip: str = ''
-    ssh_port: int = 0
     wg_port: int = 0
     # FIXME: add note--recommend url not contain `vpn` or `proxy` for firewalls of clients to block
     hub_number = lk.generate_login_key(lk.login_len)  # uniquely identify this hub
@@ -88,11 +87,10 @@ class Hub(SQLModel, table=True):
         if hub_count == 0:
             with Session(engine) as session:
                 hub = Hub()
-                hub.ssh_port = random_free_port(use_udp=False, avoid=[8443])
                 hub.wg_port = random_free_port(use_udp=True, avoid=[5353])
                 session.add(hub)
                 session.commit()
-                logger.debug(f"hub row created; ssh_port {hub.ssh_port}; wg_port {hub.wg_port}")
+                logger.debug(f"hub row created; wg_port {hub.wg_port}")
 
     @staticmethod
     def state():

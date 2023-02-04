@@ -8,7 +8,6 @@ import 'dart:convert' as convert;
 import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
-import 'bb_proxy.dart';
 import 'step_box.dart';
 
 final _log = Logger('new_server_screen');
@@ -36,9 +35,9 @@ class WebSocketMessenger {
   final _inbound = async.StreamController<String>();
 
   WebSocketMessenger() {
-    final wsPath =
-        '/v1/managers/${global.loginState.pureLoginKey}/servers/18/setup';
-    final url = 'wss://${global.loginState.hub}:8443$wsPath';
+    final hub = global.loginState.hub;
+    final lk = global.loginState.pureLoginKey;
+    final url = 'wss://$hub:8443/v1/managers/$lk/servers/18/setup';
     // fixme: WebSocket.connect() may raise "WebSocketException: Connection
     //   to ... was not upgraded to websocket" but try-catch misses it
     io.WebSocket.connect(url).then((io.WebSocket socket) async {
@@ -85,12 +84,10 @@ class WebSocketMessenger {
 
 class NewServerFormState extends ParentFormState {
   final _hubMessages = WebSocketMessenger();
-  final _ssh = BbProxy();
   async.Completer _buttonPressed = async.Completer();
   final async.Completer _hubCommanderFinished = async.Completer();
   final List<StepData> _stepsList = [];
   int _stepsComplete = 0;
-  Stream<String>? _activeStepMessages;
   bool _needToScrollToBottom = false;
 
   @override
@@ -184,18 +181,9 @@ class NewServerFormState extends ParentFormState {
             int seconds = value['seconds'] ?? 0;
             int ms = value['ms'] ?? 0 + seconds * 1000;
             await Future.delayed(Duration(milliseconds: ms), () {});
-          } else if (key == 'ssh_connect') {
-            // ssh from app to hub
-            _ssh.sshUser = value['ssh_user'];
-            _ssh.sshKey = value['ssh_key'];
-            _ssh.sshDomain = value['ssh_domain'];
-            _ssh.sshPort = value['ssh_port'];
-            result = await _ssh.connect();
-            if (result == "") result = "okay";
-          } else if (key == 'ssh_forward') {
-            // port-forward port from hub to router over ssh
-            result = await _ssh.forwardPort(
-              fromPort: value['from_port'],
+          } else if (key == 'proxy') {
+            // WebSocket to hub to allow tcp connections to server
+            result = await bbProxy(
               toAddress: value['to_address'],
               toPort: value['to_port'],
             );
@@ -243,6 +231,41 @@ class NewServerFormState extends ParentFormState {
       result[interface.name] = i;
     }
     return result;
+  }
+
+  static Future<String> bbProxy({toAddress, toPort}) async {
+    final hub = global.loginState.hub;
+    final lk = global.loginState.pureLoginKey;
+    final url = 'wss://$hub:8443/v1/managers/$lk/servers/18/proxy';
+    io.WebSocket.connect(url).then((io.WebSocket ws) async {
+      try {
+        // new connection to target for each connection from hub
+        final socket = await io.Socket.connect(
+          toAddress,
+          toPort,
+          timeout: const Duration(seconds: 20),
+        );
+        // socket.handleError((err) {
+        //   return "B48034 socket error {err}";
+        // });
+        ws.listen(
+          (data) {
+            socket.add(data);
+          },
+          onError: (err) {
+            _log.warning("B47456 proxy WebSocket: $err");
+          },
+          onDone: () {
+            _log.info('proxy connection to server closed');
+          },
+        );
+        //connection.stream.cast<List<int>>().pipe(socket);
+        ws.addStream(socket);
+      } catch (err) {
+        _log.warning("B58186 can't connect to $toAddress:$toPort: $err");
+      }
+    });
+    return "";
   }
 
   @override
@@ -356,7 +379,6 @@ class NewServerFormState extends ParentFormState {
         _stepsComplete += 1; // only the last step can be a pending process
       }
       _stepsList.add(data);
-      _activeStepMessages = messages;
       // when all prior steps are complete, auto-scroll down to new one
       if (_stepsComplete > 0 && _stepsComplete >= _stepsList.length - 1) {
         _log.info("Request scroll to bottom (prior steps complete)");

@@ -49,48 +49,6 @@
   key: add_process_step
   value:
     text: "## Open channel to hub."
-- id: 138
-  key: ssh_connect
-  value:
-    ssh_domain: localhost
-    ssh_port: 22
-    ssh_user: ubuntu32980
-    ssh_key: |
-      -----BEGIN OPENSSH PRIVATE KEY-----
-      b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-      QyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQAAAJjcm6bT3Jum
-      0wAAAAtzc2gtZWQyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQ
-      AAAEA0CiK1zYGSEqZc7dVLktjvVklM6aiWb76/t3r30zNxiTPxJ6LCG38uhr3FT0FsLqS6
-      bKQ4rapQuQZzcF0nAJ4BAAAAEHVidW50dUBmbHV0dGVyMTgBAgMEBQ==
-      -----END OPENSSH PRIVATE KEY-----
-- id: 161
-  key: ssh_connect
-  value:
-    ssh_domain: localhost
-    ssh_port: 29
-    ssh_user: ubuntu
-    ssh_key: |
-      -----BEGIN OPENSSH PRIVATE KEY-----
-      b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-      QyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQAAAJjcm6bT3Jum
-      0wAAAAtzc2gtZWQyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQ
-      AAAEA0CiK1zYGSEqZc7dVLktjvVklM6aiWb76/t3r30zNxiTPxJ6LCG38uhr3FT0FsLqS6
-      bKQ4rapQuQZzcF0nAJ4BAAAAEHVidW50dUBmbHV0dGVyMTgBAgMEBQ==
-      -----END OPENSSH PRIVATE KEY-----
-- id: 184
-  key: ssh_connect
-  value:
-    ssh_domain: localhost
-    ssh_port: 22
-    ssh_user: ubuntu
-    ssh_key: |
-      -----BEGIN OPENSSH PRIVATE KEY-----
-      b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-      QyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQAAAJjcm6bT3Jum
-      0wAAAAtzc2gtZWQyNTUxOQAAACAz8Seiwht/Loa9xU9BbC6kumykOK2qULkGc3BdJwCeAQ
-      AAAEA0CiK1zYGSEqZc7dVLktjvVklM6aiWb76/t3r30zNxiTPxJ6LCG38uhr3FT0FsLqS6
-      bKQ4rapQuQZzcF0nAJ4BAAAAEHVidW50dUBmbHV0dGVyMTgBAgMEBQ==
-      -----END OPENSSH PRIVATE KEY-----
 - id: 207
   key: add_process_step
   value:
@@ -100,17 +58,10 @@
   value:
     ms: 2000
 - id: 230
-  key: ssh_forward
+  key: proxy
   value:
-    from_port: 9001
-    to_address: 192.168.8.1
+    to_address: 127.0.0.1
     to_port: 22
-- id: 253
-  key: ssh_forward
-  value:
-    from_port: 9002
-    to_address: 192.168.8.2
-    to_port: 443
 - id: 276
   key: add_process_step
   value:
