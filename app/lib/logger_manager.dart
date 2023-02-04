@@ -6,6 +6,7 @@ const gorouterLogMessage = "𝌤𝌤 new page:";
 
 class LoggerManager {
   LogRecord? _lastLog;
+  // ignore: unused_field
   Future? _lastLogTimeout;
   var buffer = StringBuffer();
 

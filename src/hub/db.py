@@ -76,8 +76,8 @@ class Hub(SQLModel, table=True):
     domain: str = ''  # API url in form example.com or node.example.com
     public_ip: str = ''
     wg_port: int = 0
-    # FIXME: add note--recommend url not contain `vpn` or `proxy` for firewalls of clients to block
     hub_number = lk.generate_login_key(lk.login_len)  # uniquely identify this hub
+    # note /etc/machine-id identifies the machine while hub_number identifies the database
     db_version: int = 1
 
     @staticmethod

@@ -67,6 +67,7 @@ void main() {
     await ellipsisMenuItem(t, "Enter a coupon code");
     expect(find.text("Welcome to BitBurrow"), findsOneWidget);
     expect(accountFieldValue(t, r"Coupon"), "RX72-PXQFT-FFC6-9D3C6");
+    // ignore: avoid_print
     print("YTIMTREGA tests passed");
   });
 }

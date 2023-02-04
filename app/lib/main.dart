@@ -225,6 +225,7 @@ Widget ourScreenLayout(BuildContext context, Widget body,
                     context.push('/sign-in'); // will auto-sign-in if possible
                     break;
                   case "Forget login key":
+                    // do not use push(); go() clears go_router history
                     context.go('/forget-login-key');
                     break;
                 }
