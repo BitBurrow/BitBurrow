@@ -105,7 +105,7 @@ def cli(return_help_text=False):
         help="Run internal test TEST",
     )
     parser.add_argument(
-        "--api",
+        "--daemon",
         action='store_true',
         help="Listen on API port for requests from the app",
     )
@@ -468,13 +468,12 @@ def entry_point():
     if args.test != '':
         sys.exit(0 if hub_state.integrity_test_by_id(args.test) else 1)
     if arg_combo_okay:
-        if args.api:
-            logger.warning(
-                "Argument '--api' ignored because '--get-xxx' or '--set-xxx' was specified."
-            )
+        if args.daemon:
+            logger.error("Argument '--daemon' cannot be used with '--get-xxx' or '--set-xxx'.")
+            sys.exit(2)
         sys.exit(0)
-    if not args.api:
-        logger.error("Argument '--api' not specified.")
+    if not args.daemon:
+        logger.error("No arguments specified. See '--help' for usage.")
         sys.exit(2)
     if hub_state.domain == '':
         logger.error("Use `--set-domain` to configure your domain name before running API.")
