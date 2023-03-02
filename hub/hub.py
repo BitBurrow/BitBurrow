@@ -423,7 +423,7 @@ async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: in
 
 
 ###
-### Startup (called from setup.cfg)
+### Startup (called from pyproject.toml)
 ###
 
 
