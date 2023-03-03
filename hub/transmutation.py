@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 ###
-### Server configuration
+### Server transmutation (configure router to be a VPN server)
 ###
 
 
@@ -34,7 +34,7 @@ class ServerSetup:
             logger.error(f"B38262 WebSocket error: {e}")
             # self._error_count += 1
 
-    async def config_steps(self):
+    async def transmute_steps(self):
         # user connects router
         f_path = f'{os.path.dirname(__file__)}/server_setup_steps.yaml'
         with open(f_path, "r") as f:

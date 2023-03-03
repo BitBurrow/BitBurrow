@@ -9,7 +9,7 @@ from fastapi import (
 from sqlmodel import Session, select
 import logging
 import hub.db as db
-import hub.configuration as configuration
+import hub.transmutation as transmutation
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -82,11 +82,11 @@ async def new_server(login_key: str):
 async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     await websocket.accept()
-    runTasks = configuration.ServerSetup(websocket)
+    runTasks = transmutation.ServerSetup(websocket)
     try:
-        await runTasks.config_steps()
+        await runTasks.transmute_steps()
     except asyncio.exceptions.CancelledError:
-        logger.info(f"B15058 config canceled")
+        logger.info(f"B15058 transmute canceled")
     try:
         await websocket.close()
     except Exception as e:
@@ -97,7 +97,7 @@ async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: in
 async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     await websocket.accept()
-    tcp_websocket = configuration.TcpWebSocket(
+    tcp_websocket = transmutation.TcpWebSocket(
         tcp_port=30915, tcp_address='127.0.0.1', ws=websocket
     )
     await tcp_websocket.start()
