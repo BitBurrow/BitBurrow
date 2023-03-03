@@ -1,5 +1,3 @@
-import asyncio
-import json
 import logging
 import os
 import platformdirs
@@ -7,19 +5,15 @@ import socket
 import sys
 from fastapi import (
     FastAPI,
-    Form,
     responses,
     Request,
     HTTPException,
-    status,
-    WebSocket,
-    WebSocketDisconnect,
 )
 import slowapi  # https://slowapi.readthedocs.io/en/latest/
-from sqlmodel import Session, SQLModel, create_engine, select, sql
-import yaml
+from sqlmodel import SQLModel, create_engine, sql
 import hub.logs as logs
 import hub.db as db
+import hub.api as api
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -154,90 +148,6 @@ def cli(return_help_text=False):
 
 
 ###
-### Server configuration
-###
-
-
-class ServerSetup:
-    def __init__(self, ws: WebSocket):
-        self._ws = ws
-
-    async def send_command_to_client(self, json_string):
-        try:
-            await self._ws.send_text(json_string)
-        except Exception as e:
-            logger.error(f"B38260 WebSocket error: {e}")
-        try:
-            return await self._ws.receive_text()
-        except WebSocketDisconnect:
-            logger.info(f"B38261 WebSocket disconnect")
-        except Exception as e:
-            logger.error(f"B38262 WebSocket error: {e}")
-            # self._error_count += 1
-
-    async def config_steps(self):
-        # user connects router
-        f_path = f'{os.path.dirname(__file__)}/server_setup_steps.yaml'
-        with open(f_path, "r") as f:
-            server_setup_steps = yaml.safe_load(f)
-        priorId = 0
-        for step in server_setup_steps:
-            assert step['id'] > priorId
-            priorId = step['id']
-            reply = await self.send_command_to_client(json.dumps({step['key']: step['value']}))
-            logger.debug(f"app WebSocket reply: {reply}")
-
-
-class TcpWebSocket:
-    # originally based on https://github.com/jimparis/unwebsockify/blob/master/unwebsockify.py
-    def __init__(self, tcp_address, tcp_port, ws: WebSocket):
-        self._addr = tcp_address
-        self._port = tcp_port
-        self._ws = ws
-
-    async def copy(self, reader, writer):
-        while True:
-            data = await reader()
-            if data == b'':
-                break
-            future = writer(data)
-            if future:
-                await future
-
-    async def handle_client(self, r, w):
-        peer = w.get_extra_info("peername")
-        logger.info(f'TCP connection: {peer}')
-        loop = asyncio.get_event_loop()
-
-        def r_reader():
-            return r.read(65536)
-
-        try:
-            tcp_to_ws = loop.create_task(self.copy(r_reader, self._ws.send_bytes))
-            ws_to_tcp = loop.create_task(self.copy(self._ws.receive_bytes, w.write))
-            done, pending = await asyncio.wait(
-                [tcp_to_ws, ws_to_tcp], return_when=asyncio.FIRST_COMPLETED
-            )
-            for x in done:
-                try:
-                    await x
-                except:
-                    pass
-            for x in pending:
-                x.cancel()
-        except Exception as e:
-            print(f'{peer} exception:', e)
-        w.close()
-        print(f'{peer} closed')
-
-    async def start(self):
-        server = await asyncio.start_server(self.handle_client, self._addr, self._port)
-        logger.debug(f'listening on {self._addr} port {self._port}')
-        async with server:
-            await server.serve_forever()
-
-
-###
 ### globals
 ###
 
@@ -247,6 +157,7 @@ app = FastAPI(
     docs_url=None,  # disable "Docs URLs" to help avoid being identified; see
     redoc_url=None,  # ... https://fastapi.tiangolo.com/tutorial/metadata/#docs-urls
 )
+app.include_router(api.router)
 limiter = slowapi.Limiter(key_func=slowapi.util.get_remote_address, default_limits=["10/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(slowapi.errors.RateLimitExceeded, slowapi._rate_limit_exceeded_handler)
@@ -329,97 +240,6 @@ def on_startup():
 def on_shutdown():
     if is_worker_zero:
         db.Netif.shutdown()
-
-
-###
-### web API
-###
-
-#                                              read          create      update†       delete
-# -------------------------------------------- GET --------- POST ------ PATCH ------- DELETE ------
-# ⍉ /v1/managers/🗝                            view self     --          update self   delete self
-# ⍉ /v1/managers/🗝/servers                    list servers  new server  --            --
-# ⍉ /v1/managers/🗝/servers/18                 view server   --          update server delete server
-# ⍉ /v1/managers/🗝/servers/18/clients         list clients  new client  --            --
-# ⍉ /v1/managers/🗝/servers/18/clients/4       view client   --          update client delete client
-# ⍉ /v1/managers/🗝/servers/18/users           list users    new user    --            --
-# ⍉ /v1/managers/🗝/servers/18/v1/users/🗝     view user     --          update user   delete user
-#   /v1/coupons/🧩/managers                    --            new mngr    --            --
-# ⍉ /v1/admins/🔑/managers                     list mngrs    --          --            --
-# ⍉ /v1/admins/🔑/managers/🗝                  view mngr     --          update mngr   delete mngr
-# #️⃣ /v1/admins/🔑/coupons                     list coupons  new coupon  --            --
-# ⍉ /v1/admins/🔑/accounts/🗝                  view coupon   --          update coupon delete coupon
-# idempotent                                   ✅            —           ✅            ✅
-# 200 OK                                       ✅            —           ✅            —
-# 201 created                                  —             —           —             —
-# 204 no content                               —             —           —             ✅
-# ⍉ not yet implemented
-# #️⃣ CLI only (may implement in app later)
-# 🔑 admin login key
-# 🗝 manager (or admin) login key
-# 🧩 coupon code
-# †  cleint should send only modified fields
-# ‡  new coupon or manager
-# §  delete coupon, manager, or user
-# https://medium.com/hashmapinc/rest-good-practices-for-api-design-881439796dc9
-
-
-@app.post('/v1/coupons/{coupon}/managers')
-async def create_manager(request: Request, coupon: str):
-    account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
-    login_key = db.Account.new(db.Account_kind.MANAGER)
-    return responses.JSONResponse(
-        status_code=status.HTTP_201_CREATED,
-        content={'login_key': login_key},
-    )
-    # do not store login_key!
-
-
-@app.get('/v1/managers/{login_key}/servers')
-async def list_servers(request: Request, login_key: str):
-    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    with Session(db.engine) as session:
-        statement = select(db.Server).where(db.Server.account_id == account.id)
-        results = session.exec(statement)
-        return {'servers': [c.id for c in results]}
-
-
-@app.post('/v1/managers/{login_key}/servers')
-async def new_server(login_key: str):
-    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    server_id = db.Server.new(account.id)
-    return responses.JSONResponse(
-        status_code=status.HTTP_201_CREATED,
-        content={'server_id': server_id},
-    )
-
-
-@app.websocket('/v1/managers/{login_key}/servers/{server_id}/setup')
-# @limiter.limit('10/minute')  # https://slowapi.readthedocs.io/en/latest/#websocket-endpoints
-async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
-    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    await websocket.accept()
-    runTasks = ServerSetup(websocket)
-    try:
-        await runTasks.config_steps()
-    except asyncio.exceptions.CancelledError:
-        logger.info(f"B15058 config canceled")
-    try:
-        await websocket.close()
-    except Exception as e:
-        logger.error(f"B38263 WebSocket error: {e}")  # e.g. websocket already closed
-
-
-@app.websocket('/v1/managers/{login_key}/servers/{server_id}/proxy')
-async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
-    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    await websocket.accept()
-    tcp_websocket = TcpWebSocket(tcp_port=30915, tcp_address='127.0.0.1', ws=websocket)
-    await tcp_websocket.start()
-    try:
-        await websocket.close()
-    except Exception as e:
-        logger.error(f"B38264 WebSocket error: {e}")  # e.g. websocket already closed
 
 
 ###
