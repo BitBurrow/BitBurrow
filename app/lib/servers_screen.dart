@@ -159,7 +159,7 @@ class ServersFormState extends ParentFormState {
                       width: 42,
                     ),
                     title: Text(
-                      "VPN server ${global.loginState.servers[index]}",
+                      "VPN server ${global.loginState.servers[index]['id']}",
                       style: const TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.bold,

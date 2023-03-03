@@ -228,7 +228,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       nextScreen();
       return;
     }
-    _log.warning("finished http $hub: $error");
+    _log.warning("B84481 finished http $hub: $error");
     if (displayError.isEmpty) {
       if (error.startsWith("Failed host lookup:") ||
           error == "Network is unreachable") {

@@ -70,9 +70,8 @@ class SignInFormState extends ParentFormState {
 
   @override
   String processApiResponse(response) {
-    final jsonResponse =
-        convert.jsonDecode(response.body)['servers'] as List<dynamic>;
-    global.loginState.servers = List<int>.from(jsonResponse);
+    global.loginState.servers =
+        convert.jsonDecode(response.body) as List<dynamic>;
     return "";
   }
 

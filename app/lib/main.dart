@@ -32,7 +32,7 @@ class LoginState {
   bool loginKeyVerified = false; // saved in secure storage
   bool saveLoginKey = false; // user choice to keep login key in secure storage
   bool skipWelcomeScreen = true; // forward past welcome screen if signed in
-  List<int> servers = [];
+  List<dynamic> servers = [];
 
   bool isSignedIn() => loginKeyVerified;
   bool isNotSignedIn() => !loginKeyVerified;

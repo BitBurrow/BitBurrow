@@ -7,12 +7,13 @@ from fastapi import (
     WebSocket,
 )
 from sqlmodel import Session, select
+from typing import List
 import logging
 import hub.db as db
 import hub.transmutation as transmutation
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/v1")
 
 ###
 ### web API
@@ -47,7 +48,7 @@ router = APIRouter()
 # https://medium.com/hashmapinc/rest-good-practices-for-api-design-881439796dc9
 
 
-@router.post('/v1/coupons/{coupon}/managers')
+@router.post('/coupons/{coupon}/managers')
 async def create_manager(request: Request, coupon: str):
     account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
     login_key = db.Account.new(db.Account_kind.MANAGER)
@@ -58,16 +59,15 @@ async def create_manager(request: Request, coupon: str):
     # do not store login_key!
 
 
-@router.get('/v1/managers/{login_key}/servers')
+@router.get('/managers/{login_key}/servers', response_model=List[db.Server])
 async def list_servers(request: Request, login_key: str):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     with Session(db.engine) as session:
         statement = select(db.Server).where(db.Server.account_id == account.id)
-        results = session.exec(statement)
-        return {'servers': [c.id for c in results]}
+        return list(session.exec(statement))
 
 
-@router.post('/v1/managers/{login_key}/servers')
+@router.post('/managers/{login_key}/servers')
 async def new_server(login_key: str):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     server_id = db.Server.new(account.id)
@@ -77,7 +77,7 @@ async def new_server(login_key: str):
     )
 
 
-@router.websocket('/v1/managers/{login_key}/servers/{server_id}/setup')
+@router.websocket('/managers/{login_key}/servers/{server_id}/setup')
 # @limiter.limit('10/minute')  # https://slowapi.readthedocs.io/en/latest/#websocket-endpoints
 async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
@@ -93,7 +93,7 @@ async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: in
         logger.error(f"B38263 WebSocket error: {e}")  # e.g. websocket already closed
 
 
-@router.websocket('/v1/managers/{login_key}/servers/{server_id}/proxy')
+@router.websocket('/managers/{login_key}/servers/{server_id}/proxy')
 async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     await websocket.accept()
