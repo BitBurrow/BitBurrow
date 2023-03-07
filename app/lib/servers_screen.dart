@@ -48,11 +48,9 @@ class ServersFormState extends ParentFormState {
 
   @override
   String processApiResponse(response) {
-    final jsonResponse =
-        convert.jsonDecode(response.body) as Map<String, dynamic>;
-    int? serverId = jsonResponse['server_id'];
+    int? serverId = convert.jsonDecode(response.body) as int?;
     if (serverId == null) {
-      return "B91194 invalid server response: $jsonResponse"; // error
+      return "B91194 invalid server response: ${response.body}"; // error
     } else {
       return "";
     }

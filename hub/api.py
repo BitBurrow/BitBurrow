@@ -67,14 +67,11 @@ async def list_servers(request: Request, login_key: str):
         return list(session.exec(statement))
 
 
-@router.post('/managers/{login_key}/servers')
+@router.post('/managers/{login_key}/servers', status_code=status.HTTP_201_CREATED)
 async def new_server(login_key: str):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     server_id = db.Server.new(account.id)
-    return responses.JSONResponse(
-        status_code=status.HTTP_201_CREATED,
-        content={'server_id': server_id},
-    )
+    return server_id
 
 
 @router.websocket('/managers/{login_key}/servers/{server_id}/setup')
