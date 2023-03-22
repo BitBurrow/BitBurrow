@@ -169,7 +169,7 @@
         User=bitburrow
         Group=bitburrow
         WorkingDirectory=/home/bitburrow
-        ExecStart=/home/bitburrow/.local/bin/bbhub --api
+        ExecStart=/home/bitburrow/.local/bin/bbhub --daemon
         Restart=always
         PrivateTmp=true
         PrivateDevices=false
