@@ -1,3 +1,30 @@
+#!/bin/bash
+set -e # exit script if anything fails
+
+## install dependencies
+sudo apt update
+sudo apt install -y wget ansible
+
+## verify $SUDO_USER
+test "x$SUDO_USER" != "x" || (echo "Run this script as a normal user using 'sudo'."; false)
+test "x$SUDO_USER" != "xroot" || (echo "Run this script as a normal user using 'sudo'."; false)
+SUDO_USER_HOME=$(eval echo "~$SUDO_USER")
+
+## enable `ssh localhost` for $SUDO_USER
+cat <<"_EOF6471_" |sudo --user $SUDO_USER bash
+mkdir -p ~/.ssh/
+if test ! -f ~/.ssh/id_ed25519; then
+    ssh-keygen -q -f ~/.ssh/id_ed25519 -N '' -t ed25519
+    cat ~/.ssh/id_ed25519.pub >>~/.ssh/authorized_keys
+    echo "* $(cat /etc/ssh/ssh_host_ecdsa_key.pub)" >>~/.ssh/known_hosts
+fi
+chmod go-w ~ ~/.ssh
+chmod ugo-x,go-w ~/.ssh/authorized_keys
+mkdir -p ~/hub/
+_EOF6471_
+
+## create Ansible script that does most of the installing
+cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
 ---
 - hosts: localhost
   become: true
@@ -310,3 +337,25 @@
     command:
       cmd: setfacl -Rm d:user:bitburrow:rx,user:bitburrow:rx /etc/letsencrypt/
     changed_when: false
+
+_EOF3703_
+
+## display a message
+echo
+echo "The script '$0' completed successfully."
+echo
+echo "You could use one of these (or something entirely different) as a prefix for your domain name:"
+echo
+echo -n "    "
+for i in $(seq 1 24); do
+    LC_ALL=C tr -dc a-z </dev/urandom |head -c 1
+    LC_ALL=C tr -dc a-z0-9 </dev/urandom |head -c 2
+    echo -n " "
+done
+echo
+echo
+echo "Your public IP address appears to be:"
+echo
+echo -n "    "
+wget -q -O- api.bigdatacloud.net/data/client-ip |grep ipString |grep -Eo [0-9\.]+
+echo
