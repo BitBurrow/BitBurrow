@@ -9,7 +9,6 @@ from fastapi import (
     Request,
     HTTPException,
 )
-import slowapi  # https://slowapi.readthedocs.io/en/latest/
 from sqlmodel import SQLModel, create_engine, sql
 import hub.logs as logs
 import hub.db as db
@@ -160,9 +159,6 @@ app = FastAPI(
 )
 app.include_router(api.router)
 app.mount('/', app=sio_app)  # joined with socketio_path to make: '/messages'
-limiter = slowapi.Limiter(key_func=slowapi.util.get_remote_address, default_limits=["10/minute"])
-app.state.limiter = limiter
-app.add_exception_handler(slowapi.errors.RateLimitExceeded, slowapi._rate_limit_exceeded_handler)
 is_worker_zero: bool = True
 
 

@@ -75,7 +75,6 @@ async def new_server(login_key: str):
 
 
 @router.websocket('/managers/{login_key}/servers/{server_id}/setup')
-# @limiter.limit('10/minute')  # https://slowapi.readthedocs.io/en/latest/#websocket-endpoints
 async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     await websocket.accept()
