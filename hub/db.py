@@ -157,24 +157,25 @@ class Hub(SQLModel, table=True):
 
 
 class Account_kind(enum.Enum):
-    ADMIN = 0  # can create, edit, and delete coupon codes; can edit and delete managers and users
-    COUPON = 100  # can create managers (that's all)
-    MANAGER = 200  # can set up, edit, and delete servers and clients
-    USER = 300  # can set up, edit, and delete clients for a specific netif_id on 1 server
-    NONE = 9999
+    ADMIN = 900  # can create, edit, and delete coupon codes; can edit and delete managers and users
+    COUPON = 700  # can create managers (that's all)
+    MANAGER = 400  # can set up, edit, and delete servers and clients
+    USER = 200  # can set up, edit, and delete clients for a specific netif_id on 1 server
+    NONE = 0  # not signed in
 
     def __str__(self):
         str_map = {
-            0: "admin account",
-            100: "coupon code",
-            200: "manager account",
-            300: "user account",
+            900: "admin account",
+            700: "coupon code",
+            400: "manager account",
+            200: "user account",
+            0: "none",
         }
         try:
             return str_map[self.value]
         except:
             pass
-        return "none"
+        return f"kind_{self.value}"
 
 
 admin_or_manager = {Account_kind.ADMIN, Account_kind.MANAGER}
