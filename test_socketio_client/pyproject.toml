@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "test_socketio_client"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+python-socketio = {extras = ["asyncio_client"], version = "^5.8.0"}
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

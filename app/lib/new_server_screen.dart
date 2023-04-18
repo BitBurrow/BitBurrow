@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
+import 'package:socket_io_client/socket_io_client.dart' as socketio;
 import 'dart:io' as io;
 import 'dart:async' as async;
 import 'dart:convert' as convert;
@@ -36,6 +37,22 @@ class WebSocketMessenger {
 
   WebSocketMessenger() {
     final hub = global.loginState.hub;
+    socketio.Socket socket = socketio.io(
+        'https://$hub:8443/',
+        socketio.OptionBuilder()
+            .enableAutoConnect() // do not use `socket.connect()` with ...
+            // this (https://github.com/rikulo/socket.io-client-dart/issues/33)
+            //.setTransports(['websocket'])
+            .setPath('messages')
+            // .setExtraHeaders({'foo': 'bar'})
+            .build());
+    socket.onConnect((_) {
+      print('Socket.IO connect');
+      socket.emit('msg', 'test');
+    });
+    socket.on('event', (data) => print('Socket.IO $data'));
+    socket.onDisconnect((_) => print('Socket.IO disconnect'));
+    socket.on('fromServer', (_) => print('Socket.IO $_'));
     final lk = global.loginState.pureLoginKey;
     final url = 'wss://$hub:8443/v1/managers/$lk/servers/18/setup';
     // fixme: WebSocket.connect() may raise "WebSocketException: Connection
