@@ -23,7 +23,6 @@ sqlmodel = "^0.0.8"
 uvicorn = {extras = ["standard"], version = "^0.20.0"}
 argon2-cffi = "^21.3.0"
 PyYAML = "^6.0"
-python-socketio = "^5.7.2"
 
 [tool.poetry.dev-dependencies]
 black = "^23.1.0"

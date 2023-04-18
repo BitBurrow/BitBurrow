@@ -47,19 +47,6 @@ dev = ["pytest", "cogapp", "pre-commit", "wheel"]
 tests = ["pytest"]
 
 [[package]]
-name = "bidict"
-version = "0.22.1"
-description = "The bidirectional mapping library for Python."
-category = "main"
-optional = false
-python-versions = ">=3.7"
-
-[package.extras]
-docs = ["sphinx", "sphinx-copybutton", "furo"]
-lint = ["pre-commit"]
-test = ["hypothesis", "pytest", "pytest-benchmark", "pytest-cov", "pytest-xdist", "sortedcollections", "sortedcontainers", "sphinx"]
-
-[[package]]
 name = "black"
 version = "23.1.0"
 description = "The uncompromising code formatter."
@@ -240,34 +227,6 @@ python-versions = ">=3.8"
 cli = ["click (>=5.0)"]
 
 [[package]]
-name = "python-engineio"
-version = "4.3.4"
-description = "Engine.IO server and client for Python"
-category = "main"
-optional = false
-python-versions = ">=3.6"
-
-[package.extras]
-asyncio_client = ["aiohttp (>=3.4)"]
-client = ["requests (>=2.21.0)", "websocket-client (>=0.54.0)"]
-
-[[package]]
-name = "python-socketio"
-version = "5.7.2"
-description = "Socket.IO server and client for Python"
-category = "main"
-optional = false
-python-versions = ">=3.6"
-
-[package.dependencies]
-bidict = ">=0.21.0"
-python-engineio = ">=4.3.0"
-
-[package.extras]
-asyncio_client = ["aiohttp (>=3.4)"]
-client = ["requests (>=2.21.0)", "websocket-client (>=0.54.0)"]
-
-[[package]]
 name = "pyyaml"
 version = "6.0"
 description = "YAML parser and emitter for Python"
@@ -427,13 +386,12 @@ python-versions = ">=3.7"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.9"
-content-hash = "294ad7611e10c4c7ceca8d399649273e6a412ffc22a414c782d822b420b4c103"
+content-hash = "35b29556dfb5fe5dad26eb79088a767c51a0e4d0b0382a8a56cf58e7c5f346c9"
 
 [metadata.files]
 anyio = []
 argon2-cffi = []
 argon2-cffi-bindings = []
-bidict = []
 black = []
 cffi = []
 click = []
@@ -450,8 +408,6 @@ platformdirs = []
 pycparser = []
 pydantic = []
 python-dotenv = []
-python-engineio = []
-python-socketio = []
 pyyaml = []
 sniffio = []
 sqlalchemy = []

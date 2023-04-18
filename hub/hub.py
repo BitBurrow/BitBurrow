@@ -13,7 +13,6 @@ from sqlmodel import SQLModel, create_engine, sql
 import hub.logs as logs
 import hub.db as db
 import hub.api as api
-from hub.messages import sio_app
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -158,7 +157,6 @@ app = FastAPI(
     redoc_url=None,  # ... https://fastapi.tiangolo.com/tutorial/metadata/#docs-urls
 )
 app.include_router(api.router)
-app.mount('/', app=sio_app)  # joined with socketio_path to make: '/messages'
 is_worker_zero: bool = True
 
 

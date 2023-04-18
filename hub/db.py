@@ -247,8 +247,6 @@ class Account(SQLModel, table=True):
 
     @staticmethod
     def validate_login_key(login_key, allowed_kinds=None):
-        if login_key is None:
-            raise HTTPException(status_code=400, detail="Login key is required")
         if len(login_key) != lk.login_key_len:
             raise HTTPException(
                 status_code=400, detail=f"Login key length must be {lk.login_key_len}"
