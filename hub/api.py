@@ -6,6 +6,7 @@ from fastapi import (
     status,
     WebSocket,
 )
+import random
 from sqlmodel import Session, select
 from typing import List
 import logging
@@ -75,7 +76,7 @@ async def new_server(login_key: str):
 
 
 @router.websocket('/managers/{login_key}/servers/{server_id}/setup')
-async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
+async def websocket_setup(websocket: WebSocket, login_key: str, server_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     await websocket.accept()
     runTasks = transmutation.ServerSetup(websocket)
@@ -90,7 +91,7 @@ async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: in
 
 
 @router.websocket('/managers/{login_key}/servers/{server_id}/proxy')
-async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: int):
+async def websocket_proxy(websocket: WebSocket, login_key: str, server_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     await websocket.accept()
     tcp_websocket = transmutation.TcpWebSocket(
@@ -101,3 +102,27 @@ async def websocket_endpoint(websocket: WebSocket, login_key: str, server_id: in
         await websocket.close()
     except Exception as e:
         logger.error(f"B38264 WebSocket error: {e}")  # e.g. websocket already closed
+
+
+@router.websocket('/test_ws_client/{client_id}')
+async def websocket_testahwibb(websocket: WebSocket, client_id: str):
+    logger.info(f"wss:/test_ahwibbviclipytr/{client_id} connected")
+    await websocket.accept()
+    try:
+        while True:
+            request = await websocket.receive_text()
+            if request == "ping":
+                if random.randrange(0, 2) == 0:
+                    logger.info(f"wss: ping-pong")
+                    await websocket.send_text("pong")
+                else:
+                    logger.info(f"wss: ping-pong1")
+                    await websocket.send_text("pong1")
+            else:
+                logger.error(f"wss: unrecognized request {request}")
+    except Exception as e:
+        logger.error(f"wss: error a {e}")  # usually: 1005
+    try:
+        await websocket.close()
+    except Exception as e:
+        logger.error(f"wss: error b {e}")  # usually: Unexpected ASGI message 'websocket.close' ...
