@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'dart:ui'; // for SemanticsFlag
+import 'dart:io' as io;
 import 'package:bitburrow/main.dart' as app;
 
 //
@@ -10,6 +11,14 @@ import 'package:bitburrow/main.dart' as app;
 //
 
 void main() {
+  String validCouponCode = io.Platform.environment['VALID_COUPON_CODE'] ?? ''; // with dashes
+  assert(validCouponCode.length == 21);
+  String validPureCouponCode = validCouponCode.replaceAll('-', ''); // "pure" means no dashes
+  assert(validPureCouponCode.length == 18);
+  String validLoginKey = io.Platform.environment['VALID_LOGIN_KEY'] ?? '';
+  assert(validLoginKey.length == 21);
+  String validPureLoginKey = validLoginKey.replaceAll('-', '');
+  assert(validPureLoginKey.length == 18);
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets('GUI integrations tests', (WidgetTester t) async {
     app.main();
@@ -25,7 +34,7 @@ void main() {
     await t.tap(find.bySemanticsLabel(RegExp(r"Store my login k")));
     await t.pumpAndSettle();
     expect(checkboxValue(t, r'Store my login k'), true);
-    await signIn(t);
+    await signIn(t, validPureLoginKey);
     await ellipsisMenuItem(t, "Enter a coupon code");
     expect(find.text("Welcome to BitBurrow"), findsOneWidget);
     await ellipsisMenuItem(t, "Servers");
@@ -45,16 +54,16 @@ void main() {
     expect(accountFieldValue(t, r"Login key"), "");
     await ellipsisMenuItem(t, "Sign in");
     await t.tap(find.bySemanticsLabel(RegExp(r"Store my login k")));
-    await signIn(t);
+    await signIn(t, validPureLoginKey);
     await ellipsisMenuItem(t, "Sign in");
     expect(checkboxValue(t, r'Store my login k'), true);
     expect(accountFieldValue(t, r"Login key"), "•••••••••••••••••••••");
     await ellipsisMenuItem(t, "Enter a coupon code");
     expect(find.text("Welcome to BitBurrow"), findsOneWidget);
     final couponField = find.bySemanticsLabel(RegExp(r"Coupon"));
-    await t.enterText(couponField, "RX72PXQFTFFC69D3C6");
+    await t.enterText(couponField, validPureCouponCode);
     await t.pumpAndSettle();
-    expect(accountFieldValue(t, r"Coupon"), "RX72-PXQFT-FFC6-9D3C6");
+    expect(accountFieldValue(t, r"Coupon"), validCouponCode);
     await t.tap(find.bySemanticsLabel("I trust this hub.*"));
     await t.tap(find.bySemanticsLabel("SUBMIT"));
     await waitForConnectingDialog(t);
@@ -66,17 +75,17 @@ void main() {
         findsOneWidget);
     await ellipsisMenuItem(t, "Enter a coupon code");
     expect(find.text("Welcome to BitBurrow"), findsOneWidget);
-    expect(accountFieldValue(t, r"Coupon"), "RX72-PXQFT-FFC6-9D3C6");
+    expect(accountFieldValue(t, r"Coupon"), validCouponCode);
     // ignore: avoid_print
     print("YTIMTREGA tests passed");
   });
 }
 
-Future<void> signIn(WidgetTester t) async {
+Future<void> signIn(WidgetTester t, String loginKey) async {
   await ellipsisMenuItem(t, "Sign in");
   expect(find.text("Sign in"), findsOneWidget);
   final loginKeyField = find.bySemanticsLabel(RegExp(r"Login key"));
-  await t.enterText(loginKeyField, "h67qj8mf8vm6mfzztd");
+  await t.enterText(loginKeyField, loginKey.toLowerCase());
   await t.pumpAndSettle();
   expect(accountFieldValue(t, r"Login key"), "•••••••••••••••••••••");
   await t.tap(find.bySemanticsLabel("SIGN IN"));
