@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import platformdirs
@@ -196,7 +197,8 @@ def get_lock(process_name):  # source: https://stackoverflow.com/a/7758075
 
 
 def init(args):
-    assert db.engine is None
+    if db.engine is not None:
+        return  # already initialized
     if args.dbfile == '':  # use default location
         db_file = db_pathname(create_dir=True)
     elif args.dbfile == '-':
@@ -209,7 +211,7 @@ def init(args):
     if is_worker_zero:
         # avoid race condition creating tables: OperationalError: table ... already exists
         SQLModel.metadata.create_all(db.engine)
-    db.Hub.startup()  # initialize hub data if needed
+        db.Hub.startup()  # initialize hub data if needed
     global hub_state
     hub_state = db.Hub.state()
 
@@ -229,6 +231,8 @@ def on_startup():
             raise e
     if is_worker_zero:
         print(f"API listening on port 8443")
+    if is_worker_zero:
+        asyncio.create_task(api.messages.message_handler())
     logger.debug(f"initialization complete")
 
 
@@ -328,7 +332,9 @@ def entry_point():
             f'{app_name()}:app',
             host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
             port=8443,
-            workers=3,
+            # FIXME: when using `workers=3`, additional workers' messages aren't ...
+            # delivered to api.messages.message_handler()
+            workers=1,
             log_level='info',
             log_config=logs.logging_config(console_log_level=args.console_log_level),
             ssl_keyfile=ssl_keyfile,

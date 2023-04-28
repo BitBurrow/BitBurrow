@@ -1,10 +1,13 @@
 import asyncio
+import queue
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     responses,
     Request,
     status,
     WebSocket,
+    WebSocketDisconnect,
 )
 import random
 from sqlmodel import Session, select
@@ -104,25 +107,78 @@ async def websocket_proxy(websocket: WebSocket, login_key: str, server_id: int):
         logger.error(f"B38264 WebSocket error: {e}")  # e.g. websocket already closed
 
 
+class PersistentWebsocket:
+    # important: mirror changes in corresponding Dart code--search "bMjZmLdFv"
+    _ping_id = '!ping_id_R3PHK!'
+    _pong_id = '!pong_id_R3PHK!'
+    _ws = None
+    _output_queue = queue.Queue()
+
+    async def connected(self, ws):
+        self._ws = ws
+        self._send_queued()
+
+    def _send_after_id_check(self, data):
+        assert self._ws != None
+        if data != self._pong_id:
+            # 'pong_id' because we are the server
+            self._ws.send_text(data)
+        else:
+            # split into 2 messages so it isn't confused with a pong
+            self._ws.send_text(data[0:7])
+            self._ws.send_text(data[7:])
+
+    def _send_queued(self):
+        assert self._ws != None
+        while True:
+            try:
+                data = self._output_queue.get(block=False)
+                self._send_after_id_check(data)
+            except queue.Empty:
+                return
+
+    def send(self, data):
+        if self.is_connected():
+            self._send_after_id_check(data)
+        else:
+            self._output_queue.add(data)  # buffer output until WebSocket reconnects
+
+    async def receive(self):
+        while True:
+            if not self.is_connected():
+                await asyncio.sleep(5)
+                continue
+            try:
+                data = await self._ws.receive_text()
+                if data != self._ping_id:
+                    break
+                logger.info(f"wss: ping-pong")
+                await self._ws.send_text(self._pong_id)
+            except WebSocketDisconnect:
+                self._ws = None
+                logger.info(f"B44792 WebSocket disconnect")
+        return data
+
+    def is_connected(self):
+        return self._ws is not None
+
+    async def message_handler(self):
+        while True:
+            data = await self.receive()
+            print(f"received: {data}")
+
+
+messages = PersistentWebsocket()
+
+
 @router.websocket('/test_ws_client/{client_id}')
 async def websocket_testahwibb(websocket: WebSocket, client_id: str):
+    # FIXME: new connection forces existing one closed, even with unique client_id
     logger.info(f"wss:/test_ahwibbviclipytr/{client_id} connected")
     await websocket.accept()
+    await messages.connected(websocket)
     try:
-        while True:
-            request = await websocket.receive_text()
-            if request == "ping":
-                if random.randrange(0, 2) == 0:
-                    logger.info(f"wss: ping-pong")
-                    await websocket.send_text("pong")
-                else:
-                    logger.info(f"wss: ping-pong1")
-                    await websocket.send_text("pong1")
-            else:
-                logger.error(f"wss: unrecognized request {request}")
-    except Exception as e:
-        logger.error(f"wss: error a {e}")  # usually: 1005
-    try:
-        await websocket.close()
-    except Exception as e:
-        logger.error(f"wss: error b {e}")  # usually: Unexpected ASGI message 'websocket.close' ...
+        while messages.is_connected():
+            await asyncio.sleep(60)
+    except asyncio.exceptions.CancelledError:  # ctrl-C
+        logger.info(f"B32045 WebSocket canceled")

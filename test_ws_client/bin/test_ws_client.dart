@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io' as io;
 // ignore: depend_on_referenced_packages
 import 'package:web_socket_channel/io.dart' as wsc;
 
 class PersistentWebSocket {
+  // important: mirror changes in corresponding Python code--search "bMjZmLdFv"
   late final String _url;
   // all constants are in seconds; be careful of subtle interactions
   static const connectRetry = 15; // wait after failed connect attempt
@@ -12,24 +14,47 @@ class PersistentWebSocket {
   static const pingTime = 10; // send ping every n seconds
   static const connectionTimeout = 20; // wait for WebSocket connect attempt
   static const timerStep = 5;
+  static const pingId = '!ping_id_R3PHK!';
+  static const pongId = '!pong_id_R3PHK!';
   var _sinceLastPong = -timerStep; // seconds since last response from server
   Timer? _pingTimer;
   Timer? _heartbeat;
   wsc.IOWebSocketChannel? _channel;
+  final Queue<String> _outputQueue = Queue<String>();
   final _controller = StreamController<String>();
   Stream<String> get stream => _controller.stream;
-
-  void add(String s) {
-    if (_channel != null) {
-      _channel!.sink.add(s);
-    }
-    // FIXME: how are we preventing data loss (both directions)?
-  }
 
   PersistentWebSocket(url) {
     _url = url;
     _heartbeat = Timer.periodic(Duration(seconds: timerStep), _timerTick);
     _timerTick(_heartbeat!); // begin connecting--don't wait for periodic timer
+  }
+
+  void _sendAfterIdCheck(String data) {
+    if (data != pingId) {
+      // 'pingId' because we are the client
+      _channel!.sink.add(data);
+    } else {
+      // split into 2 messages so it isn't confused with a ping
+      _channel!.sink.add(data.substring(0, 7));
+      _channel!.sink.add(data.substring(7));
+    }
+  }
+
+  void _sendQueued() {
+    assert(_channel != null);
+    while (true) {
+      if (_outputQueue.isEmpty) return;
+      _sendAfterIdCheck(_outputQueue.removeFirst());
+    }
+  }
+
+  void send(String data) {
+    if (_channel != null) {
+      _sendAfterIdCheck(data);
+    } else {
+      _outputQueue.add(data); // buffer output until WebSocket reconnects
+    }
   }
 
   void close() {
@@ -76,14 +101,15 @@ class PersistentWebSocket {
         }
         _sinceLastPong = 1; // start pong timer
         print('connected');
+        _sendQueued();
         _pingTimer = Timer.periodic(const Duration(seconds: pingTime), (timer) {
-          print('ping');
-          _channel!.sink.add('ping');
+          print("ping");
+          _channel!.sink.add(pingId);
         });
         _channel!.stream.listen(
           (data) {
-            if (data == 'pong') {
-              print('pong');
+            if (data == pongId) {
+              print("pong");
               _sinceLastPong = 1; // reset pong timer
             } else {
               _controller.sink.add(data);
@@ -95,12 +121,24 @@ class PersistentWebSocket {
           },
           // cancelOnError: true, // defaults to true
           onDone: () {
-            print('error 239032 someone closed the connection');
+            print('B39032 someone closed the connection');
             _rebootConnection();
           },
         );
       }).onError((error, stackTrace) {
-        print("failed to connect 10667: $error");
+        var e = error.toString();
+        if (e.startsWith('SocketException: Connection refused')) {
+          print("B66702 connection refused");
+        } else if (e.startsWith('WebSocketException: Connection to ') &&
+            e.endsWith(' was not upgraded to websocket')) {
+          print("B66703 not upgraded to WebSocket");
+        } else if (e.startsWith('SocketException: Connection reset by peer')) {
+          print("B66704 connection reset by peer");
+        } else if (e.startsWith('SocketException: HTTP connection timed out')) {
+          print("B66705 connection timed out");
+        } else {
+          print("B66701 $e");
+        }
         _rebootConnection();
       });
     }
@@ -112,7 +150,7 @@ class PersistentWebSocket {
     if (_sinceLastPong > 0) {
       _sinceLastPong += timerStep;
       if (_sinceLastPong > reconnectDelay) {
-        print('server is no longer responding');
+        print('B94588 server is no longer responding');
         _rebootConnection(retryIn: pongRetry);
       }
     }
@@ -128,9 +166,12 @@ void main(List<String> arguments) async {
       print("data received: $data");
     },
   );
-  print('two');
-  await Future.delayed(Duration(seconds: 180));
-  print('three');
+  var toSend = 2212;
+  while (true) {
+    await Future.delayed(Duration(seconds: 23));
+    print("sending: $toSend");
+    ws.send(toSend.toString());
+    toSend += 1;
+  }
   ws.close();
-  print('four');
 }
