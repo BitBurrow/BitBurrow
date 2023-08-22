@@ -46,7 +46,7 @@ def index_otw(index):  # convert index to on-the-wire format (index mod 32768 wi
     return (index % 0x8000).to_bytes(2, 'big')
 
 
-def const_otw(c):  # convert _mdf constant to on-the-wire format
+def const_otw(c):  # convert _sig constant to on-the-wire format
     assert c >= 0x8000
     assert c <= 0xFFFF
     return c.to_bytes(2, 'big')
@@ -74,17 +74,17 @@ def unmod(xx, xxxx, w):  # undelete upper bits of xx by assuming it's near xxxx
 
 class PersistentWebsocket:
     # important: mirror changes in corresponding Dart code--search "bMjZmLdFv"
-    _mdf_ping = 0x8001  # "Are you there?" from WebSocket client
-    _mdf_pong = 0x8002  # "Yes I am here" response from WebSocket server
-    _mdf_ack = 0x8010  # "I have received n total chunks" where n is next 2 bytes
-    _mdf_resend = 0x8011  # "Please resend chunk n and everything after it" where n is next 2 bytes
-    _ack_every = 16  # send _mdf_ack after successfully receiving n chunks
+    _sig_ping = 0x8001  # "Are you there?" from WebSocket client
+    _sig_pong = 0x8002  # "Yes I am here" response from WebSocket server
+    _sig_ack = 0x8010  # "I have received n total chunks" where n is next 2 bytes
+    _sig_resend = 0x8011  # "Please resend chunk n and everything after it" where n is next 2 bytes
+    _ack_every = 16  # send _sig_ack after successfully receiving n chunks
     ### on-the-wire format (big-endian byte order)
     # bytes 0-1
-    #     bit 15 → metadata flag; see _mdf constants
-    #     bits 0-14 → chunk index mod 32768 (first chunk sent is chunk 0) or _mdf constant
+    #     bit 15 → signal flag; see _sig constants
+    #     bits 0-14 → chunk index mod 32768 (first chunk sent is chunk 0) or _sig constant
     # bytes 2+
-    #     ack or resend index (if metadata flag) or data (if no metadata flag)
+    #     ack or resend index (if signal) or data (otherwise)
 
     def __init__(self):
         self._ws = None
@@ -129,7 +129,7 @@ class PersistentWebsocket:
             try:
                 otw = await self._ws.receive_bytes()
                 index15 = int.from_bytes(otw[0:1], 'big')  # lower 15 bits of index
-                if index15 < 0x8000:  # no metadata flag
+                if index15 < 0x8000:  # not a signal
                     index = unmod(index15, self._recv_index, 0x8000)  # expand 15 bits to full index
                     if index < self._recv_index:  # dup of chunk we already have → ignore it
                         continue
@@ -137,19 +137,19 @@ class PersistentWebsocket:
                         self._recv_index += 1
                         if self._recv_index - self._recv_last_ack > self._ack_every:
                             await self._send_raw(
-                                const_otw(self._mdf_ack) + index_otw(self._recv_index)
+                                const_otw(self._sig_ack) + index_otw(self._recv_index)
                             )
                         break
                     # request the other end resend what we're missing
-                    await self._send_raw(const_otw(self._mdf_resend) + index_otw(self._recv_index))
-                else:  # metadata flag
-                    if index15 == self._mdf_ping:
-                        await self._send_raw(const_otw(self._mdf_pong))
+                    await self._send_raw(const_otw(self._sig_resend) + index_otw(self._recv_index))
+                else:  # signal
+                    if index15 == self._sig_ping:
+                        await self._send_raw(const_otw(self._sig_pong))
                         logger.info(f"wss: ping-pong")
-                    if index15 == self._mdf_ack:
+                    if index15 == self._sig_ack:
                         ack_index = unmod(int.from_bytes(otw[2:3]), self._send.index, 0x8000)
                         self._send.dequeue(ack_index)
-                    if index15 == self._mdf_resend:
+                    if index15 == self._sig_resend:
                         resend_index = unmod(int.from_bytes(otw[2:3]), self._send.index, 0x8000)
                         await self._send(resend_index)
             except AttributeError:
