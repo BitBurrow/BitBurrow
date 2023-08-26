@@ -9,9 +9,14 @@ from fastapi import (
 from sqlmodel import Session, select
 from typing import List
 import logging
+import os
+import sys
 import hub.db as db
 import hub.transmutation as transmutation
-import hub.persistent_websocket as persistent_websocket
+
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(base_dir, "libs", "python"))
+import persistent_websocket.persistent_websocket as persistent_websocket
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1")
