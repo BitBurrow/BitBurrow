@@ -231,8 +231,6 @@ def on_startup():
             raise e
     if is_worker_zero:
         logger.info(f"API listening on port 8443")
-    if is_worker_zero:
-        asyncio.create_task(api.messages.message_handler())
     logger.debug(f"initialization complete")
 
 
