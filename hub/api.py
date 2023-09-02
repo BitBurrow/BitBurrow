@@ -19,6 +19,7 @@ sys.path.append(os.path.join(base_dir, "libs", "python"))
 import persistent_websocket.persistent_websocket as persistent_websocket
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 router = APIRouter(prefix="/v1")
 
 ###

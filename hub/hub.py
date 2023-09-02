@@ -230,7 +230,7 @@ def on_startup():
             on_shutdown()
             raise e
     if is_worker_zero:
-        print(f"API listening on port 8443")
+        logger.info(f"API listening on port 8443")
     if is_worker_zero:
         asyncio.create_task(api.messages.message_handler())
     logger.debug(f"initialization complete")
@@ -327,6 +327,7 @@ def entry_point():
     logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
     logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
     logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
+    logger.info(f"❚   listening on: {hub_state.domain}")
     try:
         uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
             f'{app_name()}:app',
