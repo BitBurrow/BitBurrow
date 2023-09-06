@@ -118,4 +118,5 @@ async def websocket_testahwibb(websocket: WebSocket, client_id: str):
     # FIXME: new connection forces existing one closed, even with unique client_id
     logger.info(f"wss:/test_ahwibbviclipytr/{client_id} connected")
     await websocket.accept()
-    await messages.connected(websocket)
+    async for m in messages.connected(websocket):
+        print(f"---------------------------------------------- incoming: {m.decode()}")
