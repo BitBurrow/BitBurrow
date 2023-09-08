@@ -2,6 +2,7 @@ import asyncio
 import collections
 import logging
 import traceback
+from typing import AsyncGenerator
 import websockets
 
 try:
@@ -20,19 +21,25 @@ logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, 
 # FIXME: scan through for 15-bit overflow in math, comparisons, etc.
 
 
-def lsb(index):  # convert index to on-the-wire format; see i_lsb description
+def lsb(index):
+    """Convert index to on-the-wire format; see i_lsb description."""
     return (index % 32768).to_bytes(2, 'big')
 
 
-def const_otw(c):  # convert _sig constant to on-the-wire format
+def const_otw(c):
+    """Convert _sig constant to on-the-wire format."""
     assert c >= 32768  # 0x8000
     assert c <= 65535  # 0xFFFF
     return c.to_bytes(2, 'big')
 
 
-def unmod(xx, xxxx, w):  # undelete upper bits of xx by assuming it's near xxxx
-    # put another way: find n where n%w is xx and abs(xxxx-n) <= w/2
-    # if w==100, this can convert 2-digit years to 4-digit years, assuming within 50 years of today
+def unmod(xx, xxxx, w):
+    """Undelete upper bits of xx by assuming it's near xxxx.
+
+    Put another way: find n where n%w is xx and abs(xxxx-n) <= w/2. For
+    example, unmod(yy, yyyy_today, 100) will convert a 2-digit year yy to
+    a 4-digit year by assuming yy is within 50 years of the current year.
+    """
     assert xx < w  # w is the window size (must be even), i.e. the number of possible values for xx
     splitp = (xxxx + w // 2) % w  # split point
     return xx + xxxx + w // 2 - splitp - (w if xx > splitp else 0)
@@ -103,53 +110,76 @@ class Timer:  # based on https://stackoverflow.com/a/45430833
 
 
 class PersistentWebsocket:
-    # important: mirror changes in corresponding Dart code--search "bMjZmLdFv"
+    """Adds to WebSockets auto-reconnect and auto-resend of lost messages.
+
+    This class adds to WebSockets (client and server) the ability to automatically reconnect,
+    including for IP address changes, as well as resending any messages which may have been
+    lost. To accomplish this, it uses a custom protocol which adds 2 bytes to the beginning
+    of each WebSocket message and uses signals for acknowledgement and resend requests.
+    """
+
+    ### notes:
+    #   * important: mirror changes in corresponding Dart code--search "bMjZmLdFv"
+    #   * messages always arrive and in order; signals can be lost if WebSocket disconnects
+    #   * all bytes are in big-endian byte order; use: int.from_bytes(chunk[0:2], 'big')
+    #   * 'chunk' refers to a full WebSocket item, including the first 2 bytes
+    #   * 'message' refers to chunk[2:] of a chunk that is not a signal (details below)
+    #   * index → chunk number; first chunk sent is chunk 0
+    #   * i_lsb → index mod 32768, i.e. the 15 least-significant bits
+    #   * ping and pong (below) are barely implemented because we rely on WebSocket keep-alives
     ### on-the-wire format:
-    # notes:
-    #     messages always arrive and in order; signals can be lost if WebSocket disconnects
-    #     all bytes are in big-endian byte order; use: int.from_bytes(chunk[0:2], 'big')
-    #     index → full chunk index; first chunk sent is chunk 0
-    #     i_lsb → index mod 32768, i.e. the 15 least-significant bits
-    # a message (chunk[0:2] < 32768):
-    #     chunk[0:2]  i_lsb
-    #     chunk[2:]   message content
-    # a signal (chunk[0:2] >= 32768):
+    #   * chunk containing a message (when chunk[0:2] < 32768):
+    #       * chunk[0:2]  i_lsb
+    #       * chunk[2:]   message
+    #   * a signaling chunk (when chunk[0:2] >= 32768):
     _sig_ack = 0x8010  # "I have received n total chunks"
-    #     chunk[2:4]  i_lsb of next expected chunk
+    #       * chunk[2:4]  i_lsb of next expected chunk
     _sig_resend = 0x8011  # "Please resend chunk n and everything after it"
-    #     chunk[2:4]  i_lsb of first chunk to resend
+    #       * chunk[2:4]  i_lsb of first chunk to resend
     _sig_resend_error = 0x8012  # "I cannot resend the requested chunks"
-    #     chunk[2:]   (optional, ignored)
+    #       * chunk[2:]   (optional, ignored)
     _sig_ping = 0x8020  # "Are you alive?"
-    #     chunk[2:]   (optional)
+    #       * chunk[2:]   (optional)
     _sig_pong = 0x8021  # "Yes, I am alive."
-    #     chunk[2:]   chunk[2:] from corresponding ping
+    #       * chunk[2:]   chunk[2:] from corresponding ping
 
     def __init__(self):
         self._ws = None
-        self._inbound = None
         self._url = None
-        self._recv_index = 0  # index of next expected chunk
-        self._recv_last_ack = 0  # index of most recently-sent ack
+        self._recv_index = 0  # index of next inbound chunk, aka number of chunks received
+        self._recv_last_ack = 0  # index of most recently-sent _sig_ack
         # https://docs.python.org/3/library/collections.html#collections.deque
         self._journal = collections.deque()  # chunks sent but not yet confirmed by remote
-        self._journal_index = 0  # chunk index + 1 of right end (newest) of _journal
+        self._journal_index = 0  # index of the next outbound chunk, ...
+        # aka index + 1 of right end (newest) of _journal
 
-    async def connected(self, ws):  # as SERVER, handle a new WebSocket connection, loop
+    async def connected(self, ws) -> AsyncGenerator[bytes, None]:
+        """Handle a new inbound WebSocket connection, yield inbound messages.
+
+        This is the primary API entry point for a WebSocket SERVER. Signals from
+        the client will be appropriately handled and inbound messages will be
+        returned to the caller via `yield`.
+        """
         self._url = None  # make it clear we are now a server
         self._ws = ws
         logger.info(f"B17183 WebSocket connected")
         async for m in self.listen():
             yield m
 
-    async def connect(self, url):  # as CLIENT, begin a new connection, loop
+    async def connect(self, url: str) -> AsyncGenerator[bytes, None]:
+        """Begin a new outbound WebSocket connection, yield inbound messages.
+
+        This is the primary API entry point for a WebSocket CLIENT. Signals from
+        the server will be appropriately handled and inbound messages will be
+        returned to the caller via `yield`.
+        """
         self._url = url
         try:
             # https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html
             logger.debug(f"B35536 waiting for WebSocket to connect")
             async for ws in websockets.connect(self._url):
-                logger.info(f"B91334 WebSocket connect")
                 self._ws = ws
+                logger.info(f"B91334 WebSocket connect")
                 async for m in self.listen():
                     yield m
 
@@ -159,7 +189,8 @@ class PersistentWebsocket:
             logger.error(f"B34752 WebSocket exception, {traceback.format_exc().rstrip()}")
         await self.ensure_closed()
 
-    async def listen(self):
+    async def listen(self) -> AsyncGenerator[bytes, None]:
+        """Accept chunks on the WebSocket connection and yield messages."""
         # chunks were probably lost in reconnect, so ask the other end to resend
         await self._send_raw(const_otw(self._sig_resend) + lsb(self._recv_index))
         try:
@@ -183,7 +214,8 @@ class PersistentWebsocket:
         except Exception:
             logger.error(f"B59584 WebSocket exception, {traceback.format_exc().rstrip()}")
 
-    async def send(self, message):  # save message to resend when needed; send if we can
+    async def send(self, message: str | bytes):
+        """Send a message to the remote when possible, resending if necessary."""
         if isinstance(message, str):
             chunk = lsb(self._journal_index) + message.encode()  # convert message to bytes
         else:
@@ -192,7 +224,8 @@ class PersistentWebsocket:
         self._journal.append(chunk)
         await self._send_raw(chunk)
 
-    async def _resend(self, start_index):  # resend queued chunks
+    async def _resend(self, start_index):
+        """Resend queued chunks."""
         if start_index == self._journal_index:
             return
         tail_index = self._journal_index - len(self._journal)
@@ -209,7 +242,8 @@ class PersistentWebsocket:
         for i in range(start_index - self._journal_index, 0):
             await self._send_raw(self._journal[i])
 
-    async def _send_raw(self, chunk):  # send chunk of bytes if we can
+    async def _send_raw(self, chunk):
+        """Send chunk of bytes if we can."""
         if self._ws is None:
             return
         try:
@@ -224,9 +258,10 @@ class PersistentWebsocket:
             self._ws = None
             logger.info(f"B44793 WebSocket disconnect")
 
-    async def process_inbound(self, chunk):
+    async def process_inbound(self, chunk) -> bytes | None:
+        """Test and respond to chunk, returning a message or None."""
         i_lsb = int.from_bytes(chunk[0:2], 'big')  # first 2 bytes of chunk
-        if i_lsb < 32768:  # message
+        if i_lsb < 32768:  # message chunk
             index = unmod(i_lsb, self._recv_index, 32768)  # expand 15 bits to full index
             if index == self._recv_index:  # valid
                 self._recv_index += 1
@@ -235,7 +270,7 @@ class PersistentWebsocket:
                     await self._send_raw(const_otw(self._sig_ack) + lsb(self._recv_index))
                     self._recv_last_ack = self._recv_index
                     await self.send(f"We've received {self._recv_index} messages")  # TESTING
-                return chunk[2:]  # message contents
+                return chunk[2:]  # message
             elif index > self._recv_index:  # request the other end resend what we're missing
                 await self._send_raw(const_otw(self._sig_resend) + lsb(self._recv_index))
             logger.info(f"B73822 ignoring duplicate chunk {index}")
@@ -265,6 +300,7 @@ class PersistentWebsocket:
         await self._send_raw(const_otw(self._sig_ping) + data)
 
     async def ensure_closed(self):
+        """Close the WebSocket connection; can be called multiple times."""
         if self._ws is None:
             return
         try:
