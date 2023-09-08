@@ -152,6 +152,7 @@ class PersistentWebsocket:
         self._journal = collections.deque()  # chunks sent but not yet confirmed by remote
         self._journal_index = 0  # index of the next outbound chunk, ...
         # aka index + 1 of right end (newest) of _journal
+        self.connects = 0
 
     async def connected(self, ws) -> AsyncGenerator[bytes, None]:
         """Handle a new inbound WebSocket connection, yield inbound messages.
@@ -162,7 +163,8 @@ class PersistentWebsocket:
         """
         self._url = None  # make it clear we are now a server
         self._ws = ws
-        logger.info(f"B17183 WebSocket connected")
+        logger.info(f"B17183 WebSocket reconnect {self.connects}")
+        self.connects += 1
         async for m in self.listen():
             yield m
 
@@ -179,7 +181,8 @@ class PersistentWebsocket:
             logger.debug(f"B35536 waiting for WebSocket to connect")
             async for ws in websockets.connect(self._url):
                 self._ws = ws
-                logger.info(f"B91334 WebSocket connect")
+                logger.info(f"B91334 WebSocket reconnect {self.connects}")
+                self.connects += 1
                 async for m in self.listen():
                     yield m
 
