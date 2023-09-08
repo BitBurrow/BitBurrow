@@ -1,6 +1,7 @@
 import asyncio
 import collections
 import logging
+import random
 import traceback
 from typing import AsyncGenerator
 import websockets
@@ -45,7 +46,6 @@ def unmod(xx, xxxx, w):
     return xx + xxxx + w // 2 - splitp - (w if xx > splitp else 0)
 
 
-# import random
 # def unmod_test():
 #    for win in [10, 100, 1000, 10_000, 32768, 8322]:
 #        for _ in range(0, 1_000_000):
@@ -154,6 +154,7 @@ class PersistentWebsocket:
         self._journal_index = 0  # index of the next outbound chunk, ...
         # aka index + 1 of right end (newest) of _journal
         self.connects = 0
+        self.chaos = 0  # level of chaos to intentionaly introduce for testing, 50 recommended
 
     async def connected(self, ws) -> AsyncGenerator[bytes, None]:
         """Handle a new inbound WebSocket connection, yield inbound messages.
@@ -199,6 +200,11 @@ class PersistentWebsocket:
         await self._send_raw(const_otw(self._sig_resend) + lsb(self._recv_index))
         try:
             async for chunk in (self._ws.iter_bytes() if using_starlette else self._ws):
+                if self.chaos > 0 and self.chaos > random.randint(0, 999):
+                    logger.warn(f"B66740 {self.id} ❗❗ closing WebSocket to test recovery ❗❗")
+                    await asyncio.sleep(random.randint(0, 3))
+                    await self.ensure_closed()
+                    await asyncio.sleep(random.randint(0, 3))
                 message = await self.process_inbound(chunk)
                 if message is not None:
                     logger.debug(f"B18042 {self.id} received: {message.decode()}")
@@ -215,6 +221,10 @@ class PersistentWebsocket:
                 raise asyncio.exceptions.CancelledError
             else:
                 logger.error(f"B53771 {self.id} exception, {traceback.format_exc().rstrip()}")
+        except RuntimeError as e:
+            if e.args[0] != 'WebSocket is not connected. Need to call "accept" first.':
+                # ignore 'not connected' because it's a result of intentional testing; see B66740
+                logger.error(f"B81148 {self.id} exception, {traceback.format_exc().rstrip()}")
         except Exception:
             logger.error(f"B59584 {self.id} WebSocket exception, {traceback.format_exc().rstrip()}")
 
@@ -227,6 +237,11 @@ class PersistentWebsocket:
         self._journal_index += 1
         self._journal.append(chunk)
         await self._send_raw(chunk)
+        if self.chaos > 0 and self.chaos > random.randint(0, 999):
+            logger.warn(f"B14263 {self.id} ❗❗ closing WebSocket to test recovery ❗❗")
+            await asyncio.sleep(random.randint(0, 3))
+            await self.ensure_closed()
+            await asyncio.sleep(random.randint(0, 3))
 
     async def _resend(self, start_index):
         """Resend queued chunks."""

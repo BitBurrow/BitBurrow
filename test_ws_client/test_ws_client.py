@@ -28,6 +28,7 @@ async def main():
         print(f"Usage: {sys.argv[0]} <WebSocket URL>")
         return
     messenger = persistent_websocket.PersistentWebsocket("00")
+    messenger.chaos = 50  # 5% chance of closing WebSocket on each send or receive
     persistent_websocket.logger.setLevel(logging.WARNING)
     listening = asyncio.create_task(listener(messenger, sys.argv[1]))
     speaking = asyncio.create_task(speaker(messenger))
