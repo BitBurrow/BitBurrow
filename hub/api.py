@@ -7,7 +7,7 @@ from fastapi import (
     WebSocket,
 )
 from sqlmodel import Session, select
-from typing import List
+from typing import Dict, List
 import logging
 import os
 import sys
@@ -110,13 +110,15 @@ async def websocket_proxy(websocket: WebSocket, login_key: str, server_id: int):
         logger.error(f"B38264 WebSocket error: {e}")  # e.g. websocket already closed
 
 
-messages = persistent_websocket.PersistentWebsocket()
+messages: Dict[str, persistent_websocket.PersistentWebsocket] = dict()  # one entry for each client
 
 
-@router.websocket('/test_ws_client/{client_id}')
+@router.websocket('/pw/{client_id}')
 async def websocket_testahwibb(websocket: WebSocket, client_id: str):
-    # FIXME: new connection forces existing one closed, even with unique client_id
-    logger.info(f"wss:/test_ahwibbviclipytr/{client_id} connected")
+    if client_id not in messages:
+        # FIXME: mitigate DOS attack via opening a bunch of unique connections
+        messages[client_id] = persistent_websocket.PersistentWebsocket(client_id)
+        persistent_websocket.logger.setLevel(logging.DEBUG)
     await websocket.accept()
-    async for m in messages.connected(websocket):
-        print(f"---------------------------------------------- incoming: {m.decode()}")
+    async for m in messages[client_id].connected(websocket):
+        print(f"---------------------------------------------- {client_id} incoming: {m.decode()}")

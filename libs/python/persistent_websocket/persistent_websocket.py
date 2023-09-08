@@ -143,7 +143,8 @@ class PersistentWebsocket:
     _sig_pong = 0x8021  # "Yes, I am alive."
     #       * chunk[2:]   chunk[2:] from corresponding ping
 
-    def __init__(self):
+    def __init__(self, id: str):
+        self.id = id  # uniquely identify this connection in log file
         self._ws = None
         self._url = None
         self._recv_index = 0  # index of next inbound chunk, aka number of chunks received
@@ -163,7 +164,7 @@ class PersistentWebsocket:
         """
         self._url = None  # make it clear we are now a server
         self._ws = ws
-        logger.info(f"B17183 WebSocket reconnect {self.connects}")
+        logger.info(f"B17183 {self.id} WebSocket reconnect {self.connects}")
         self.connects += 1
         async for m in self.listen():
             yield m
@@ -178,18 +179,18 @@ class PersistentWebsocket:
         self._url = url
         try:
             # https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html
-            logger.debug(f"B35536 waiting for WebSocket to connect")
+            logger.debug(f"B35536 {self.id} waiting for WebSocket to connect")
             async for ws in websockets.connect(self._url):
                 self._ws = ws
-                logger.info(f"B91334 WebSocket reconnect {self.connects}")
+                logger.info(f"B91334 {self.id} WebSocket reconnect {self.connects}")
                 self.connects += 1
                 async for m in self.listen():
                     yield m
 
         except asyncio.exceptions.CancelledError:  # ctrl-C
-            logger.warn(f"B32045 WebSocket canceled")
+            logger.warn(f"B32045 {self.id} WebSocket canceled")
         except Exception:
-            logger.error(f"B34752 WebSocket exception, {traceback.format_exc().rstrip()}")
+            logger.error(f"B34752 {self.id} WebSocket exception, {traceback.format_exc().rstrip()}")
         await self.ensure_closed()
 
     async def listen(self) -> AsyncGenerator[bytes, None]:
@@ -200,22 +201,22 @@ class PersistentWebsocket:
             async for chunk in (self._ws.iter_bytes() if using_starlette else self._ws):
                 message = await self.process_inbound(chunk)
                 if message is not None:
-                    logger.debug(f"B18042 received: {message.decode()}")
+                    logger.debug(f"B18042 {self.id} received: {message.decode()}")
                     yield message
-            logger.info(f"B39653 WebSocket closed")
+            logger.info(f"B39653 {self.id} WebSocket closed")
         except websockets.ConnectionClosed:
-            logger.warn(f"B60441 WebSocket closed")
+            logger.warn(f"B60441 {self.id} WebSocket closed")
         except asyncio.exceptions.CancelledError:  # ctrl-C
             raise asyncio.exceptions.CancelledError
         except WebSocketDisconnect as e:
             if e == 1000:  # WS_1000_NORMAL_CLOSURE in starlette/status.py
-                logger.info(f"B94731 WebSocket closed by remote")
+                logger.info(f"B94731 {self.id} WebSocket closed by remote")
             elif e == 1012:  # WS_1012_SERVICE_RESTART in starlette/status.py
                 raise asyncio.exceptions.CancelledError
             else:
-                logger.error(f"B53771 WebSocket exception, {traceback.format_exc().rstrip()}")
+                logger.error(f"B53771 {self.id} exception, {traceback.format_exc().rstrip()}")
         except Exception:
-            logger.error(f"B59584 WebSocket exception, {traceback.format_exc().rstrip()}")
+            logger.error(f"B59584 {self.id} WebSocket exception, {traceback.format_exc().rstrip()}")
 
     async def send(self, message: str | bytes):
         """Send a message to the remote when possible, resending if necessary."""
@@ -235,12 +236,12 @@ class PersistentWebsocket:
         if self._journal_index < start_index or start_index < tail_index:
             # FIXME: need to stop trying to reconnect, pass control to outer layer
             logger.error(
-                f"B38394 remote wants journal[{start_index}:] "
+                f"B38394 {self.id} remote wants journal[{start_index}:] "
                 + f"but we only have journal[{tail_index}:{self._journal_index}]"
             )
             await self._send_raw(const_otw(self._sig_resend_error))
             return
-        logger.info(f"B57684 resending journal[{start_index}:{self._journal_index}]")
+        logger.info(f"B57684 {self.id} resending journal[{start_index}:{self._journal_index}]")
         # send requested chunks from oldest to newest, e.g. range(-2, 0) for most recent 2 chunks
         for i in range(start_index - self._journal_index, 0):
             await self._send_raw(self._journal[i])
@@ -256,10 +257,10 @@ class PersistentWebsocket:
             else:
                 # https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html#websockets.client.WebSocketClientProtocol.send
                 await self._ws.send(chunk)
-            logger.debug(f"B41789 sent: {chunk.hex(' ', -1)}")
+            logger.debug(f"B41789 {self.id} sent: {chunk.hex(' ', -1)}")
         except WebSocketDisconnect:
             self._ws = None
-            logger.info(f"B44793 WebSocket disconnect")
+            logger.info(f"B44793 {self.id} WebSocket disconnect")
 
     async def process_inbound(self, chunk) -> bytes | None:
         """Test and respond to chunk, returning a message or None."""
@@ -276,12 +277,12 @@ class PersistentWebsocket:
                 return chunk[2:]  # message
             elif index > self._recv_index:  # request the other end resend what we're missing
                 await self._send_raw(const_otw(self._sig_resend) + lsb(self._recv_index))
-            logger.info(f"B73822 ignoring duplicate chunk {index}")
+            logger.info(f"B73822 {self.id} ignoring duplicate chunk {index}")
         else:  # signal
             if i_lsb == self._sig_ack:
                 ack_index = unmod(int.from_bytes(chunk[2:4], 'big'), self._journal_index, 32768)
                 tail_index = self._journal_index - len(self._journal)
-                logger.info(f"B60966 clearing journal[{tail_index}:{ack_index}]")
+                logger.info(f"B60966 {self.id} clearing journal[{tail_index}:{ack_index}]")
                 for i in range(tail_index, ack_index):
                     self._journal.popleft()
             elif i_lsb == self._sig_resend:
@@ -290,13 +291,13 @@ class PersistentWebsocket:
             elif i_lsb == self._sig_resend_error:
                 await self.ensure_closed()
                 # FIXME: need to stop trying to reconnect, pass control to outer layer
-                logger.error(f"B75561 broken connection")
+                logger.error(f"B75561 {self.id} broken connection")
             elif i_lsb == self._sig_ping:
                 await self._send_raw(const_otw(self._sig_pong) + chunk[2:])
             elif i_lsb == self._sig_pong:
                 pass
             else:
-                logger.error(f"B32405 unknown signal {i_lsb}")
+                logger.error(f"B32405 {self.id} unknown signal {i_lsb}")
         return None
 
     async def ping(self, data):
@@ -308,9 +309,10 @@ class PersistentWebsocket:
             return
         try:
             await self._ws.close()
-            logger.info("B89445 WebSocket closed")
+            logger.info(f"B89445 {self.id} WebSocket closed")
         except RuntimeError as e:
-            logger.debug("B79020 WebSocket error {e}")  # probably websocket close after close
+            # probably websocket close after close
+            logger.debug(f"B79020 {self.id} WebSocket error {e}")
         except Exception:
-            logger.error(f"B39425 WebSocket exception, {traceback.format_exc().rstrip()}")
+            logger.error(f"B39425 {self.id} WebSocket exception, {traceback.format_exc().rstrip()}")
         self._ws = None

@@ -16,23 +16,19 @@ async def listener(messenger, url):
         print(f"------------------------------------------------ incoming: {m.decode()}")
 
 async def speaker(messenger):
-    to_send = 22212
+    to_send = 26_000_000
     while True:
-        await asyncio.sleep(1.01)
+        await asyncio.sleep(0.100)
         print(f"sending: {to_send}")
         await messenger.send(str(to_send))
         to_send += 1
-    try:
-        await messenger.close()
-    except Exception:
-        print("ctrl-C abort ...")
-        pass
 
 async def main():
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <WebSocket URL>")
         return
-    messenger = persistent_websocket.PersistentWebsocket()
+    messenger = persistent_websocket.PersistentWebsocket("00")
+    persistent_websocket.logger.setLevel(logging.WARNING)
     listening = asyncio.create_task(listener(messenger, sys.argv[1]))
     speaking = asyncio.create_task(speaker(messenger))
     await listening
