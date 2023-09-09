@@ -245,6 +245,13 @@ class PersistentWebsocket:
 
     async def send(self, message: str | bytes):
         """Send a message to the remote when possible, resending if necessary."""
+        flow_control_delay = 1
+        while len(self._journal) > 100:  # not sure what a reasonable number here would be
+            if flow_control_delay == 1:
+                logger.info(f"B60013 {self.id} waiting until outbound buffer is not full")
+            await asyncio.sleep(flow_control_delay)
+            if flow_control_delay < 30:
+                flow_control_delay += 1
         if isinstance(message, str):
             chunk = lsb(self._journal_index) + message.encode()  # convert message to bytes
         else:
