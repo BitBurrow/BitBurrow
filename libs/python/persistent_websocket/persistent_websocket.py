@@ -109,6 +109,12 @@ class Timer:  # based on https://stackoverflow.com/a/45430833
 # loop.run_until_complete(main())
 
 
+class PWUnrecoverableError(Exception):
+    def __init__(self, message=""):
+        self.message = message
+        super().__init__(self.message)
+
+
 class PersistentWebsocket:
     """Adds to WebSockets auto-reconnect and auto-resend of lost messages.
 
@@ -164,17 +170,20 @@ class PersistentWebsocket:
         the client will be appropriately handled and inbound messages will be
         returned to the caller via `yield`.
         """
-        if self.connect_lock.locked():
-            logger.warn(f"B30102 {self.id} waiting for current WebSocket to close")
-            # PersistentWebsocket is not reentrant; if we don't lock here, messages
-            # can arrive out-of-order
-        async with self.connect_lock:
-            self._url = None  # make it clear we are now a server
-            self._ws = ws
-            logger.info(f"B17183 {self.id} WebSocket reconnect {self.connects}")
-            self.connects += 1
-            async for m in self.listen():
-                yield m
+        try:
+            if self.connect_lock.locked():
+                logger.warn(f"B30102 {self.id} waiting for current WebSocket to close")
+                # PersistentWebsocket is not reentrant; if we don't lock here, messages
+                # can arrive out-of-order
+            async with self.connect_lock:
+                self._url = None  # make it clear we are now a server
+                self._ws = ws
+                logger.info(f"B17183 {self.id} WebSocket reconnect {self.connects}")
+                self.connects += 1
+                async for m in self.listen():
+                    yield m
+        except PWUnrecoverableError:
+            raise  # needs to be handled
 
     async def connect(self, url: str) -> AsyncGenerator[bytes, None]:
         """Begin a new outbound WebSocket connection, yield inbound messages.
@@ -192,7 +201,7 @@ class PersistentWebsocket:
             try:
                 # https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html
                 logger.debug(f"B35536 {self.id} waiting for WebSocket to connect")
-                async for ws in websockets.connect(self._url):
+                async for ws in websockets.connect(self._url):  # keep reconnecting
                     self._ws = ws
                     logger.info(f"B91334 {self.id} WebSocket reconnect {self.connects}")
                     self.connects += 1
@@ -200,6 +209,8 @@ class PersistentWebsocket:
                         yield m
             except asyncio.exceptions.CancelledError:  # ctrl-C
                 logger.warn(f"B32045 {self.id} WebSocket canceled")
+            except PWUnrecoverableError:
+                raise  # needs to be handled
             except Exception:
                 logger.error(f"B34752 {self.id} wsexception, {traceback.format_exc().rstrip()}")
             await self.ensure_closed()
@@ -235,7 +246,7 @@ class PersistentWebsocket:
             if e.args[0] != 'WebSocket is not connected. Need to call "accept" first.':
                 # ignore 'not connected' because it's a result of intentional testing; see B66740
                 logger.error(f"B81148 {self.id} exception, {traceback.format_exc().rstrip()}")
-        except AssertionError:
+        except PWUnrecoverableError:
             raise  # propagate out
         except AttributeError:
             if self._ws is not None:  # ignore if it is because WebSocket closed
@@ -271,13 +282,12 @@ class PersistentWebsocket:
             return
         tail_index = self._journal_index - len(self._journal)
         if self._journal_index < start_index or start_index < tail_index:
-            # FIXME: need to stop trying to reconnect, pass control to outer layer
             logger.error(
                 f"B38394 {self.id} remote wants journal[{start_index}:] "
                 + f"but we only have journal[{tail_index}:{self._journal_index}]"
             )
             await self._send_raw(const_otw(self._sig_resend_error))
-            return
+            raise PWUnrecoverableError(f"B34922 {self.id} impossible resend request")
         logger.info(f"B57684 {self.id} resending journal[{start_index}:{self._journal_index}]")
         # send requested chunks from oldest to newest, e.g. range(-2, 0) for most recent 2 chunks
         for i in range(start_index - self._journal_index, 0):
@@ -302,6 +312,8 @@ class PersistentWebsocket:
         ):
             self._ws = None
             logger.info(f"B44793 {self.id} WebSocket disconnect")
+        except PWUnrecoverableError:
+            raise
         except Exception:
             # unhandled exceptions must not propagate out; we need to yield all messages
             logger.error(f"B42563 {self.id} wsexception, {traceback.format_exc().rstrip()}")
@@ -314,6 +326,7 @@ class PersistentWebsocket:
                 # happens if WebSocket is closed during send() within process_inbound()
                 # and causes messages to be delivered out of order
                 logger.error(f"B14725 {self.id} process_inbound is not reentrant")
+                await asyncio.sleep(1)  # avoid uninterruptible loop
                 return
             self._ipi = True  # see above
             i_lsb = int.from_bytes(chunk[0:2], 'big')  # first 2 bytes of chunk
@@ -344,9 +357,9 @@ class PersistentWebsocket:
                     )
                     await self._resend(resend_index)
                 elif i_lsb == self._sig_resend_error:
+                    logger.error(f"B75561 {self.id} received resend error signal")
                     await self.ensure_closed()
-                    # FIXME: need to stop trying to reconnect, pass control to outer layer
-                    logger.error(f"B75561 {self.id} broken connection")
+                    raise PWUnrecoverableError(f"B91221 {self.id} received resend error signal")
                 elif i_lsb == self._sig_ping:
                     await self._send_raw(const_otw(self._sig_pong) + chunk[2:])
                 elif i_lsb == self._sig_pong:
@@ -355,6 +368,8 @@ class PersistentWebsocket:
                     logger.error(f"B32405 {self.id} unknown signal {i_lsb}")
             del self._ipi
             return None
+        except PWUnrecoverableError:
+            raise
         except Exception:
             del self._ipi
             logger.error(f"B88756 {self.id} wsexception, {traceback.format_exc().rstrip()}")

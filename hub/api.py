@@ -120,6 +120,9 @@ async def websocket_testahwibb(websocket: WebSocket, client_id: str):
         messages[client_id] = persistent_websocket.PersistentWebsocket(client_id)
         messages[client_id].chaos = 50  # 5% chance of closing WebSocket on each send or receive
         persistent_websocket.logger.setLevel(logging.DEBUG)
-    await websocket.accept()
-    async for m in messages[client_id].connected(websocket):
-        print(f"---------------------------------------------- {client_id} incoming: {m.decode()}")
+    try:
+        await websocket.accept()
+        async for m in messages[client_id].connected(websocket):
+            print(f"------------------------------------------ {client_id} incoming: {m.decode()}")
+    except persistent_websocket.PWUnrecoverableError:
+        del messages[client_id]  # data is no longer usable
