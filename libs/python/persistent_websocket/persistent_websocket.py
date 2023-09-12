@@ -312,6 +312,7 @@ class PersistentWebsocket:
             WebSocketDisconnect,
             websockets.exceptions.ConnectionClosedError,
             websockets.exceptions.ConnectionClosedOK,
+            RuntimeError,  # probably: Cannot call "send" once a close message has been sent.
         ):
             self._ws = None
             logger.info(f"B44793 {self.id} WebSocket disconnect")
