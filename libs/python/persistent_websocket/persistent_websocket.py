@@ -155,6 +155,7 @@ class PersistentWebsocket:
         self._url = None
         self._recv_index = 0  # index of next inbound chunk, aka number of chunks received
         self._recv_last_ack = 0  # index of most recently-sent _sig_ack
+        self._recv_last_ack_timer = None  # timer to send _sig_ack
         # https://docs.python.org/3/library/collections.html#collections.deque
         self._journal = collections.deque()  # chunks sent but not yet confirmed by remote
         self._journal_index = 0  # index of the next outbound chunk, ...
@@ -259,10 +260,12 @@ class PersistentWebsocket:
         flow_control_delay = 1
         while len(self._journal) > 100:  # not sure what a reasonable number here would be
             if flow_control_delay == 1:
-                logger.info(f"B60013 {self.id} waiting until outbound buffer is not full")
+                logger.info(f"B60013 {self.id} outbound buffer is full--waiting")
             await asyncio.sleep(flow_control_delay)
             if flow_control_delay < 30:
                 flow_control_delay += 1
+        if flow_control_delay > 1:
+            logger.debug(f"B60014 {self.id} resuming send")
         if isinstance(message, str):
             chunk = lsb(self._journal_index) + message.encode()  # convert message to bytes
         else:
@@ -333,11 +336,14 @@ class PersistentWebsocket:
             if i_lsb < 32768:  # message chunk
                 index = unmod(i_lsb, self._recv_index, 32768)  # expand 15 bits to full index
                 if index == self._recv_index:  # valid
-                    self._recv_index += 1
-                    # send _sig_ack after successfully receiving 16 chunks so remote can clear _journal
+                    self._recv_index += 1  # have unacknowledged message(s)
+                    # occasionally call _send_ack() so remote can clear _journal
+                    if self._recv_last_ack_timer is None:
+                        # acknowledge receipt after 1 second
+                        self._recv_last_ack_timer = Timer(1, self._send_ack)
                     if self._recv_index - self._recv_last_ack >= 16:
-                        await self._send_raw(const_otw(self._sig_ack) + lsb(self._recv_index))
-                        self._recv_last_ack = self._recv_index
+                        # acknowledge receipt after 16 messages
+                        await self._send_ack()
                         await self.send(f"We've received {self._recv_index} messages")  # TESTING
                     del self._ipi
                     return chunk[2:]  # message
@@ -373,6 +379,11 @@ class PersistentWebsocket:
         except Exception:
             del self._ipi
             logger.error(f"B88756 {self.id} wsexception, {traceback.format_exc().rstrip()}")
+
+    async def _send_ack(self):
+        self._recv_last_ack = self._recv_index
+        self._recv_last_ack_timer = None
+        await self._send_raw(const_otw(self._sig_ack) + lsb(self._recv_index))
 
     async def ping(self, data):
         await self._send_raw(const_otw(self._sig_ping) + data)
