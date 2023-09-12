@@ -15,6 +15,8 @@ cat <<"_EOF6471_" |sudo --user $SUDO_USER bash
 mkdir -p ~/.ssh/
 if test ! -f ~/.ssh/id_ed25519; then
     ssh-keygen -q -f ~/.ssh/id_ed25519 -N '' -t ed25519
+fi
+if ! (grep $(cat ~/.ssh/id_ed25519.pub |awk '{print $2}') ~/.ssh/authorized_keys); then
     cat ~/.ssh/id_ed25519.pub >>~/.ssh/authorized_keys
     echo "* $(cat /etc/ssh/ssh_host_ecdsa_key.pub)" >>~/.ssh/known_hosts
 fi
