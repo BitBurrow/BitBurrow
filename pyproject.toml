@@ -10,6 +10,7 @@ documentation = "https://bitburrow.com/"
 packages = [
     {include = "hub"},
     {include = "hub_installer"},
+    {include = "libs/python/persistent_websocket"},
 ]
 
 [tool.poetry.urls]
