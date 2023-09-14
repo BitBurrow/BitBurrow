@@ -19,12 +19,14 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 
 
-# FIXME: scan through for 15-bit overflow in math, comparisons, etc.
+max_lsb = 32768  # always 32768 (2**15) except for testing (tested 64, 32)
+max_send_buffer = 100  # not sure what a reasonable number here would be
+assert max_lsb > max_send_buffer * 3  # avoid wrap-around
 
 
 def lsb(index):
     """Convert index to on-the-wire format; see i_lsb description."""
-    return (index % 32768).to_bytes(2, 'big')
+    return (index % max_lsb).to_bytes(2, 'big')
 
 
 def const_otw(c):
@@ -34,7 +36,7 @@ def const_otw(c):
     return c.to_bytes(2, 'big')
 
 
-def unmod(xx, xxxx, w):
+def unmod(xx, xxxx, w=max_lsb):
     """Undelete upper bits of xx by assuming it's near xxxx.
 
     Put another way: find n where n%w is xx and abs(xxxx-n) <= w/2. For
@@ -131,7 +133,7 @@ class PersistentWebsocket:
     #   * 'chunk' refers to a full WebSocket item, including the first 2 bytes
     #   * 'message' refers to chunk[2:] of a chunk that is not a signal (details below)
     #   * index → chunk number; first chunk sent is chunk 0
-    #   * i_lsb → index mod 32768, i.e. the 15 least-significant bits
+    #   * i_lsb → index mod max_lsb, i.e. the 15 least-significant bits
     #   * ping and pong (below) are barely implemented because we rely on WebSocket keep-alives
     ### on-the-wire format:
     #   * chunk containing a message (when chunk[0:2] < 32768):
@@ -224,9 +226,9 @@ class PersistentWebsocket:
             async for chunk in (self._ws.iter_bytes() if using_starlette else self._ws):
                 if self.chaos > 0 and self.chaos > random.randint(0, 999):
                     logger.warn(f"B66740 {self.id} randomly closing WebSocket to test recovery")
-                    await asyncio.sleep(random.randint(0, 3))
+                    await asyncio.sleep(random.randint(0, 2))
                     await self.ensure_closed()
-                    await asyncio.sleep(random.randint(0, 3))
+                    await asyncio.sleep(random.randint(0, 2))
                 message = await self.process_inbound(chunk)
                 if message is not None:
                     logger.debug(f"B18042 {self.id} received: {message.decode()}")
@@ -258,7 +260,7 @@ class PersistentWebsocket:
     async def send(self, message: str | bytes):
         """Send a message to the remote when possible, resending if necessary."""
         flow_control_delay = 1
-        while len(self._journal) > 100:  # not sure what a reasonable number here would be
+        while len(self._journal) > max_send_buffer:
             if flow_control_delay == 1:
                 logger.info(f"B60013 {self.id} outbound buffer is full--waiting")
             await asyncio.sleep(flow_control_delay)
@@ -334,8 +336,8 @@ class PersistentWebsocket:
                 return
             self._ipi = True  # see above
             i_lsb = int.from_bytes(chunk[0:2], 'big')  # first 2 bytes of chunk
-            if i_lsb < 32768:  # message chunk
-                index = unmod(i_lsb, self._recv_index, 32768)  # expand 15 bits to full index
+            if i_lsb < max_lsb:  # message chunk
+                index = unmod(i_lsb, self._recv_index)  # expand 15 bits to full index
                 if index == self._recv_index:  # valid
                     self._recv_index += 1  # have unacknowledged message(s)
                     # occasionally call _send_ack() so remote can clear _journal
@@ -345,7 +347,7 @@ class PersistentWebsocket:
                     if self._recv_index - self._recv_last_ack >= 16:
                         # acknowledge receipt after 16 messages
                         await self._send_ack()
-                        await self.send(f"We've received {self._recv_index} messages")  # TESTING
+                        # await self.send(f"We've received {self._recv_index} messages")  # TESTING
                     del self._ipi
                     return chunk[2:]  # message
                 elif index > self._recv_index:  # request the other end resend what we're missing
@@ -353,15 +355,13 @@ class PersistentWebsocket:
                 logger.info(f"B73822 {self.id} ignoring duplicate chunk {index}")
             else:  # signal
                 if i_lsb == self._sig_ack:
-                    ack_index = unmod(int.from_bytes(chunk[2:4], 'big'), self._journal_index, 32768)
+                    ack_index = unmod(int.from_bytes(chunk[2:4], 'big'), self._journal_index)
                     tail_index = self._journal_index - len(self._journal)
                     logger.info(f"B60966 {self.id} clearing journal[{tail_index}:{ack_index}]")
                     for i in range(tail_index, ack_index):
                         self._journal.popleft()
                 elif i_lsb == self._sig_resend:
-                    resend_index = unmod(
-                        int.from_bytes(chunk[2:4], 'big'), self._journal_index, 32768
-                    )
+                    resend_index = unmod(int.from_bytes(chunk[2:4], 'big'), self._journal_index)
                     await self._resend(resend_index)
                 elif i_lsb == self._sig_resend_error:
                     logger.error(f"B75561 {self.id} received resend error signal")
