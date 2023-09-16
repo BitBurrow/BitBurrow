@@ -283,8 +283,8 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
 
   - name: Install BIND 🦶5--restart
     # debugging: sudo named-checkconf  # should display nothing
-    # debugging: printf "zone rxb.example.org\nupdate delete testa.rxb.example.org.\nupdate add testa.rxb.example.org. 600 IN A 9.9.9.9\nsend\n" |sudo -u bind /usr/bin/nsupdate -l  # substitute your domain; see that no errors are displayed
-    # debugging: dig @127.0.0.1 testa.rxb.example.org +short  # again, substitute your domain
+    # debugging: printf "zone vxm.example.org\nupdate delete testa.vxm.example.org.\nupdate add testa.vxm.example.org. 600 IN A 9.9.9.9\nsend\n" |sudo -u bind /usr/bin/nsupdate -l  # substitute your domain; see that no errors are displayed
+    # debugging: dig @127.0.0.1 testa.vxm.example.org +short  # again, substitute your domain
     systemd:
       name: bind9
       enabled: yes
