@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
+#
+# To run this file:
+#   cd libs/python/persistent_websocket/
+#   poetry init --no-interaction
+#   poetry add websockets
+#   poetry run ./test_client.py wss://vxm.example.org:8443/v1/pw/55
 
 import asyncio
 import logging
 import sys
 import os
-
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.join(base_dir, "libs", "python"))
-import persistent_websocket.persistent_websocket as persistent_websocket
+import persistent_websocket
 
 logging.basicConfig(
     level=logging.WARNING,
