@@ -73,7 +73,7 @@ integrity_tests = yaml.safe_load(integrity_tests_yaml)
 
 class Hub(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
-    domain: str = ''  # API url in form example.com or node.example.com
+    domain: str = ''  # API url in form example.org or vxm.example.org
     public_ip: str = ''
     wg_port: int = 0
     hub_number = lk.generate_login_key(lk.login_len)  # uniquely identify this hub

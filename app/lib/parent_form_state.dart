@@ -295,7 +295,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
             height: 30,
             color: Theme.of(context).colorScheme.primary,
           ),
-          hintText: "example.com",
+          hintText: "example.org",
           labelText: "Hub*",
         ),
         initialValue: getHubValue(),

@@ -53,7 +53,7 @@ def cli(return_help_text=False):
         "--set-domain",
         type=str,
         default='',
-        help="Domain to access hub api and for VPN client subdomains, e.g. a19.example.org",
+        help="Domain to access hub api and for VPN client subdomains, e.g. vxm.example.org",
     )
     parser.add_argument(
         "--get-domain",
