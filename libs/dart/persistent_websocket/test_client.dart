@@ -19,6 +19,7 @@ void main(List<String> arguments) async {
   final url = arguments[0];
   var pws = PersistentWebSocket(url);
   pws.connect(url);
+  // pws.chaos = 50;
   pws.stream.listen(
     (data) {
       print("data received: $data");
@@ -28,7 +29,7 @@ void main(List<String> arguments) async {
   while (true) {
     await Future.delayed(Duration(milliseconds: 100));
     print("sending: $toSend");
-    pws.send(Uint8List.fromList(utf8.encode(toSend.toString())));
+    await pws.send(Uint8List.fromList(utf8.encode(toSend.toString())));
     toSend += 1;
   }
   pws.ensureClosed();

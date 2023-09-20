@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:math';
 import 'dart:typed_data';
 import 'dart:io' as io;
 import 'package:mutex/mutex.dart';
@@ -12,20 +13,20 @@ const maxSendBuffer = 100; // not sure what a reasonable number here would be
 /// Convert index to on-the-wire format; see i_lsb description.
 Uint8List lsb(int index) {
   return Uint8List(2)
-    ..buffer.asByteData().setInt16(0, index % maxLsb, Endian.big);
+    ..buffer.asByteData().setUint16(0, index % maxLsb, Endian.big);
 }
 
 /// Convert _sig constant to on-the-wire format.
 Uint8List constOtw(int c) {
   assert(c >= 32768); // 0x8000
   assert(c <= 65535); // 0xFFFF
-  return Uint8List(2)..buffer.asByteData().setInt16(0, c, Endian.big);
+  return Uint8List(2)..buffer.asByteData().setUint16(0, c, Endian.big);
 }
 
 /// Convert the 2 bytes at data[offset] to an int
 int bytesToInt(Uint8List data, offset) {
   var bytes = ByteData.view(data.buffer);
-  return bytes.getInt16(offset, Endian.big);
+  return bytes.getUint16(offset, Endian.big);
 }
 
 /// Undelete upper bits of xx by assuming it's near xxxx.
@@ -164,12 +165,15 @@ class PersistentWebSocket {
   Future listen() async {
     _sendRaw(cat(constOtw(_sigResend), lsb(_recvIndex)));
     await for (var chunk in _ws!.stream) {
-      // if (chaos > 0 && chaos > Random().nextInt(1000)) {
-      //   print("B66741 $id randomly closing WebSocket to test recovery");
-      //   await Future.delayed(Duration(seconds: Random().nextInt(3)));
-      //   await ensureClosed();
-      //   await Future.delayed(Duration(seconds: Random().nextInt(3)));
-      // }
+      if (chaos > 0) {
+        final random = Random();
+        if (chaos > random.nextInt(1000)) {
+          print("B66741 $id randomly closing WebSocket to test recovery");
+          await Future.delayed(Duration(seconds: random.nextInt(3)));
+          await ensureClosed();
+          await Future.delayed(Duration(seconds: random.nextInt(3)));
+        }
+      }
       var message = await processInbound(chunk);
       if (message != null) {
         _controller.sink.add(message);
@@ -196,12 +200,15 @@ class PersistentWebSocket {
     _journalIndex++;
     _journal.add(chunk);
     _sendRaw(chunk);
-    // if (chaos > 0 && chaos > Random().nextInt(1000)) {
-    //   print("B14264 $id randomly closing WebSocket to test recovery");
-    //   await Future.delayed(Duration(seconds: Random().nextInt(3)));
-    //   await ensureClosed();
-    //   await Future.delayed(Duration(seconds: Random().nextInt(3)));
-    // }
+    if (chaos > 0) {
+      final random = Random();
+      if (chaos > random.nextInt(1000)) {
+        print("B14264 $id randomly closing WebSocket to test recovery");
+        await Future.delayed(Duration(seconds: random.nextInt(3)));
+        await ensureClosed();
+        await Future.delayed(Duration(seconds: random.nextInt(3)));
+      }
+    }
   }
 
   /// Resend queed chunks.
@@ -234,7 +241,8 @@ class PersistentWebSocket {
       return;
     }
     _ws!.sink.add(chunk);
-    print("B41790 $id sent: ${chunk.join(' ')}");
+    var hex = chunk.map((e) => e.toRadixString(16)).join(' ').toUpperCase();
+    print("B41790 $id sent: $hex");
   }
 
   /// Test and respond to chunk, returning a message or null.
