@@ -2,6 +2,7 @@ import asyncio
 import collections
 import logging
 import random
+from timeit import default_timer as timer
 import traceback
 from typing import AsyncGenerator
 import websockets
@@ -157,7 +158,9 @@ class PersistentWebsocket:
         self._url = None
         self._recv_index = 0  # index of next inbound chunk, aka number of chunks received
         self._recv_last_ack = 0  # index of most recently-sent _sig_ack
-        self._recv_last_ack_timer = None  # timer to send _sig_ack
+        self._recv_last_ack_timer = None  # count-down timer to send _sig_ack
+        self._recv_last_resend = 0  # index of most recently-sent _sig_resend
+        self._recv_last_resend_time = 0.0  # time that most recent _sig_ack was sent
         # https://docs.python.org/3/library/collections.html#collections.deque
         self._journal = collections.deque()  # chunks sent but not yet confirmed by remote
         self._journal_index = 0  # index of the next outbound chunk, ...
@@ -220,18 +223,18 @@ class PersistentWebsocket:
 
     async def listen(self) -> AsyncGenerator[bytes, None]:
         """Accept chunks on the WebSocket connection and yield messages."""
-        # chunks were probably lost in reconnect, so ask the other end to resend
-        await self._send_raw(const_otw(self._sig_resend) + lsb(self._recv_index))
+        self._recv_last_resend_time = 0.0  # reset for new connection
+        await self._send_resend()  # chunks were probably lost in the reconnect
         try:
             async for chunk in (self._ws.iter_bytes() if using_starlette else self._ws):
+                logger.debug(f"B18042 {self.id} received: {chunk.hex(' ', -1)}")
+                message = await self.process_inbound(chunk)
                 if self.chaos > 0 and self.chaos > random.randint(0, 999):
                     logger.warn(f"B66740 {self.id} randomly closing WebSocket to test recovery")
                     await asyncio.sleep(random.randint(0, 2))
                     await self.ensure_closed()
                     await asyncio.sleep(random.randint(0, 2))
-                message = await self.process_inbound(chunk)
                 if message is not None:
-                    logger.debug(f"B18042 {self.id} received: {message.decode()}")
                     yield message
             logger.info(f"B39653 {self.id} WebSocket closed")
         except websockets.ConnectionClosed:
@@ -347,22 +350,22 @@ class PersistentWebsocket:
                     if self._recv_index - self._recv_last_ack >= 16:
                         # acknowledge receipt after 16 messages
                         await self._send_ack()
-                        # await self.send(f"We've received {self._recv_index} messages")  # TESTING
+                        await self.send(f"We've received {self._recv_index} messages")  # TESTING
                     del self._ipi
                     return chunk[2:]  # message
-                elif index > self._recv_index:  # request the other end resend what we're missing
-                    await self._send_raw(const_otw(self._sig_resend) + lsb(self._recv_index))
-                logger.info(f"B73822 {self.id} ignoring duplicate chunk {index}")
+                elif index > self._recv_index:
+                    await self._send_resend()  # request the other end resend what we're missing
+                else:  # index < self._recv_index
+                    logger.info(f"B73822 {self.id} ignoring duplicate chunk {index}")
             else:  # signal
-                if i_lsb == self._sig_ack:
+                if i_lsb == self._sig_ack or i_lsb == self._sig_resend:
                     ack_index = unmod(int.from_bytes(chunk[2:4], 'big'), self._journal_index)
                     tail_index = self._journal_index - len(self._journal)
                     logger.info(f"B60966 {self.id} clearing journal[{tail_index}:{ack_index}]")
                     for i in range(tail_index, ack_index):
                         self._journal.popleft()
-                elif i_lsb == self._sig_resend:
-                    resend_index = unmod(int.from_bytes(chunk[2:4], 'big'), self._journal_index)
-                    await self._resend(resend_index)
+                    if i_lsb == self._sig_resend:
+                        await self._resend(ack_index)
                 elif i_lsb == self._sig_resend_error:
                     logger.error(f"B75561 {self.id} received resend error signal")
                     await self.ensure_closed()
@@ -383,8 +386,20 @@ class PersistentWebsocket:
 
     async def _send_ack(self):
         self._recv_last_ack = self._recv_index
-        self._recv_last_ack_timer = None
+        if self._recv_last_ack_timer is not None:  # kill the count-down timer if running
+            self._recv_last_ack_timer.cancel()
+            self._recv_last_ack_timer = None
         await self._send_raw(const_otw(self._sig_ack) + lsb(self._recv_index))
+
+    async def _send_resend(self):
+        now = timer()
+        # wait a bit before sending a duplicate resend requets again
+        if self._recv_index == self._recv_last_resend:
+            if now - self._recv_last_resend_time < 0.500:
+                return
+        self._recv_last_resend = self._recv_index
+        self._recv_last_resend_time = now
+        await self._send_raw(const_otw(self._sig_resend) + lsb(self._recv_index))
 
     async def ping(self, data):
         await self._send_raw(const_otw(self._sig_ping) + data)

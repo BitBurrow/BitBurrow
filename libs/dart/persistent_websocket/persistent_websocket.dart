@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert' show utf8;
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:io' as io;
@@ -91,6 +92,8 @@ class PersistentWebSocket {
   int _recvIndex = 0;
   int _recvLastAck = 0;
   Timer? _recvLastAckTimer;
+  int _recvLastResend = 0;
+  var _recvLastResendTime = DateTime.utc(1970, 1, 1);
   final Queue<Uint8List> _journal = Queue<Uint8List>();
   int _journalIndex = 0;
   int connects = 0;
@@ -163,8 +166,12 @@ class PersistentWebSocket {
 
   /// Accept chunks on the WebSocket connection and add messages to _controller
   Future listen() async {
-    _sendRaw(cat(constOtw(_sigResend), lsb(_recvIndex)));
+    _recvLastResendTime = DateTime.utc(1970, 1, 1); // reset for new connection
+    _sendResend(); // chunks were probably lost in the reconnect
     await for (var chunk in _ws!.stream) {
+      var hex = chunk.map((e) => e.toRadixString(16)).join(' ').toUpperCase();
+      print("B18043 $id received: $hex");
+      var message = await processInbound(chunk);
       if (chaos > 0) {
         final random = Random();
         if (chaos > random.nextInt(1000)) {
@@ -174,7 +181,6 @@ class PersistentWebSocket {
           await Future.delayed(Duration(seconds: random.nextInt(3)));
         }
       }
-      var message = await processInbound(chunk);
       if (message != null) {
         _controller.sink.add(message);
       }
@@ -269,26 +275,29 @@ class PersistentWebSocket {
         if (_recvIndex - _recvLastAck >= 16) {
           // acknowledge receipt after 16 messages
           _sendAck();
+          send(Uint8List.fromList(
+              utf8.encode("We've received $_recvIndex messages"))); // TESTING
         }
         _ipi = false;
         return chunk.sublist(2); // message
       } else if (index > _recvIndex) {
-        // request the other end resend what we're missing
-        _sendRaw(cat(constOtw(_sigResend), lsb(_recvIndex)));
+        _sendResend(); // request the other end resend what we're missing
+      } else {
+        // index < _recvIndex
+        print("B73823 $id ignoring duplicate chunk $index");
       }
-      print("B73823 $id ignoring duplicate chunk $index");
     } else {
       // signal
-      if (iLsb == _sigAck) {
+      if (iLsb == _sigAck || iLsb == _sigResend) {
         var ackIndex = unmod(bytesToInt(chunk, 2), _journalIndex);
         var tailIndex = _journalIndex - _journal.length;
         print("B60967 $id clearing journal[$tailIndex:$ackIndex]");
         for (var i = tailIndex; i < ackIndex; i++) {
           _journal.removeFirst();
         }
-      } else if (iLsb == _sigResend) {
-        var resendIndex = unmod(bytesToInt(chunk, 2), _journalIndex);
-        await _resend(resendIndex);
+        if (iLsb == _sigResend) {
+          await _resend(ackIndex);
+        }
       } else if (iLsb == _sigResendError) {
         print("B75562 $id received resend error signal");
         await ensureClosed();
@@ -307,8 +316,25 @@ class PersistentWebSocket {
 
   void _sendAck() {
     _recvLastAck = _recvIndex;
-    _recvLastAckTimer = null;
+    if (_recvLastAckTimer != null) {
+      _recvLastAckTimer!.cancel();
+      _recvLastAckTimer = null;
+    }
     _sendRaw(cat(constOtw(_sigAck), lsb(_recvIndex)));
+  }
+
+  void _sendResend() {
+    var now = DateTime.now();
+    // wait a bit before sending a duplicate resend requets again
+    if (_recvIndex == _recvLastResend) {
+      var ms = now.difference(_recvLastResendTime).inMilliseconds;
+      if (ms < 500) {
+        return;
+      }
+    }
+    _recvLastResend = _recvIndex;
+    _recvLastResendTime = now;
+    _sendRaw(cat(constOtw(_sigResend), lsb(_recvIndex)));
   }
 
   Future<void> ping(Uint8List data) async {
