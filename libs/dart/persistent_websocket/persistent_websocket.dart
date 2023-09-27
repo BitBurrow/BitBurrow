@@ -96,6 +96,7 @@ class PersistentWebSocket {
   var _inLastResendTime = DateTime.utc(1970, 1, 1);
   final Queue<Uint8List> _journal = Queue<Uint8List>();
   int _journalIndex = 0;
+  Timer? _journalTimer;
   int connects = 0;
   int chaos = 0;
   final connectLock = Mutex();
@@ -206,6 +207,11 @@ class PersistentWebSocket {
     _journalIndex++;
     _journal.add(chunk);
     _sendRaw(chunk);
+    // ignore: prefer_conditional_assignment
+    if (_journalTimer == null) {
+      // if we don't receive an ack, send it again in 2 seconds
+      _journalTimer = Timer.periodic(Duration(seconds: 2), _resendOne);
+    }
     if (chaos > 0) {
       final random = Random();
       if (chaos > random.nextInt(1000)) {
@@ -217,8 +223,17 @@ class PersistentWebSocket {
     }
   }
 
+  void _resendOne(var timer) {
+    var len = _journal.length;
+    if (len > 0) {
+      print("B41342 $id resending the oldest chunk");
+      var tailIndex = _journalIndex - _journal.length;
+      _resend(tailIndex, endIndex: tailIndex + 1);
+    }
+  }
+
   /// Resend queed chunks.
-  Future<void> _resend(int startIndex) async {
+  Future<void> _resend(int startIndex, {endIndex}) async {
     if (startIndex == _journalIndex) {
       return;
     }
@@ -233,8 +248,9 @@ class PersistentWebSocket {
     // send requested chunks from oldest to newest
     var start = startIndex - _journalIndex;
     var i = 0 - _journal.length;
+    var end = endIndex == null ? 0 : endIndex - _journalIndex;
     for (var chunk in _journal) {
-      if (i >= start) {
+      if (i >= start && i < end) {
         _sendRaw(chunk);
       }
       i++;
@@ -291,7 +307,18 @@ class PersistentWebSocket {
       if (iLsb == _sigAck || iLsb == _sigResend) {
         var ackIndex = unmod(bytesToInt(chunk, 2), _journalIndex);
         var tailIndex = _journalIndex - _journal.length;
-        print("B60967 $id clearing journal[$tailIndex:$ackIndex]");
+        if (tailIndex < ackIndex) {
+          print("B60967 $id clearing journal[$tailIndex:$ackIndex]");
+        }
+        if (_journalTimer != null) {
+          _journalTimer!.cancel();
+        }
+        if (ackIndex != _journalIndex) {
+          // ... but set a new timer for remainder of _journal
+          _journalTimer = Timer.periodic(Duration(seconds: 2), _resendOne);
+        } else {
+          _journalTimer = null;
+        }
         for (var i = tailIndex; i < ackIndex; i++) {
           _journal.removeFirst();
         }
@@ -324,16 +351,16 @@ class PersistentWebSocket {
   }
 
   void _sendResend() {
-    var now = DateTime.now();
+    var nowTime = DateTime.now();
     // wait a bit before sending a duplicate resend requets again
     if (_inIndex == _inLastResend) {
-      var ms = now.difference(_inLastResendTime).inMilliseconds;
+      var ms = nowTime.difference(_inLastResendTime).inMilliseconds;
       if (ms < 500) {
         return;
       }
     }
     _inLastResend = _inIndex;
-    _inLastResendTime = now;
+    _inLastResendTime = nowTime;
     _sendRaw(cat(constOtw(_sigResend), lsb(_inIndex)));
   }
 
