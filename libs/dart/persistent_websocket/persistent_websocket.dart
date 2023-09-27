@@ -89,11 +89,11 @@ class PersistentWebSocket {
   final String id;
   wsc.IOWebSocketChannel? _ws;
   // String? _url;
-  int _recvIndex = 0;
-  int _recvLastAck = 0;
-  Timer? _recvLastAckTimer;
-  int _recvLastResend = 0;
-  var _recvLastResendTime = DateTime.utc(1970, 1, 1);
+  int _inIndex = 0;
+  int _inLastAck = 0;
+  Timer? _inLastAckTimer;
+  int _inLastResend = 0;
+  var _inLastResendTime = DateTime.utc(1970, 1, 1);
   final Queue<Uint8List> _journal = Queue<Uint8List>();
   int _journalIndex = 0;
   int connects = 0;
@@ -166,7 +166,7 @@ class PersistentWebSocket {
 
   /// Accept chunks on the WebSocket connection and add messages to _controller
   Future listen() async {
-    _recvLastResendTime = DateTime.utc(1970, 1, 1); // reset for new connection
+    _inLastResendTime = DateTime.utc(1970, 1, 1); // reset for new connection
     _sendResend(); // chunks were probably lost in the reconnect
     await for (var chunk in _ws!.stream) {
       var hex = chunk.map((e) => e.toRadixString(16)).join(' ').toUpperCase();
@@ -262,28 +262,28 @@ class PersistentWebSocket {
     var iLsb = bytesToInt(chunk, 0); // first 2 bytes of chunk
     if (iLsb < maxLsb) {
       // message chunk
-      var index = unmod(iLsb, _recvIndex); // expand 15 bits to full index
-      if (index == _recvIndex) {
+      var index = unmod(iLsb, _inIndex); // expand 15 bits to full index
+      if (index == _inIndex) {
         // valid
-        _recvIndex++; // have unacknowledged message(s)
+        _inIndex++; // have unacknowledged message(s)
         // occasionally call _send_ack() so remote can clear _journal
         // ignore: prefer_conditional_assignment
-        if (_recvLastAckTimer == null) {
+        if (_inLastAckTimer == null) {
           // acknowledge receipt after 1 second
-          _recvLastAckTimer = Timer(Duration(seconds: 1), _sendAck);
+          _inLastAckTimer = Timer(Duration(seconds: 1), _sendAck);
         }
-        if (_recvIndex - _recvLastAck >= 16) {
+        if (_inIndex - _inLastAck >= 16) {
           // acknowledge receipt after 16 messages
           _sendAck();
           send(Uint8List.fromList(
-              utf8.encode("We've received $_recvIndex messages"))); // TESTING
+              utf8.encode("We've received $_inIndex messages"))); // TESTING
         }
         _ipi = false;
         return chunk.sublist(2); // message
-      } else if (index > _recvIndex) {
+      } else if (index > _inIndex) {
         _sendResend(); // request the other end resend what we're missing
       } else {
-        // index < _recvIndex
+        // index < _inIndex
         print("B73823 $id ignoring duplicate chunk $index");
       }
     } else {
@@ -315,26 +315,26 @@ class PersistentWebSocket {
   }
 
   void _sendAck() {
-    _recvLastAck = _recvIndex;
-    if (_recvLastAckTimer != null) {
-      _recvLastAckTimer!.cancel();
-      _recvLastAckTimer = null;
+    _inLastAck = _inIndex;
+    if (_inLastAckTimer != null) {
+      _inLastAckTimer!.cancel();
+      _inLastAckTimer = null;
     }
-    _sendRaw(cat(constOtw(_sigAck), lsb(_recvIndex)));
+    _sendRaw(cat(constOtw(_sigAck), lsb(_inIndex)));
   }
 
   void _sendResend() {
     var now = DateTime.now();
     // wait a bit before sending a duplicate resend requets again
-    if (_recvIndex == _recvLastResend) {
-      var ms = now.difference(_recvLastResendTime).inMilliseconds;
+    if (_inIndex == _inLastResend) {
+      var ms = now.difference(_inLastResendTime).inMilliseconds;
       if (ms < 500) {
         return;
       }
     }
-    _recvLastResend = _recvIndex;
-    _recvLastResendTime = now;
-    _sendRaw(cat(constOtw(_sigResend), lsb(_recvIndex)));
+    _inLastResend = _inIndex;
+    _inLastResendTime = now;
+    _sendRaw(cat(constOtw(_sigResend), lsb(_inIndex)));
   }
 
   Future<void> ping(Uint8List data) async {

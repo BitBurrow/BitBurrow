@@ -156,11 +156,11 @@ class PersistentWebsocket:
         self.id = id  # uniquely identify this connection in log file
         self._ws = None
         self._url = None
-        self._recv_index = 0  # index of next inbound chunk, aka number of chunks received
-        self._recv_last_ack = 0  # index of most recently-sent _sig_ack
-        self._recv_last_ack_timer = None  # count-down timer to send _sig_ack
-        self._recv_last_resend = 0  # index of most recently-sent _sig_resend
-        self._recv_last_resend_time = 0.0  # time that most recent _sig_ack was sent
+        self._in_index = 0  # index of next inbound chunk, aka number of chunks received
+        self._in_last_ack = 0  # index of most recently-sent _sig_ack
+        self._in_last_ack_timer = None  # count-down timer to send _sig_ack
+        self._in_last_resend = 0  # index of most recently-sent _sig_resend
+        self._in_last_resend_time = 0.0  # time that most recent _sig_resend was sent
         # https://docs.python.org/3/library/collections.html#collections.deque
         self._journal = collections.deque()  # chunks sent but not yet confirmed by remote
         self._journal_index = 0  # index of the next outbound chunk, ...
@@ -223,7 +223,7 @@ class PersistentWebsocket:
 
     async def listen(self) -> AsyncGenerator[bytes, None]:
         """Accept chunks on the WebSocket connection and yield messages."""
-        self._recv_last_resend_time = 0.0  # reset for new connection
+        self._in_last_resend_time = 0.0  # reset for new connection
         await self._send_resend()  # chunks were probably lost in the reconnect
         try:
             async for chunk in (self._ws.iter_bytes() if using_starlette else self._ws):
@@ -340,22 +340,22 @@ class PersistentWebsocket:
             self._ipi = True  # see above
             i_lsb = int.from_bytes(chunk[0:2], 'big')  # first 2 bytes of chunk
             if i_lsb < max_lsb:  # message chunk
-                index = unmod(i_lsb, self._recv_index)  # expand 15 bits to full index
-                if index == self._recv_index:  # valid
-                    self._recv_index += 1  # have unacknowledged message(s)
+                index = unmod(i_lsb, self._in_index)  # expand 15 bits to full index
+                if index == self._in_index:  # valid
+                    self._in_index += 1  # have unacknowledged message(s)
                     # occasionally call _send_ack() so remote can clear _journal
-                    if self._recv_last_ack_timer is None:
+                    if self._in_last_ack_timer is None:
                         # acknowledge receipt after 1 second
-                        self._recv_last_ack_timer = Timer(1, self._send_ack)
-                    if self._recv_index - self._recv_last_ack >= 16:
+                        self._in_last_ack_timer = Timer(1, self._send_ack)
+                    if self._in_index - self._in_last_ack >= 16:
                         # acknowledge receipt after 16 messages
                         await self._send_ack()
-                        await self.send(f"We've received {self._recv_index} messages")  # TESTING
+                        await self.send(f"We've received {self._in_index} messages")  # TESTING
                     del self._ipi
                     return chunk[2:]  # message
-                elif index > self._recv_index:
+                elif index > self._in_index:
                     await self._send_resend()  # request the other end resend what we're missing
-                else:  # index < self._recv_index
+                else:  # index < self._in_index
                     logger.info(f"B73822 {self.id} ignoring duplicate chunk {index}")
             else:  # signal
                 if i_lsb == self._sig_ack or i_lsb == self._sig_resend:
@@ -385,21 +385,21 @@ class PersistentWebsocket:
             logger.error(f"B88756 {self.id} wsexception, {traceback.format_exc().rstrip()}")
 
     async def _send_ack(self):
-        self._recv_last_ack = self._recv_index
-        if self._recv_last_ack_timer is not None:  # kill the count-down timer if running
-            self._recv_last_ack_timer.cancel()
-            self._recv_last_ack_timer = None
-        await self._send_raw(const_otw(self._sig_ack) + lsb(self._recv_index))
+        self._in_last_ack = self._in_index
+        if self._in_last_ack_timer is not None:  # kill the count-down timer if running
+            self._in_last_ack_timer.cancel()
+            self._in_last_ack_timer = None
+        await self._send_raw(const_otw(self._sig_ack) + lsb(self._in_index))
 
     async def _send_resend(self):
         now = timer()
         # wait a bit before sending a duplicate resend requets again
-        if self._recv_index == self._recv_last_resend:
-            if now - self._recv_last_resend_time < 0.500:
+        if self._in_index == self._in_last_resend:
+            if now - self._in_last_resend_time < 0.500:
                 return
-        self._recv_last_resend = self._recv_index
-        self._recv_last_resend_time = now
-        await self._send_raw(const_otw(self._sig_resend) + lsb(self._recv_index))
+        self._in_last_resend = self._in_index
+        self._in_last_resend_time = now
+        await self._send_raw(const_otw(self._sig_resend) + lsb(self._in_index))
 
     async def ping(self, data):
         await self._send_raw(const_otw(self._sig_ping) + data)
