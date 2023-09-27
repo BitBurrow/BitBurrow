@@ -290,12 +290,12 @@ class PersistentWebsocket:
 
     async def _resend_one(self):
         """Resend the oldest chunk."""
-        len = len(self._journal)
-        if len > 0:
+        journal_len = len(self._journal)
+        if journal_len > 0:
             logger.info(f"B41341 {self.id} resending the oldest chunk")
             # sending all chunks now may cause congestion, and we should get a
             # _sig_resend upon reconnect anyhow
-            tail_index = self._journal_index - len(self._journal)
+            tail_index = self._journal_index - journal_len
             await self._resend(tail_index, tail_index+1)
 
     async def _resend(self, start_index, end_index=None):
