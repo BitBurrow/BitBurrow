@@ -305,20 +305,21 @@ class PersistentWebsocket:
 
     async def _resend(self, start_index, end_index=None):
         """Resend queued chunks."""
-        if start_index == self._journal_index:
+        if end_index is None:
+            end_index = self._journal_index
+        if start_index == end_index:
             return
         tail_index = self._journal_index - len(self._journal)
-        if self._journal_index < start_index or start_index < tail_index:
+        if end_index < start_index or start_index < tail_index:
             logger.error(
-                f"B38394 {self.id} remote wants journal[{start_index}:] "
+                f"B38394 {self.id} remote wants journal[{start_index}:{end_index}] "
                 + f"but we only have journal[{tail_index}:{self._journal_index}]"
             )
             await self._send_raw(const_otw(self._sig_resend_error))
             raise PWUnrecoverableError(f"B34922 {self.id} impossible resend request")
-        logger.info(f"B57684 {self.id} resending journal[{start_index}:{self._journal_index}]")
-        end = 0 if end_index is None else end_index - self._journal_index
+        logger.info(f"B57684 {self.id} resending journal[{start_index}:{end_index}]")
         # send requested chunks from oldest to newest, e.g. range(-2, 0) for most recent 2 chunks
-        for i in range(start_index - self._journal_index, end):
+        for i in range(start_index - self._journal_index, end_index - self._journal_index):
             await self._send_raw(self._journal[i])
 
     async def _send_raw(self, chunk):
