@@ -191,6 +191,8 @@ class PersistentWebsocket:
                     yield m
         except PWUnrecoverableError:
             raise  # needs to be handled
+        finally:
+            await self.ensure_closed()
 
     async def connect(self, url: str) -> AsyncGenerator[bytes, None]:
         """Begin a new outbound WebSocket connection, yield inbound messages.
@@ -220,12 +222,16 @@ class PersistentWebsocket:
                 raise  # needs to be handled
             except Exception:
                 logger.error(f"B34752 {self.id} wsexception, {traceback.format_exc().rstrip()}")
-            await self.ensure_closed()
+            finally:
+                await self.ensure_closed()
 
     async def listen(self) -> AsyncGenerator[bytes, None]:
         """Accept chunks on the WebSocket connection and yield messages."""
         self._in_last_resend_time = 0  # reset for new connection
         await self._send_resend()  # chunks were probably lost in the reconnect
+        if len(self._journal) > 0 and self._journal_timer is None:
+            # re-enable timer which was canceled in ensure_closed()
+            self._journal_timer = Timer.periodic(2, self._resend_one)
         try:
             async for chunk in (self._ws.iter_bytes() if using_starlette else self._ws):
                 logger.debug(f"B18042 {self.id} received: {chunk.hex(' ', -1)}")
@@ -292,11 +298,10 @@ class PersistentWebsocket:
         """Resend the oldest chunk."""
         journal_len = len(self._journal)
         if journal_len > 0:
-            logger.info(f"B41341 {self.id} resending the oldest chunk")
             # sending all chunks now may cause congestion, and we should get a
             # _sig_resend upon reconnect anyhow
             tail_index = self._journal_index - journal_len
-            await self._resend(tail_index, tail_index+1)
+            await self._resend(tail_index, tail_index + 1)
 
     async def _resend(self, start_index, end_index=None):
         """Resend queued chunks."""
@@ -439,4 +444,11 @@ class PersistentWebsocket:
             logger.debug(f"B79020 {self.id} WebSocket error {e}")
         except Exception:
             logger.error(f"B39425 {self.id} wsexception, {traceback.format_exc().rstrip()}")
-        self._ws = None
+        finally:
+            self._ws = None
+            if self._journal_timer is not None:
+                self._journal_timer.cancel()
+                self._journal_timer = None
+            if self._in_last_ack_timer is not None:
+                self._in_last_ack_timer.cancel()
+                self._in_last_ack_timer = None
