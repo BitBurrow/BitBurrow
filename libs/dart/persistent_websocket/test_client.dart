@@ -10,16 +10,19 @@
 
 import 'dart:async';
 // import 'dart:collection';
-// import 'dart:io' as io;
+import 'dart:io' as io;
 import 'dart:convert';
 import 'dart:typed_data';
 import 'persistent_websocket.dart';
 
 void main(List<String> arguments) async {
   final url = arguments[0];
-  var pws = PersistentWebSocket(url);
-  pws.connect(url);
-  // pws.chaos = 50;
+  var pws = PersistentWebSocket("");
+  pws.connect(url).onError((err, stackTrace) {
+    print("B38925 error: $err");
+    io.exit(1);
+  });
+  pws.chaos = 50;
   pws.stream.listen(
     (data) {
       print("data received: $data");
@@ -32,5 +35,4 @@ void main(List<String> arguments) async {
     await pws.send(Uint8List.fromList(utf8.encode(toSend.toString())));
     toSend += 1;
   }
-  pws.ensureClosed();
 }

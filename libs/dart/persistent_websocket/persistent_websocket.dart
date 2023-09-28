@@ -342,6 +342,11 @@ class PersistentWebSocket {
         } else {
           _journalTimer = null;
         }
+        if (_journal.length < (ackIndex - tailIndex)) {
+          print("B19145 $id error: "
+              "${_journal.length} < ($ackIndex - $tailIndex)");
+          throw PWUnrecoverableError("B44312 $id impossible ack");
+        }
         for (var i = tailIndex; i < ackIndex; i++) {
           _journal.removeFirst();
         }
@@ -350,7 +355,6 @@ class PersistentWebSocket {
         }
       } else if (iLsb == _sigResendError) {
         print("B75562 $id received resend error signal");
-        await ensureClosed();
         throw PWUnrecoverableError("B91222 $id received resend error signal");
       } else if (iLsb == _sigPing) {
         _sendRaw(cat(constOtw(_sigPong), chunk.sublist(2)));

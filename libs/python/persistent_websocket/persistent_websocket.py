@@ -391,13 +391,18 @@ class PersistentWebsocket:
                         self._journal_timer = Timer.periodic(2, self._resend_one)
                     else:
                         self._journal_timer = None
+                    if len(self._journal) < (ack_index - tail_index):
+                        logger.error(
+                            f"B19144 {self.id} error: "
+                            + f"{len(self._journal)} < ({ack_index} - {tail_index})"
+                        )
+                        raise PWUnrecoverableError(f"B44311 {self.id} impossible ack")
                     for i in range(tail_index, ack_index):
                         self._journal.popleft()
                     if i_lsb == self._sig_resend:
                         await self._resend(ack_index)
                 elif i_lsb == self._sig_resend_error:
                     logger.error(f"B75561 {self.id} received resend error signal")
-                    await self.ensure_closed()
                     raise PWUnrecoverableError(f"B91221 {self.id} received resend error signal")
                 elif i_lsb == self._sig_ping:
                     await self._send_raw(const_otw(self._sig_pong) + chunk[2:])

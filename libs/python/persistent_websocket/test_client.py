@@ -9,8 +9,8 @@
 import asyncio
 import logging
 import sys
-import os
 import persistent_websocket
+import traceback
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -20,8 +20,12 @@ logging.basicConfig(
 
 
 async def listener(messenger, url):
-    async for m in messenger.connect(url):
-        print(f"------------------------------------------------ incoming: {m.decode()}")
+    try:
+        async for m in messenger.connect(url):
+            print(f"------------------------------------------------ incoming: {m.decode()}")
+    except Exception as err:
+        print(f"B38924 error: {err}")
+        sys.exit(1)
 
 
 async def speaker(messenger):
