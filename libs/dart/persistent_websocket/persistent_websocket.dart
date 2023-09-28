@@ -1,3 +1,5 @@
+// ignore_for_file: prefer_conditional_assignment
+
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert' show utf8;
@@ -110,13 +112,22 @@ class PersistentWebSocket {
     if (connectLock.isLocked) {
       print("B30103 $id waiting for current WebSocket to close");
     }
-    await connectLock.protect(() async {
-      // _url = null;
-      _ws = ws;
-      print("B17184 $id WebSocket reconnect $connects");
-      connects++;
-      await listen();
-    });
+    try {
+      await connectLock.protect(() async {
+        // _url = null;
+        _ws = ws;
+        print("B17184 $id WebSocket reconnect $connects");
+        connects++;
+        await listen();
+      });
+    } on PWUnrecoverableError {
+      rethrow;
+    } catch (err) {
+      print("B99843 unknown exception $err");
+      rethrow;
+    } finally {
+      await ensureClosed();
+    }
   }
 
   // attempt to connect; return true upon connect, false for fatal errors
@@ -154,21 +165,33 @@ class PersistentWebSocket {
     if (connectLock.isLocked) {
       print("B18450 $id waiting for current WebSocket to close");
     }
-    await connectLock.protect(() async {
-      // _url = url;
-      // keep reconnecting
-      while (await _reconnect(url)) {
-        print("B35537 $id waiting for WebSocket to connect");
-        connects++;
-        await listen();
-      }
-    });
+    try {
+      await connectLock.protect(() async {
+        // _url = url;
+        // keep reconnecting
+        while (await _reconnect(url)) {
+          print("B35537 $id waiting for WebSocket to connect");
+          connects++;
+          await listen();
+        }
+      });
+    } on PWUnrecoverableError {
+      rethrow;
+    } catch (err) {
+      print("B76104 unknown exception $err");
+      rethrow;
+    } finally {
+      await ensureClosed();
+    }
   }
 
   /// Accept chunks on the WebSocket connection and add messages to _controller
   Future listen() async {
     _inLastResendTime = DateTime.utc(1970, 1, 1); // reset for new connection
     _sendResend(); // chunks were probably lost in the reconnect
+    if (_journal.isNotEmpty && _journalTimer == null) {
+      _journalTimer = Timer.periodic(Duration(seconds: 2), _resendOne);
+    }
     await for (var chunk in _ws!.stream) {
       var hex = chunk.map((e) => e.toRadixString(16)).join(' ').toUpperCase();
       print("B18043 $id received: $hex");
@@ -207,7 +230,6 @@ class PersistentWebSocket {
     _journalIndex++;
     _journal.add(chunk);
     _sendRaw(chunk);
-    // ignore: prefer_conditional_assignment
     if (_journalTimer == null) {
       // if we don't receive an ack, send it again in 2 seconds
       _journalTimer = Timer.periodic(Duration(seconds: 2), _resendOne);
@@ -224,9 +246,8 @@ class PersistentWebSocket {
   }
 
   void _resendOne(var timer) {
-    var len = _journal.length;
-    if (len > 0) {
-      print("B41342 $id resending the oldest chunk");
+    var journalLen = _journal.length;
+    if (journalLen > 0) {
       var tailIndex = _journalIndex - _journal.length;
       _resend(tailIndex, endIndex: tailIndex + 1);
     }
@@ -234,21 +255,24 @@ class PersistentWebSocket {
 
   /// Resend queed chunks.
   Future<void> _resend(int startIndex, {endIndex}) async {
-    if (startIndex == _journalIndex) {
+    if (endIndex == null) {
+      endIndex = _journalIndex;
+    }
+    if (startIndex == endIndex) {
       return;
     }
     var tailIndex = _journalIndex - _journal.length;
-    if (_journalIndex < startIndex || startIndex < tailIndex) {
-      print("B38395 $id remote wants journal[$startIndex:] "
+    if (endIndex < startIndex || startIndex < tailIndex) {
+      print("B38395 $id remote wants journal[$startIndex:$endIndex] "
           "but we only have journal[$tailIndex:$_journalIndex]");
       _sendRaw(constOtw(_sigResendError));
       throw PWUnrecoverableError("B34923 $id impossible resend request");
     }
-    print("B57685 $id resending journal[$startIndex:$_journalIndex]");
+    print("B57685 $id resending journal[$startIndex:$endIndex]");
     // send requested chunks from oldest to newest
     var start = startIndex - _journalIndex;
     var i = 0 - _journal.length;
-    var end = endIndex == null ? 0 : endIndex - _journalIndex;
+    var end = endIndex - _journalIndex;
     for (var chunk in _journal) {
       if (i >= start && i < end) {
         _sendRaw(chunk);
@@ -283,7 +307,6 @@ class PersistentWebSocket {
         // valid
         _inIndex++; // have unacknowledged message(s)
         // occasionally call _send_ack() so remote can clear _journal
-        // ignore: prefer_conditional_assignment
         if (_inLastAckTimer == null) {
           // acknowledge receipt after 1 second
           _inLastAckTimer = Timer(Duration(seconds: 1), _sendAck);
@@ -380,7 +403,16 @@ class PersistentWebSocket {
       rethrow;
     } catch (e) {
       print("B39426 $id wsexception, ${e.toString().trim()}");
+    } finally {
+      _ws = null;
+      if (_journalTimer != null) {
+        _journalTimer!.cancel();
+        _journalTimer = null;
+      }
+      if (_inLastAckTimer != null) {
+        _inLastAckTimer!.cancel();
+        _inLastAckTimer = null;
+      }
     }
-    _ws = null;
   }
 }
