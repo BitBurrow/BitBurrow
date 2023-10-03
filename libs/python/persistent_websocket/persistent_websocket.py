@@ -362,7 +362,7 @@ class PersistentWebsocket:
                     if self._in_index - self._in_last_ack >= 16:
                         # acknowledge receipt after 16 messages
                         await self._send_ack()
-                        await self.send(f"We've received {self._in_index} messages")  # TESTING
+                        # (TESTING) await self.send(f"We've received {self._in_index} messages")  # TESTING
                     del self._ipi
                     return chunk[2:]  # message
                 elif index > self._in_index:

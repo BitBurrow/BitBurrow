@@ -305,8 +305,8 @@ class PersistentWebSocket {
         if (_inIndex - _inLastAck >= 16) {
           // acknowledge receipt after 16 messages
           _sendAck();
-          send(Uint8List.fromList(
-              utf8.encode("We've received $_inIndex messages"))); // TESTING
+          // (TESTING) send(Uint8List.fromList(
+          // (TESTING)     utf8.encode("We've received $_inIndex messages"))); // TESTING
         }
         _ipi = false;
         return chunk.sublist(2); // message

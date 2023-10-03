@@ -118,7 +118,7 @@ async def websocket_testahwibb(websocket: WebSocket, client_id: str):
     if client_id not in messages:
         # FIXME: mitigate DOS attack via opening a bunch of unique connections
         messages[client_id] = persistent_websocket.PersistentWebsocket(client_id)
-        messages[client_id].chaos = 50  # 5% chance of closing WebSocket on each send or receive
+        # (TESTING) messages[client_id].chaos = 50  # 5% chance of closing WebSocket on each send or receive
         persistent_websocket.logger.setLevel(logging.DEBUG)
     try:
         await websocket.accept()

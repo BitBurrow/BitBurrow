@@ -22,7 +22,7 @@ void main(List<String> arguments) async {
     print("B38925 error: $err");
     io.exit(1);
   });
-  pws.chaos = 50;
+  // (TESTING) pws.chaos = 50;
   pws.stream.listen(
     (data) {
       print("data received: $data");
