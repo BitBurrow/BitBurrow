@@ -2,7 +2,6 @@
 
 import 'dart:async';
 import 'dart:collection';
-import 'dart:convert' show utf8;
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:io' as io;
@@ -128,33 +127,44 @@ class PersistentWebSocket {
     }
   }
 
-  // attempt to connect; return WebSocket upon connect, null for fatal errors
-  Future<wsc.IOWebSocketChannel?> _reconnect(String url) async {
-    wsc.IOWebSocketChannel? ws;
+  // attempt to connect; return WebSocket upon connect, exception for fatal errors
+  Future<wsc.IOWebSocketChannel> _reconnect(String url) async {
     while (true) {
-      // loop until we connect
+      // loop until we connect or get fatal error
       // https://github.com/dart-lang/web_socket_channel/issues/61#issuecomment-1127554042
       final httpClient = io.HttpClient();
       httpClient.connectionTimeout = Duration(seconds: 20);
-      await io.WebSocket.connect(url, customClient: httpClient).then((httpCon) {
-        ws = wsc.IOWebSocketChannel(httpCon);
-      }).onError((error, stackTrace) {
-        var e = error.toString();
+      try {
+        return wsc.IOWebSocketChannel(
+            await io.WebSocket.connect(url, customClient: httpClient));
+      } on PWUnrecoverableError {
+        rethrow;
+      } on io.WebSocketException catch (err) {
+        var e = err.toString();
+        if (e.startsWith('WebSocketException: Connection to ') &&
+            e.endsWith(' was not upgraded to websocket')) {
+          print("B66703 not upgraded to WebSocket"); // maybe 403 Forbidden
+        } else {
+          print("B44148 WebSocketException $e");
+        }
+      } on io.SocketException catch (err) {
+        var e = err.toString();
         if (e.startsWith('SocketException: Connection refused')) {
           print("B66702 connection refused");
-        } else if (e.startsWith('WebSocketException: Connection to ') &&
-            e.endsWith(' was not upgraded to websocket')) {
-          print("B66703 not upgraded to WebSocket");
         } else if (e.startsWith('SocketException: Connection reset by peer')) {
           print("B66704 connection reset by peer");
         } else if (e.startsWith('SocketException: HTTP connection timed out')) {
           print("B66705 connection timed out");
+        } else if (e.startsWith('SocketException: No route to host')) {
+          print("B55714 no route to host");
         } else {
-          print("B66701 $e");
+          print("B19891 SocketException $e");
         }
-        ws = null;
-      });
-      return ws;
+      } catch (err) {
+        print("B66701 $e");
+        rethrow;
+      }
+      await Future.delayed(Duration(seconds: 5));
     }
   }
 
@@ -166,9 +176,8 @@ class PersistentWebSocket {
       await connectLock.protect(() async {
         // _url = url;
         // keep reconnecting
-        wsc.IOWebSocketChannel? ws;
-        while ((ws = await _reconnect(url)) != null) {
-          setOnlineMode(ws);
+        while (true) {
+          setOnlineMode(await _reconnect(url));
           await listen();
         }
       });
@@ -186,9 +195,7 @@ class PersistentWebSocket {
   Future listen() async {
     _inLastResendTime = DateTime.utc(1970, 1, 1); // reset for new connection
     _sendResend(); // chunks were probably lost in the reconnect
-    if (_journal.isNotEmpty && _journalTimer == null) {
-      _journalTimer = Timer.periodic(Duration(seconds: 2), _resendOne);
-    }
+    enableJournalTimer();
     await for (var chunk in _ws!.stream) {
       var hex = chunk.map((e) => e.toRadixString(16)).join(' ').toUpperCase();
       print("B18043 $id received: $hex");
@@ -207,6 +214,7 @@ class PersistentWebSocket {
       }
     }
     print("B39654 $id WebSocket closed");
+    await setOfflineMode();
   }
 
   Future<void> send(Uint8List message) async {
@@ -305,6 +313,7 @@ class PersistentWebSocket {
         if (_inIndex - _inLastAck >= 16) {
           // acknowledge receipt after 16 messages
           _sendAck();
+          // (TESTING) import 'dart:convert' show utf8;
           // (TESTING) send(Uint8List.fromList(
           // (TESTING)     utf8.encode("We've received $_inIndex messages"))); // TESTING
         }
@@ -412,7 +421,9 @@ class PersistentWebSocket {
   }
 
   Future<void> setOnlineMode(ws) async {
-    assert(isOffline());
+    if (isOnline()) {
+      throw PWUnrecoverableError("B65752 $id cannot go online twice");
+    }
     _ws = ws;
     print("B17184 $id WebSocket reconnect $connects");
     connects++;

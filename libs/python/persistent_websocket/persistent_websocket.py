@@ -454,7 +454,7 @@ class PersistentWebsocket:
                 self._in_last_ack_timer = None
 
     def set_online_mode(self, ws):
-        assert self.is_offline()
+        assert self.is_offline(), f"B39653 {self.id} cannot go online twice"
         self._ws = ws
         logger.info(f"B17183 {self.id} WebSocket reconnect {self.connects}")
         self.connects += 1
