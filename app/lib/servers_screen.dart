@@ -94,7 +94,7 @@ class ServersFormState extends ParentFormState {
                       textScaleFactor: 1.8,
                       style: TextStyle(
                         fontStyle: FontStyle.italic,
-                        color: Theme.of(context).backgroundColor,
+                        color: Theme.of(context).colorScheme.background,
                       ))
                   : global.loginState.servers.isEmpty
                       ? Text("You have no VPN servers set up.",
@@ -102,7 +102,7 @@ class ServersFormState extends ParentFormState {
                           textScaleFactor: 1.8,
                           style: TextStyle(
                             fontStyle: FontStyle.italic,
-                            color: Theme.of(context).backgroundColor,
+                            color: Theme.of(context).colorScheme.background,
                           ))
                       : Text(
                           "Your VPN servers",

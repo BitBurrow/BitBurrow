@@ -193,7 +193,7 @@ class WelcomeFormState extends ParentFormState {
               sizedBoxSpace,
               Text(
                 "* indicates required field",
-                style: Theme.of(context).textTheme.caption,
+                style: Theme.of(context).textTheme.bodySmall,
               ),
               sizedBoxSpace,
             ],

@@ -186,7 +186,7 @@ class SignInFormState extends ParentFormState {
               sizedBoxSpace,
               Text(
                 "* indicates required field",
-                style: Theme.of(context).textTheme.caption,
+                style: Theme.of(context).textTheme.bodySmall,
               ),
               sizedBoxSpace,
             ],
@@ -211,7 +211,7 @@ class SignInFormState extends ParentFormState {
   }
 
   void checkLoginState(context) {
-    if (GoRouter.of(context).location == '/forget-login-key') {
+    if (GoRouterState.of(context).path == '/forget-login-key') {
       // going to a different screen and then to '/sign-in' is the only reliable way
       // ... I could find to clear fields if user is already on SignInScreen
       SignInFormState.clearStoredLoginKey();

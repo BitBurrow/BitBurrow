@@ -13,10 +13,12 @@ import 'new_login_key_screen.dart';
 import 'sign_in_screen.dart';
 import 'servers_screen.dart';
 import 'new_server_screen.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 
 final _log = Logger('main');
 
 void main() async {
+  usePathUrlStrategy(); // turn off the extra `#/` in the URLs
   global.logMan = LoggerManager();
   _log.info("Begin Bitburrow app");
   WidgetsFlutterBinding.ensureInitialized();
@@ -156,12 +158,12 @@ class App extends StatelessWidget {
         pageBuilder: (c, s) => ourPageBuilder(c, s, const NewServerScreen()),
       ),
     ],
-    redirect: (state) {
-      if (state.location != state.subloc) {
-        _log.finer("GoRouter() redirect; location==${state.location}");
+    redirect: (context, state) {
+      if (state.uri.toString() != state.matchedLocation) {
+        _log.finer("GoRouter() redirect; location==${state.uri.toString()}");
       }
-      _log.finer("GoRouter() redirect; subloc==${state.subloc}");
-      if (state.subloc == '/' &&
+      _log.finer("GoRouter() redirect; subloc==${state.matchedLocation}");
+      if (state.matchedLocation == '/' &&
           global.loginState.loginKeyVerified &&
           global.loginState.skipWelcomeScreen) {
         // if we have valid login key, forward to automatic sign-in
@@ -169,8 +171,6 @@ class App extends StatelessWidget {
       }
       return null;
     },
-    urlPathStrategy:
-        UrlPathStrategy.path, // turn off the extra `#/` in the URLs
   );
 }
 
