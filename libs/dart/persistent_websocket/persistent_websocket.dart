@@ -115,9 +115,7 @@ class PersistentWebSocket {
     try {
       await connectLock.protect(() async {
         // _url = null;
-        _ws = ws;
-        print("B17184 $id WebSocket reconnect $connects");
-        connects++;
+        setOnlineMode(ws);
         await listen();
       });
     } on PWUnrecoverableError {
@@ -126,19 +124,20 @@ class PersistentWebSocket {
       print("B99843 unknown exception $err");
       rethrow;
     } finally {
-      await ensureClosed();
+      await setOfflineMode();
     }
   }
 
-  // attempt to connect; return true upon connect, false for fatal errors
-  Future<bool> _reconnect(String url) async {
+  // attempt to connect; return WebSocket upon connect, null for fatal errors
+  Future<wsc.IOWebSocketChannel?> _reconnect(String url) async {
+    wsc.IOWebSocketChannel? ws;
     while (true) {
       // loop until we connect
       // https://github.com/dart-lang/web_socket_channel/issues/61#issuecomment-1127554042
       final httpClient = io.HttpClient();
       httpClient.connectionTimeout = Duration(seconds: 20);
       await io.WebSocket.connect(url, customClient: httpClient).then((httpCon) {
-        _ws = wsc.IOWebSocketChannel(httpCon);
+        ws = wsc.IOWebSocketChannel(httpCon);
       }).onError((error, stackTrace) {
         var e = error.toString();
         if (e.startsWith('SocketException: Connection refused')) {
@@ -153,11 +152,9 @@ class PersistentWebSocket {
         } else {
           print("B66701 $e");
         }
-        _ws = null;
+        ws = null;
       });
-      if (_ws != null) {
-        return true; // connected
-      }
+      return ws;
     }
   }
 
@@ -169,9 +166,9 @@ class PersistentWebSocket {
       await connectLock.protect(() async {
         // _url = url;
         // keep reconnecting
-        while (await _reconnect(url)) {
-          print("B35537 $id waiting for WebSocket to connect");
-          connects++;
+        wsc.IOWebSocketChannel? ws;
+        while ((ws = await _reconnect(url)) != null) {
+          setOnlineMode(ws);
           await listen();
         }
       });
@@ -181,7 +178,7 @@ class PersistentWebSocket {
       print("B76104 unknown exception $err");
       rethrow;
     } finally {
-      await ensureClosed();
+      await setOfflineMode();
     }
   }
 
@@ -201,7 +198,7 @@ class PersistentWebSocket {
         if (chaos > random.nextInt(1000)) {
           print("B66741 $id randomly closing WebSocket to test recovery");
           await Future.delayed(Duration(seconds: random.nextInt(3)));
-          await ensureClosed();
+          await setOfflineMode();
           await Future.delayed(Duration(seconds: random.nextInt(3)));
         }
       }
@@ -230,16 +227,13 @@ class PersistentWebSocket {
     _journalIndex++;
     _journal.add(chunk);
     _sendRaw(chunk);
-    if (_journalTimer == null) {
-      // if we don't receive an ack, send it again in 2 seconds
-      _journalTimer = Timer.periodic(Duration(seconds: 2), _resendOne);
-    }
+    enableJournalTimer();
     if (chaos > 0) {
       final random = Random();
       if (chaos > random.nextInt(1000)) {
         print("B14264 $id randomly closing WebSocket to test recovery");
         await Future.delayed(Duration(seconds: random.nextInt(3)));
-        await ensureClosed();
+        await setOfflineMode();
         await Future.delayed(Duration(seconds: random.nextInt(3)));
       }
     }
@@ -283,7 +277,7 @@ class PersistentWebSocket {
 
   /// Send chunk of bytes of we can.
   void _sendRaw(Uint8List chunk) {
-    if (_ws == null) {
+    if (isOffline()) {
       return;
     }
     _ws!.sink.add(chunk);
@@ -307,10 +301,7 @@ class PersistentWebSocket {
         // valid
         _inIndex++; // have unacknowledged message(s)
         // occasionally call _send_ack() so remote can clear _journal
-        if (_inLastAckTimer == null) {
-          // acknowledge receipt after 1 second
-          _inLastAckTimer = Timer(Duration(seconds: 1), _sendAck);
-        }
+        enableInTimer();
         if (_inIndex - _inLastAck >= 16) {
           // acknowledge receipt after 16 messages
           _sendAck();
@@ -335,11 +326,6 @@ class PersistentWebSocket {
         }
         if (_journalTimer != null) {
           _journalTimer!.cancel();
-        }
-        if (ackIndex != _journalIndex) {
-          // ... but set a new timer for remainder of _journal
-          _journalTimer = Timer.periodic(Duration(seconds: 2), _resendOne);
-        } else {
           _journalTimer = null;
         }
         if (_journal.length < (ackIndex - tailIndex)) {
@@ -350,6 +336,7 @@ class PersistentWebSocket {
         for (var i = tailIndex; i < ackIndex; i++) {
           _journal.removeFirst();
         }
+        enableJournalTimer();
         if (iLsb == _sigResend) {
           await _resend(ackIndex);
         }
@@ -395,9 +382,13 @@ class PersistentWebSocket {
     _sendRaw(cat(constOtw(_sigPing), data));
   }
 
+  bool isOnline() => _ws != null;
+
+  bool isOffline() => _ws == null;
+
   /// Close the WebSocket connection; can be called multiple times.
-  Future<void> ensureClosed() async {
-    if (_ws == null) {
+  Future<void> setOfflineMode() async {
+    if (isOffline()) {
       return;
     }
     try {
@@ -417,6 +408,33 @@ class PersistentWebSocket {
         _inLastAckTimer!.cancel();
         _inLastAckTimer = null;
       }
+    }
+  }
+
+  Future<void> setOnlineMode(ws) async {
+    assert(isOffline());
+    _ws = ws;
+    print("B17184 $id WebSocket reconnect $connects");
+    connects++;
+    enableJournalTimer();
+    enableInTimer();
+  }
+
+  void enableJournalTimer() {
+    if (isOffline()) {
+      return;
+    }
+    if (_journal.isNotEmpty && _journalTimer == null) {
+      _journalTimer = Timer.periodic(Duration(seconds: 2), _resendOne);
+    }
+  }
+
+  void enableInTimer() {
+    if (isOffline()) {
+      return;
+    }
+    if (_inIndex > _inLastAck && _inLastAckTimer == null) {
+      _inLastAckTimer = Timer(Duration(seconds: 1), _sendAck);
     }
   }
 }

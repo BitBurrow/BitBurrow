@@ -184,15 +184,13 @@ class PersistentWebsocket:
                 # can arrive out-of-order
             async with self.connect_lock:
                 self._url = None  # make it clear we are now a server
-                self._ws = ws
-                logger.info(f"B17183 {self.id} WebSocket reconnect {self.connects}")
-                self.connects += 1
+                self.set_online_mode(ws)
                 async for m in self.listen():
                     yield m
         except PWUnrecoverableError:
             raise  # needs to be handled
         finally:
-            await self.ensure_closed()
+            await self.set_offline_mode()
 
     async def connect(self, url: str) -> AsyncGenerator[bytes, None]:
         """Begin a new outbound WebSocket connection, yield inbound messages.
@@ -211,9 +209,7 @@ class PersistentWebsocket:
                 # https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html
                 logger.debug(f"B35536 {self.id} waiting for WebSocket to connect")
                 async for ws in websockets.connect(self._url):  # keep reconnecting
-                    self._ws = ws
-                    logger.info(f"B91334 {self.id} WebSocket reconnect {self.connects}")
-                    self.connects += 1
+                    self.set_online_mode(ws)
                     async for m in self.listen():
                         yield m
             except asyncio.exceptions.CancelledError:  # ctrl-C
@@ -223,15 +219,12 @@ class PersistentWebsocket:
             except Exception:
                 logger.error(f"B34752 {self.id} wsexception, {traceback.format_exc().rstrip()}")
             finally:
-                await self.ensure_closed()
+                await self.set_offline_mode()
 
     async def listen(self) -> AsyncGenerator[bytes, None]:
         """Accept chunks on the WebSocket connection and yield messages."""
         self._in_last_resend_time = 0  # reset for new connection
         await self._send_resend()  # chunks were probably lost in the reconnect
-        if len(self._journal) > 0 and self._journal_timer is None:
-            # re-enable timer which was canceled in ensure_closed()
-            self._journal_timer = Timer.periodic(2, self._resend_one)
         try:
             async for chunk in (self._ws.iter_bytes() if using_starlette else self._ws):
                 logger.debug(f"B18042 {self.id} received: {chunk.hex(' ', -1)}")
@@ -239,7 +232,7 @@ class PersistentWebsocket:
                 if self.chaos > 0 and self.chaos > random.randint(0, 999):
                     logger.warn(f"B66740 {self.id} randomly closing WebSocket to test recovery")
                     await asyncio.sleep(random.randint(0, 2))
-                    await self.ensure_closed()
+                    await self.set_offline_mode()
                     await asyncio.sleep(random.randint(0, 2))
                 if message is not None:
                     yield message
@@ -262,10 +255,12 @@ class PersistentWebsocket:
         except PWUnrecoverableError:
             raise  # propagate out
         except AttributeError:
-            if self._ws is not None:  # ignore if it is because WebSocket closed
+            if self.is_online():  # ignore if it is because WebSocket closed
                 logger.warn(f"B26471 {self.id} wsexception, {traceback.format_exc().rstrip()}")
         except Exception:
             logger.error(f"B59584 {self.id} wsexception, {traceback.format_exc().rstrip()}")
+        finally:
+            await self.set_offline_mode()
 
     async def send(self, message: str | bytes):
         """Send a message to the remote when possible, resending if necessary."""
@@ -285,13 +280,11 @@ class PersistentWebsocket:
         self._journal_index += 1
         self._journal.append(chunk)
         await self._send_raw(chunk)
-        if self._journal_timer is None:
-            # if we don't receive an ack, send it again in 2 seconds
-            self._journal_timer = Timer.periodic(2, self._resend_one)
+        self.enable_journal_timer()
         if self.chaos > 0 and self.chaos > random.randint(0, 999):
             logger.warn(f"B14263 {self.id} randomly closing WebSocket to test recovery")
             await asyncio.sleep(random.randint(0, 3))
-            await self.ensure_closed()
+            await self.set_offline_mode()
             await asyncio.sleep(random.randint(0, 3))
 
     async def _resend_one(self):
@@ -324,7 +317,7 @@ class PersistentWebsocket:
 
     async def _send_raw(self, chunk):
         """Send chunk of bytes if we can."""
-        if self._ws is None:
+        if self.is_offline():
             return
         try:
             if using_starlette:
@@ -340,8 +333,8 @@ class PersistentWebsocket:
             websockets.exceptions.ConnectionClosedOK,
             RuntimeError,  # probably: Cannot call "send" once a close message has been sent.
         ):
-            self._ws = None
             logger.info(f"B44793 {self.id} WebSocket disconnect")
+            await self.set_offline_mode()
         except PWUnrecoverableError:
             raise
         except Exception:
@@ -365,9 +358,7 @@ class PersistentWebsocket:
                 if index == self._in_index:  # valid
                     self._in_index += 1  # have unacknowledged message(s)
                     # occasionally call _send_ack() so remote can clear _journal
-                    if self._in_last_ack_timer is None:
-                        # acknowledge receipt after 1 second
-                        self._in_last_ack_timer = Timer(1, self._send_ack)
+                    self.enable_in_timer()  # acknowledge receipt after 1 second
                     if self._in_index - self._in_last_ack >= 16:
                         # acknowledge receipt after 16 messages
                         await self._send_ack()
@@ -386,10 +377,6 @@ class PersistentWebsocket:
                         logger.info(f"B60966 {self.id} clearing journal[{tail_index}:{ack_index}]")
                     if self._journal_timer is not None:
                         self._journal_timer.cancel()  # got ack; no need to resend
-                    if ack_index != self._journal_index:
-                        # ... but set a new timer for remainder of _journal
-                        self._journal_timer = Timer.periodic(2, self._resend_one)
-                    else:
                         self._journal_timer = None
                     if len(self._journal) < (ack_index - tail_index):
                         logger.error(
@@ -399,6 +386,7 @@ class PersistentWebsocket:
                         raise PWUnrecoverableError(f"B44311 {self.id} impossible ack")
                     for i in range(tail_index, ack_index):
                         self._journal.popleft()
+                    self.enable_journal_timer()  # set a new timer for remainder of _journal
                     if i_lsb == self._sig_resend:
                         await self._resend(ack_index)
                 elif i_lsb == self._sig_resend_error:
@@ -438,9 +426,15 @@ class PersistentWebsocket:
     async def ping(self, data):
         await self._send_raw(const_otw(self._sig_ping) + data)
 
-    async def ensure_closed(self):
+    def is_online(self):
+        return self._ws is not None
+
+    def is_offline(self):
+        return self._ws is None
+
+    async def set_offline_mode(self):
         """Close the WebSocket connection; can be called multiple times."""
-        if self._ws is None:
+        if self.is_offline():
             return
         try:
             await self._ws.close()
@@ -458,3 +452,25 @@ class PersistentWebsocket:
             if self._in_last_ack_timer is not None:
                 self._in_last_ack_timer.cancel()
                 self._in_last_ack_timer = None
+
+    def set_online_mode(self, ws):
+        assert self.is_offline()
+        self._ws = ws
+        logger.info(f"B17183 {self.id} WebSocket reconnect {self.connects}")
+        self.connects += 1
+        self.enable_journal_timer()
+        self.enable_in_timer()
+
+    def enable_journal_timer(self):
+        """Set a timer to resend any unacknowledged outbound chunks"""
+        if self.is_offline():
+            return  # run timers only when online
+        if len(self._journal) > 0 and self._journal_timer is None:
+            self._journal_timer = Timer.periodic(2, self._resend_one)
+
+    def enable_in_timer(self):
+        """Set a timer to acknowledge receipt of received chunks"""
+        if self.is_offline():
+            return  # run timers only when online
+        if self._in_index > self._in_last_ack and self._in_last_ack_timer is None:
+            self._in_last_ack_timer = Timer(1, self._send_ack)
