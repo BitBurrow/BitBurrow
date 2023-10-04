@@ -9,6 +9,7 @@ import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
 import 'step_box.dart';
+import 'persistent_websocket.dart';
 
 final _log = Logger('new_server_screen');
 
