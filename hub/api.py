@@ -85,15 +85,13 @@ async def new_server(login_key: str):
 async def websocket_setup(websocket: WebSocket, login_key: str, server_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     await websocket.accept()
-    runTasks = transmutation.ServerSetup(websocket)
+    persistent_websocket.logger.setLevel(logging.DEBUG)
+    messages = persistent_websocket.PersistentWebsocket(server_id)
+    runTasks = transmutation.ServerSetup(websocket, messages)
     try:
         await runTasks.transmute_steps()
     except asyncio.exceptions.CancelledError:
         logger.info(f"B15058 transmute canceled")
-    try:
-        await websocket.close()
-    except Exception as e:
-        logger.error(f"B38263 WebSocket error: {e}")  # e.g. websocket already closed
 
 
 @router.websocket('/managers/{login_key}/servers/{server_id}/proxy')

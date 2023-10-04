@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 import 'dart:io' as io;
 import 'dart:async' as async;
 import 'dart:convert' as convert;
+import 'dart:typed_data';
 import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
@@ -30,66 +31,26 @@ class NewServerForm extends ParentForm {
   NewServerFormState createState() => NewServerFormState();
 }
 
-class WebSocketMessenger {
-  io.WebSocket? _ws;
-  final async.Completer _connected = async.Completer();
-  final _inbound = async.StreamController<String>();
-
-  WebSocketMessenger() {
-    final hub = global.loginState.hub;
-    final lk = global.loginState.pureLoginKey;
-    final url = 'wss://$hub:8443/v1/managers/$lk/servers/18/setup';
-    // fixme: WebSocket.connect() may raise "WebSocketException: Connection
-    //   to ... was not upgraded to websocket" but try-catch misses it
-    io.WebSocket.connect(url).then((io.WebSocket socket) async {
-      _ws = socket;
-      if (_ws == null) {
-        _log.warning("B10647 WebSocket can't connect");
-        return;
-      }
-      _connected.complete('connected');
-      _ws!.listen(
-        (message) {
-          _inbound.sink.add(message);
-        },
-        onError: (err) {
-          _log.warning("B47455 WebSocket: $err");
-        },
-        onDone: () {
-          _log.info('connection to server closed');
-        },
-      );
-    });
-  }
-
-  Future<void> add(message) async {
-    await _connected.future; // wait until connected
-    if (_ws == null) {
-      _log.warning("B10648 WebSocket can't connect");
-    } else {
-      _ws!.add(message);
-    }
-  }
-
-  Future<void> close(message) async {
-    await _connected.future; // wait until connected
-    if (_ws == null) {
-      _log.warning("B10649 WebSocket can't connect");
-    } else {
-      _ws!.close;
-    }
-  }
-
-  Stream<String> get stream => _inbound.stream;
-}
-
 class NewServerFormState extends ParentFormState {
-  final _hubMessages = WebSocketMessenger();
+  final _hubMessages = PersistentWebSocket('');
+  final hub = global.loginState.hub;
+  final lk = global.loginState.pureLoginKey;
   async.Completer _buttonPressed = async.Completer();
   final async.Completer _hubCommanderFinished = async.Completer();
   final List<StepData> _stepsList = [];
   int _stepsComplete = 0;
   bool _needToScrollToBottom = false;
+
+  NewServerFormState() : super() {
+    var url = 'wss://$hub:8443/v1/managers/$lk/servers/18/setup';
+    try {
+      _hubMessages.connect(url).onError((err, stackTrace) {
+        _log.warning("B47455 pws: $err");
+      });
+    } catch (err) {
+      _log.warning("B13209 pws: $err");
+    }
+  }
 
   @override
   void initState() {
@@ -97,7 +58,7 @@ class NewServerFormState extends ParentFormState {
     // add initial user steps, sent from hub
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       _hubMessages.stream.listen(
-        (message) => hubCommander(message),
+        (data) => hubCommander(convert.utf8.decode(data)),
       );
     });
   }
@@ -218,7 +179,7 @@ class NewServerFormState extends ParentFormState {
 
   void hubWrite(Map<String, dynamic> data) {
     var json = convert.jsonEncode(data);
-    _hubMessages.add(json);
+    _hubMessages.send(Uint8List.fromList(convert.utf8.encode(json)));
   }
 
   static Future<Map<String, dynamic>> ifList() async {

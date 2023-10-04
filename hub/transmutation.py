@@ -6,7 +6,12 @@ from fastapi import (
 import json
 import logging
 import os
+import sys
 import yaml
+
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(base_dir, "libs", "python"))
+import persistent_websocket.persistent_websocket as persistent_websocket
 
 
 logger = logging.getLogger(__name__)
@@ -19,21 +24,9 @@ logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, 
 
 
 class ServerSetup:
-    def __init__(self, ws: WebSocket):
+    def __init__(self, ws: WebSocket, pws: persistent_websocket.PersistentWebsocket):
         self._ws = ws
-
-    async def send_command_to_client(self, json_string):
-        try:
-            await self._ws.send_text(json_string)
-        except Exception as e:
-            logger.error(f"B38260 WebSocket error: {e}")
-        try:
-            return await self._ws.receive_text()
-        except WebSocketDisconnect:
-            logger.info(f"B38261 WebSocket disconnect")
-        except Exception as e:
-            logger.error(f"B38262 WebSocket error: {e}")
-            # self._error_count += 1
+        self._pws = pws
 
     async def transmute_steps(self):
         # user connects router
@@ -41,11 +34,26 @@ class ServerSetup:
         with open(f_path, "r") as f:
             server_setup_steps = yaml.safe_load(f)
         priorId = 0
+        listening = asyncio.create_task(self.listener())
         for step in server_setup_steps:
             assert step['id'] > priorId
             priorId = step['id']
-            reply = await self.send_command_to_client(json.dumps({step['key']: step['value']}))
-            logger.debug(f"app WebSocket reply: {reply}")
+            await self.send_command_to_client(json.dumps({step['key']: step['value']}))
+        await listening
+
+    async def listener(self):
+        try:
+            async for m in self._pws.connected(self._ws):
+                logger.debug(f"app WebSocket reply: {m.decode()}")
+        except Exception as err:
+            print(f"B38924 error: {err}")
+            sys.exit(1)
+
+    async def send_command_to_client(self, json_string):
+        try:
+            await self._pws.send(json_string)
+        except Exception as e:
+            logger.error(f"B38260 pws error: {e}")
 
 
 class TcpWebSocket:
