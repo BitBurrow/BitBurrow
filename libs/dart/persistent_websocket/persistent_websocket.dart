@@ -2,6 +2,7 @@
 
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert' as convert;
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:io' as io;
@@ -101,11 +102,17 @@ class PersistentWebSocket {
   int connects = 0;
   int chaos = 0;
   final connectLock = Mutex();
-  final _controller = StreamController<Uint8List>();
-  Stream<Uint8List> get stream => _controller.stream;
+  final _inController = StreamController<Uint8List>();
+  Stream<Uint8List> get stream => _inController.stream; // in-bound (Uint8List)
+  final _outController = StreamController();
+  StreamSink get sink => _outController.sink; // out-bound (String or Uint8List)
   bool _ipi = false;
 
-  PersistentWebSocket(this.id);
+  PersistentWebSocket(this.id) {
+    _outController.stream.listen((message) {
+      send(message);
+    });
+  }
 
   Future<void> connected(wsc.IOWebSocketChannel ws) async {
     if (connectLock.isLocked) {
@@ -137,6 +144,7 @@ class PersistentWebSocket {
       try {
         return wsc.IOWebSocketChannel(
             await io.WebSocket.connect(url, customClient: httpClient));
+        // ¿replace above with this?: return await wsc.IOWebSocketChannel.connect(url, customClient: httpClient);
       } on PWUnrecoverableError {
         rethrow;
       } on io.WebSocketException catch (err) {
@@ -183,8 +191,8 @@ class PersistentWebSocket {
       });
     } on PWUnrecoverableError {
       rethrow;
-    } catch (err) {
-      print("B76104 unknown exception $err");
+    } catch (err, stackTrace) {
+      print("B76104 unknown exception $err; \nstacktrace:\n$stackTrace");
       rethrow;
     } finally {
       await setOfflineMode();
@@ -197,6 +205,10 @@ class PersistentWebSocket {
     _sendResend(); // chunks were probably lost in the reconnect
     enableJournalTimer();
     await for (var chunk in _ws!.stream) {
+      if (chunk is String) {
+        print("B39284 $id expected bytes, got string: $chunk");
+        throw PWUnrecoverableError("B46517 server sent string, not bytes");
+      }
       var hex = chunk.map((e) => e.toRadixString(16)).join(' ').toUpperCase();
       print("B18043 $id received: $hex");
       var message = await processInbound(chunk);
@@ -210,14 +222,14 @@ class PersistentWebSocket {
         }
       }
       if (message != null) {
-        _controller.sink.add(message);
+        _inController.sink.add(message);
       }
     }
     print("B39654 $id WebSocket closed");
     await setOfflineMode();
   }
 
-  Future<void> send(Uint8List message) async {
+  Future<void> send(message) async {
     var flowControlDelay = 1;
     while (_journal.length > maxSendBuffer) {
       if (flowControlDelay == 1) {
@@ -231,7 +243,17 @@ class PersistentWebSocket {
     if (flowControlDelay > 1) {
       print("B60016 $id resuming send");
     }
-    Uint8List chunk = cat(lsb(_journalIndex), message);
+    Uint8List chunk;
+    if (message is String) {
+      // convert String to Uint8List
+      chunk = cat(
+          lsb(_journalIndex), Uint8List.fromList(convert.utf8.encode(message)));
+    } else if (message is Uint8List) {
+      chunk = cat(lsb(_journalIndex), message);
+    } else {
+      print("B64474 unsupported type");
+      chunk = Uint8List(0);
+    }
     _journalIndex++;
     _journal.add(chunk);
     _sendRaw(chunk);
