@@ -1,13 +1,17 @@
+import 'dart:async' as dasync;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:stream_channel/stream_channel.dart' as sc;
+import 'package:json_rpc_2/json_rpc_2.dart' as jsonrpc;
 import 'package:logging/logging.dart';
 import 'dart:convert' as convert;
 import 'dart:math';
 import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
+import 'persistent_websocket.dart';
 
 final _log = Logger('welcome_screen');
 
@@ -36,6 +40,28 @@ class WelcomeFormState extends ParentFormState {
 
   @override
   Future<http.Response?> callApi() {
+    try {
+      var url = Uri(
+              scheme: 'wss',
+              host: global.loginState.hub,
+              port: 8443,
+              path: '/rpc1/${global.loginState.pureCoupon}/4')
+          .toString();
+      _log.info("connecting to $url");
+      final hubMessages = PersistentWebSocket('');
+      hubMessages.connect(url).onError((err, stackTrace) {
+        _log.warning("B17834 pws: $err");
+      });
+      var channel = sc.StreamChannel(
+          hubMessages.stream
+              .asyncMap((data) => convert.utf8.decode(List<int>.from(data))),
+          hubMessages.sink);
+      var rpc = jsonrpc.Peer(channel.cast<String>());
+      rpc.sendRequest(
+          'test_call', {'word': 'déjà vus', 'number': 3, 'emoji': '❤️☕🙃'});
+    } catch (err) {
+      _log.warning("B40125 pws: $err");
+    }
     String domain = '${global.loginState.hub}:8443';
     String path = '/v1/coupons/${global.loginState.pureCoupon}/managers';
     _log.info("POST https $domain$path");

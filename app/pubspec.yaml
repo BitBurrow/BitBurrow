@@ -45,6 +45,8 @@ dependencies:
   logging: ^1.1.0
   web_socket_channel: ^2.4.0
   mutex: ^3.0.1
+  json_rpc_2: ^3.0.2
+  stream_channel: ^2.1.1
 
 dev_dependencies:
   flutter_test:

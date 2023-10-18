@@ -180,6 +180,7 @@ class Account_kind(enum.Enum):
 
 admin_or_manager = {Account_kind.ADMIN, Account_kind.MANAGER}
 coupon = {Account_kind.COUPON}
+admin_manager_or_coupon = {Account_kind.ADMIN, Account_kind.MANAGER, Account_kind.COUPON}
 
 
 class Account(SQLModel, table=True):
