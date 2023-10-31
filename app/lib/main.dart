@@ -19,6 +19,7 @@ var loginState = LoginState.instance;
 
 void main() async {
   usePathUrlStrategy(); // turn off the extra `#/` in the URLs
+  LoggerManager();
   _log.info("Begin Bitburrow app");
   WidgetsFlutterBinding.ensureInitialized();
   await onAppStart();
