@@ -3,10 +3,10 @@ import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
 import 'dart:math';
-import 'global.dart' as global;
 import 'main.dart';
 
 final _log = Logger('new_login_key_screen');
+var loginState = LoginState.instance;
 
 class NewLoginKeyScreen extends StatelessWidget {
   const NewLoginKeyScreen({Key? key}) : super(key: key);
@@ -44,7 +44,7 @@ class NewLoginKeyScreen extends StatelessWidget {
             FractionallySizedBox(
               widthFactor: 0.8,
               child: Text(
-                global.loginState.newLoginKey,
+                loginState.newLoginKey,
                 textAlign: TextAlign.center,
                 textScaleFactor: 1.8,
                 style: const TextStyle(fontWeight: FontWeight.normal),

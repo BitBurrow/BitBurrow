@@ -2,17 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
+import 'logger_manager.dart' as logm;
 import 'dart:io' as io;
 import 'dart:async' as async;
 import 'dart:convert' as convert;
 import 'dart:typed_data';
-import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
 import 'step_box.dart';
 import 'persistent_websocket.dart';
 
 final _log = Logger('new_server_screen');
+var loginState = LoginState.instance;
 
 class NewServerScreen extends StatelessWidget {
   const NewServerScreen({Key? key}) : super(key: key);
@@ -33,8 +34,8 @@ class NewServerForm extends ParentForm {
 
 class NewServerFormState extends ParentFormState {
   final _hubMessages = PersistentWebSocket('');
-  final hub = global.loginState.hub;
-  final lk = global.loginState.pureLoginKey;
+  final hub = loginState.hub;
+  final lk = loginState.pureLoginKey;
   async.Completer _buttonPressed = async.Completer();
   final async.Completer _hubCommanderFinished = async.Completer();
   final List<StepData> _stepsList = [];
@@ -81,11 +82,11 @@ class NewServerFormState extends ParentFormState {
   }
 
   @override
-  String getHubValue() => global.loginState.hub;
+  String getHubValue() => loginState.hub;
 
   @override
   void setHubValue(value) {
-    global.loginState.hub = value;
+    loginState.hub = value;
   }
 
   @override
@@ -93,7 +94,7 @@ class NewServerFormState extends ParentFormState {
 
   @override
   void setAccountValue(value) {
-    global.loginState.loginKey = value;
+    loginState.loginKey = value;
   }
 
   Future<void> hubCommander(String json) async {
@@ -156,8 +157,9 @@ class NewServerFormState extends ParentFormState {
             return;
           } else if (key == 'dump_and_clear_log') {
             // return log entries, empty the buffer
-            hubWrite({'log': global.logMan.buffer.toString()});
-            global.logMan.buffer.clear();
+            var manager = logm.LoggerManager();
+            hubWrite({'log': manager.buffer.toString()});
+            manager.buffer.clear();
             return;
           } else if (key == 'exit') {
             // done with commands--close TCP connection
@@ -196,8 +198,8 @@ class NewServerFormState extends ParentFormState {
   }
 
   static Future<String> bbProxy({toAddress, toPort}) async {
-    final hub = global.loginState.hub;
-    final lk = global.loginState.pureLoginKey;
+    final hub = loginState.hub;
+    final lk = loginState.pureLoginKey;
     final url = 'wss://$hub:8443/v1/managers/$lk/servers/18/proxy';
     io.WebSocket.connect(url).then((io.WebSocket ws) async {
       try {

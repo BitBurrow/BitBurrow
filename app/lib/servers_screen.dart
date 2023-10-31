@@ -7,11 +7,11 @@ import 'package:go_router/go_router.dart';
 import 'package:logging/logging.dart';
 import 'dart:math';
 import 'dart:convert' as convert;
-import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
 
 final _log = Logger('servers_screen');
+var loginState = LoginState.instance;
 
 class ServersScreen extends StatelessWidget {
   const ServersScreen({Key? key}) : super(key: key);
@@ -33,8 +33,8 @@ class ServersFormState extends ParentFormState {
 
   @override
   Future<http.Response?> callApi() {
-    String domain = '${global.loginState.hub}:8443';
-    String path = '/v1/managers/${global.loginState.pureLoginKey}/servers';
+    String domain = '${loginState.hub}:8443';
+    String path = '/v1/managers/${loginState.pureLoginKey}/servers';
     _log.info("POST https $domain$path");
     return http.post(Uri.https(domain, path));
   }
@@ -60,11 +60,11 @@ class ServersFormState extends ParentFormState {
   nextScreen() => context.push('/new-server');
 
   @override
-  String getHubValue() => global.loginState.hub;
+  String getHubValue() => loginState.hub;
 
   @override
   void setHubValue(value) {
-    global.loginState.hub = value;
+    loginState.hub = value;
   }
 
   @override
@@ -72,7 +72,7 @@ class ServersFormState extends ParentFormState {
 
   @override
   void setAccountValue(value) {
-    global.loginState.loginKey = value;
+    loginState.loginKey = value;
   }
 
   @override
@@ -88,7 +88,7 @@ class ServersFormState extends ParentFormState {
             sizedBoxSpace,
             FractionallySizedBox(
               widthFactor: 0.8,
-              child: global.loginState.isNotSignedIn()
+              child: loginState.isNotSignedIn()
                   ? Text("You need to sign in.",
                       textAlign: TextAlign.center,
                       textScaleFactor: 1.8,
@@ -96,7 +96,7 @@ class ServersFormState extends ParentFormState {
                         fontStyle: FontStyle.italic,
                         color: Theme.of(context).colorScheme.background,
                       ))
-                  : global.loginState.servers.isEmpty
+                  : loginState.servers.isEmpty
                       ? Text("You have no VPN servers set up.",
                           textAlign: TextAlign.center,
                           textScaleFactor: 1.8,
@@ -117,7 +117,7 @@ class ServersFormState extends ParentFormState {
                 child: SizedBox(
                   width: min(MediaQuery.of(context).size.width, 700),
                   child: ListView.builder(
-                    itemCount: global.loginState.servers.length,
+                    itemCount: loginState.servers.length,
                     padding: const EdgeInsets.symmetric(horizontal: 18),
                     itemBuilder: (context, index) =>
                         vpnServerCard(context, index),
@@ -157,7 +157,7 @@ class ServersFormState extends ParentFormState {
                       width: 42,
                     ),
                     title: Text(
-                      "VPN server ${global.loginState.servers[index]['id']}",
+                      "VPN server ${loginState.servers[index]['id']}",
                       style: const TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.bold,

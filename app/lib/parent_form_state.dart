@@ -3,10 +3,10 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
-import 'global.dart' as global;
 import 'main.dart';
 
 final _log = Logger('parent_form_state');
+var loginState = LoginState.instance;
 
 const String base28Digits = '23456789BCDFGHJKLMNPQRSTVWXZ';
 const int accountLen = 21; // including dashes
@@ -220,8 +220,8 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       }
     }
     if (error.isEmpty) {
-      if (global.loginState.hub != hub) {
-        error = "B99034 '${global.loginState.hub}'!='$hub'";
+      if (loginState.hub != hub) {
+        error = "B99034 '${loginState.hub}'!='$hub'";
       }
     }
     if (error.isEmpty) {

@@ -8,12 +8,12 @@ import 'package:json_rpc_2/json_rpc_2.dart' as jsonrpc;
 import 'package:logging/logging.dart';
 import 'dart:convert' as convert;
 import 'dart:math';
-import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
 import 'persistent_websocket.dart';
 
 final _log = Logger('welcome_screen');
+var loginState = LoginState.instance;
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({Key? key}) : super(key: key);
@@ -43,9 +43,9 @@ class WelcomeFormState extends ParentFormState {
     try {
       var url = Uri(
               scheme: 'wss',
-              host: global.loginState.hub,
+              host: loginState.hub,
               port: 8443,
-              path: '/rpc1/${global.loginState.pureCoupon}/4')
+              path: '/rpc1/${loginState.pureCoupon}/4')
           .toString();
       _log.info("connecting to $url");
       final hubMessages = PersistentWebSocket('');
@@ -62,8 +62,8 @@ class WelcomeFormState extends ParentFormState {
     } catch (err) {
       _log.warning("B40125 pws: $err");
     }
-    String domain = '${global.loginState.hub}:8443';
-    String path = '/v1/coupons/${global.loginState.pureCoupon}/managers';
+    String domain = '${loginState.hub}:8443';
+    String path = '/v1/coupons/${loginState.pureCoupon}/managers';
     _log.info("POST https $domain$path");
     return http.post(Uri.https(domain, path));
   }
@@ -85,10 +85,9 @@ class WelcomeFormState extends ParentFormState {
     if (pureLoginKey == null || pureLoginKey.length != accountLen - 3) {
       return "login_key is $pureLoginKey"; // error
     }
-    global.loginState.newLoginKey =
-        global.loginState.dressLoginKey(pureLoginKey);
-    global.loginState.loginKey = ''; // force user to type it
-    global.loginState.loginKeyVerified = false;
+    loginState.newLoginKey = loginState.dressLoginKey(pureLoginKey);
+    loginState.loginKey = ''; // force user to type it
+    loginState.loginKeyVerified = false;
     return "";
   }
 
@@ -96,11 +95,11 @@ class WelcomeFormState extends ParentFormState {
   nextScreen() => context.push('/new-login-key');
 
   @override
-  String getHubValue() => global.loginState.hub;
+  String getHubValue() => loginState.hub;
 
   @override
   void setHubValue(value) {
-    global.loginState.hub = value;
+    loginState.hub = value;
   }
 
   @override
@@ -108,7 +107,7 @@ class WelcomeFormState extends ParentFormState {
 
   @override
   void setAccountValue(value) {
-    global.loginState.coupon = value;
+    loginState.coupon = value;
   }
 
   @override

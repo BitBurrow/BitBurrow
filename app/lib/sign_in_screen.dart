@@ -6,11 +6,11 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
 import 'package:logging/logging.dart';
 import 'dart:convert' as convert;
 import 'dart:math';
-import 'global.dart' as global;
 import 'main.dart';
 import 'parent_form_state.dart';
 
 final _log = Logger('sign_in_screen');
+var loginState = LoginState.instance;
 
 class SignInScreen extends StatelessWidget {
   const SignInScreen({Key? key}) : super(key: key);
@@ -43,8 +43,8 @@ class SignInFormState extends ParentFormState {
 
   @override
   Future<http.Response?> callApi() {
-    String domain = '${global.loginState.hub}:8443';
-    String path = '/v1/managers/${global.loginState.pureLoginKey}/servers';
+    String domain = '${loginState.hub}:8443';
+    String path = '/v1/managers/${loginState.pureLoginKey}/servers';
     _log.info("GET https $domain$path");
     return http.get(Uri.https(domain, path));
   }
@@ -52,16 +52,16 @@ class SignInFormState extends ParentFormState {
   @override
   String statusCodeCheck(status) {
     var displayError = statusCodeMessage(status, item: "login key");
-    global.loginState.loginKeyVerified = displayError.isEmpty;
+    loginState.loginKeyVerified = displayError.isEmpty;
     const keyStore = storage.FlutterSecureStorage();
     // if loginState.saveLoginKey == false, values have already been cleared
-    if (global.loginState.saveLoginKey && global.loginState.loginKeyVerified) {
+    if (loginState.saveLoginKey && loginState.loginKeyVerified) {
       // only save login key if user opts in AND login key is valid
-      _log.info("Save to secure storage: hub ${global.loginState.hub}");
-      keyStore.write(key: 'hub', value: global.loginState.hub);
+      _log.info("Save to secure storage: hub ${loginState.hub}");
+      keyStore.write(key: 'hub', value: loginState.hub);
       _log.info("Save to secure storage: "
-          "login key ${global.loginState.loginKey}");
-      keyStore.write(key: 'login_key', value: global.loginState.loginKey);
+          "login key ${loginState.loginKey}");
+      keyStore.write(key: 'login_key', value: loginState.loginKey);
       _log.info("Save to secure storage: verification state 'true'");
       keyStore.write(key: 'login_key_verified', value: 'true');
     }
@@ -70,8 +70,7 @@ class SignInFormState extends ParentFormState {
 
   @override
   String processApiResponse(response) {
-    global.loginState.servers =
-        convert.jsonDecode(response.body) as List<dynamic>;
+    loginState.servers = convert.jsonDecode(response.body) as List<dynamic>;
     return "";
   }
 
@@ -79,19 +78,19 @@ class SignInFormState extends ParentFormState {
   nextScreen() => context.push('/servers');
 
   @override
-  String getHubValue() => global.loginState.hub;
+  String getHubValue() => loginState.hub;
 
   @override
   void setHubValue(value) {
-    global.loginState.hub = value;
+    loginState.hub = value;
   }
 
   @override
-  String getAccountValue() => global.loginState.loginKey;
+  String getAccountValue() => loginState.loginKey;
 
   @override
   void setAccountValue(value) {
-    global.loginState.loginKey = value;
+    loginState.loginKey = value;
   }
 
   @override
@@ -161,10 +160,10 @@ class SignInFormState extends ParentFormState {
                           controlAffinity: ListTileControlAffinity.leading,
                           contentPadding: EdgeInsets.zero,
                           dense: true,
-                          value: global.loginState.saveLoginKey,
+                          value: loginState.saveLoginKey,
                           onChanged: (value) {
                             setState(() {
-                              global.loginState.saveLoginKey = value == true;
+                              loginState.saveLoginKey = value == true;
                             });
                           },
                         ),
@@ -197,7 +196,7 @@ class SignInFormState extends ParentFormState {
   }
 
   void signIn() {
-    if (global.loginState.saveLoginKey == false) {
+    if (loginState.saveLoginKey == false) {
       // if box not checked, clear stored login key even before trying server
       clearStoredLoginKey();
     }
@@ -215,14 +214,14 @@ class SignInFormState extends ParentFormState {
       // going to a different screen and then to '/sign-in' is the only reliable way
       // ... I could find to clear fields if user is already on SignInScreen
       SignInFormState.clearStoredLoginKey();
-      global.loginState.saveLoginKey = false;
-      global.loginState.loginKey = '';
-      global.loginState.loginKeyVerified = false;
+      loginState.saveLoginKey = false;
+      loginState.loginKey = '';
+      loginState.loginKeyVerified = false;
       GoRouter.of(context).go('/sign-in');
     }
     // if login key is verified, press the sign-in button (virtually); this
     // ... is similar to a redirect but if login fails will stay on this screen
-    if (global.loginState.loginKeyVerified) {
+    if (loginState.loginKeyVerified) {
       signIn();
     }
   }
