@@ -16,10 +16,6 @@ except ImportError:
 
     using_starlette = False
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
-
-
 max_lsb = 32768  # always 32768 (2**15) except for testing (tested 64, 32)
 max_send_buffer = 100  # not sure what a reasonable number here would be
 assert max_lsb > max_send_buffer * 3  # avoid wrap-around
@@ -152,8 +148,9 @@ class PersistentWebsocket:
     _sig_pong = 0x8021  # "Yes, I am alive."
     #       * chunk[2:]   chunk[2:] from corresponding ping
 
-    def __init__(self, id: str):
-        self.id = id  # uniquely identify this connection in log file
+    def __init__(self, log_id: str, log):
+        self.log_id = log_id  # uniquely identify this connection in log file
+        self.log = log
         self._ws = None
         self._url = None
         self._in_index = 0  # index of next inbound chunk, aka number of chunks received
@@ -179,7 +176,7 @@ class PersistentWebsocket:
         """
         try:
             if self.connect_lock.locked():
-                logger.warn(f"B30102 {self.id} waiting for current WebSocket to close")
+                self.log.warn(f"B30102 {self.log_id} waiting for current WebSocket to close")
                 # PersistentWebsocket is not reentrant; if we don't lock here, messages
                 # can arrive out-of-order
             async with self.connect_lock:
@@ -200,24 +197,26 @@ class PersistentWebsocket:
         returned to the caller via `yield`.
         """
         if self.connect_lock.locked():
-            logger.warn(f"B18449 {self.id} waiting for current WebSocket to close")
+            self.log.warn(f"B18449 {self.log_id} waiting for current WebSocket to close")
             # PersistentWebsocket is not reentrant; if we don't lock here, messages
             # can arrive out-of-order
         async with self.connect_lock:
             self._url = url
             try:
                 # https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html
-                logger.debug(f"B35536 {self.id} waiting for WebSocket to connect")
+                self.log.debug(f"B35536 {self.log_id} waiting for WebSocket to connect")
                 async for ws in websockets.connect(self._url):  # keep reconnecting
                     self.set_online_mode(ws)
                     async for m in self.listen():
                         yield m
             except asyncio.exceptions.CancelledError:  # ctrl-C
-                logger.warn(f"B32045 {self.id} WebSocket canceled")
+                self.log.warn(f"B32045 {self.log_id} WebSocket canceled")
             except PWUnrecoverableError:
                 raise  # needs to be handled
             except Exception:
-                logger.error(f"B34752 {self.id} wsexception, {traceback.format_exc().rstrip()}")
+                self.log.error(
+                    f"B34752 {self.log_id} wsexception, {traceback.format_exc().rstrip()}"
+                )
             finally:
                 await self.set_offline_mode()
 
@@ -227,38 +226,42 @@ class PersistentWebsocket:
         await self._send_resend()  # chunks were probably lost in the reconnect
         try:
             async for chunk in (self._ws.iter_bytes() if using_starlette else self._ws):
-                logger.debug(f"B18042 {self.id} received: {chunk.hex(' ', -1)}")
+                self.log.debug(f"B18042 {self.log_id} received: {chunk.hex(' ', -1)}")
                 message = await self.process_inbound(chunk)
                 if self.chaos > 0 and self.chaos > random.randint(0, 999):
-                    logger.warn(f"B66740 {self.id} randomly closing WebSocket to test recovery")
+                    self.log.warn(
+                        f"B66740 {self.log_id} randomly closing WebSocket to test recovery"
+                    )
                     await asyncio.sleep(random.randint(0, 2))
                     await self.set_offline_mode()
                     await asyncio.sleep(random.randint(0, 2))
                 if message is not None:
                     yield message
-            logger.info(f"B39653 {self.id} WebSocket closed")
+            self.log.info(f"B39653 {self.log_id} WebSocket closed")
         except websockets.ConnectionClosed:
-            logger.warn(f"B60441 {self.id} WebSocket closed")
+            self.log.warn(f"B60441 {self.log_id} WebSocket closed")
         except asyncio.exceptions.CancelledError:  # ctrl-C
             raise asyncio.exceptions.CancelledError
         except WebSocketDisconnect as e:
             if e == 1000:  # WS_1000_NORMAL_CLOSURE in starlette/status.py
-                logger.info(f"B94731 {self.id} WebSocket closed by remote")
+                self.log.info(f"B94731 {self.log_id} WebSocket closed by remote")
             elif e == 1012:  # WS_1012_SERVICE_RESTART in starlette/status.py
                 raise asyncio.exceptions.CancelledError
             else:
-                logger.error(f"B53771 {self.id} exception, {traceback.format_exc().rstrip()}")
+                self.log.error(f"B53771 {self.log_id} exception, {traceback.format_exc().rstrip()}")
         except RuntimeError as e:
             if e.args[0] != 'WebSocket is not connected. Need to call "accept" first.':
                 # ignore 'not connected' because it's a result of intentional testing; see B66740
-                logger.error(f"B81148 {self.id} exception, {traceback.format_exc().rstrip()}")
+                self.log.error(f"B81148 {self.log_id} exception, {traceback.format_exc().rstrip()}")
         except PWUnrecoverableError:
             raise  # propagate out
         except AttributeError:
             if self.is_online():  # ignore if it is because WebSocket closed
-                logger.warn(f"B26471 {self.id} wsexception, {traceback.format_exc().rstrip()}")
+                self.log.warn(
+                    f"B26471 {self.log_id} wsexception, {traceback.format_exc().rstrip()}"
+                )
         except Exception:
-            logger.error(f"B59584 {self.id} wsexception, {traceback.format_exc().rstrip()}")
+            self.log.error(f"B59584 {self.log_id} wsexception, {traceback.format_exc().rstrip()}")
         finally:
             await self.set_offline_mode()
 
@@ -267,12 +270,12 @@ class PersistentWebsocket:
         flow_control_delay = 1
         while len(self._journal) > max_send_buffer:
             if flow_control_delay == 1:
-                logger.info(f"B60013 {self.id} outbound buffer is full--waiting")
+                self.log.info(f"B60013 {self.log_id} outbound buffer is full--waiting")
             await asyncio.sleep(flow_control_delay)
             if flow_control_delay < 30:
                 flow_control_delay += 1
         if flow_control_delay > 1:
-            logger.debug(f"B60014 {self.id} resuming send")
+            self.log.debug(f"B64414 {self.log_id} resuming send")
         if isinstance(message, str):
             chunk = lsb(self._journal_index) + message.encode()  # convert message to bytes
         else:
@@ -282,7 +285,7 @@ class PersistentWebsocket:
         await self._send_raw(chunk)
         self.enable_journal_timer()
         if self.chaos > 0 and self.chaos > random.randint(0, 999):
-            logger.warn(f"B14263 {self.id} randomly closing WebSocket to test recovery")
+            self.log.warn(f"B14263 {self.log_id} randomly closing WebSocket to test recovery")
             await asyncio.sleep(random.randint(0, 3))
             await self.set_offline_mode()
             await asyncio.sleep(random.randint(0, 3))
@@ -304,13 +307,13 @@ class PersistentWebsocket:
             return
         tail_index = self._journal_index - len(self._journal)
         if end_index < start_index or start_index < tail_index:
-            logger.error(
-                f"B38394 {self.id} remote wants journal[{start_index}:{end_index}] "
+            self.log.error(
+                f"B38394 {self.log_id} remote wants journal[{start_index}:{end_index}] "
                 + f"but we only have journal[{tail_index}:{self._journal_index}]"
             )
             await self._send_raw(const_otw(self._sig_resend_error))
-            raise PWUnrecoverableError(f"B34922 {self.id} impossible resend request")
-        logger.info(f"B57684 {self.id} resending journal[{start_index}:{end_index}]")
+            raise PWUnrecoverableError(f"B34922 {self.log_id} impossible resend request")
+        self.log.info(f"B57684 {self.log_id} resending journal[{start_index}:{end_index}]")
         # send requested chunks from oldest to newest, e.g. range(-2, 0) for most recent 2 chunks
         for i in range(start_index - self._journal_index, end_index - self._journal_index):
             await self._send_raw(self._journal[i])
@@ -326,20 +329,20 @@ class PersistentWebsocket:
             else:
                 # https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html#websockets.client.WebSocketClientProtocol.send
                 await self._ws.send(chunk)
-            logger.debug(f"B41789 {self.id} sent: {chunk.hex(' ', -1)}")
+            self.log.debug(f"B41789 {self.log_id} sent: {chunk.hex(' ', -1)}")
         except (
             WebSocketDisconnect,
             websockets.exceptions.ConnectionClosedError,
             websockets.exceptions.ConnectionClosedOK,
             RuntimeError,  # probably: Cannot call "send" once a close message has been sent.
         ):
-            logger.info(f"B44793 {self.id} WebSocket disconnect")
+            self.log.info(f"B44793 {self.log_id} WebSocket disconnect")
             await self.set_offline_mode()
         except PWUnrecoverableError:
             raise
         except Exception:
             # unhandled exceptions must not propagate out; we need to yield all messages
-            logger.error(f"B42563 {self.id} wsexception, {traceback.format_exc().rstrip()}")
+            self.log.error(f"B42563 {self.log_id} wsexception, {traceback.format_exc().rstrip()}")
 
     async def process_inbound(self, chunk) -> bytes | None:
         """Test and respond to chunk, returning a message or None."""
@@ -348,7 +351,7 @@ class PersistentWebsocket:
                 # connect_lock should prevent this, but we check to be safe; this
                 # happens if WebSocket is closed during send() within process_inbound()
                 # and causes messages to be delivered out of order
-                logger.error(f"B14725 {self.id} process_inbound is not reentrant")
+                self.log.error(f"B14725 {self.log_id} process_inbound is not reentrant")
                 await asyncio.sleep(1)  # avoid uninterruptible loop
                 return
             self._ipi = True  # see above
@@ -368,43 +371,45 @@ class PersistentWebsocket:
                 elif index > self._in_index:
                     await self._send_resend()  # request the other end resend what we're missing
                 else:  # index < self._in_index
-                    logger.info(f"B73822 {self.id} ignoring duplicate chunk {index}")
+                    self.log.info(f"B73822 {self.log_id} ignoring duplicate chunk {index}")
             else:  # signal
                 if i_lsb == self._sig_ack or i_lsb == self._sig_resend:
                     ack_index = unmod(int.from_bytes(chunk[2:4], 'big'), self._journal_index)
                     tail_index = self._journal_index - len(self._journal)
                     if tail_index < ack_index:
-                        logger.info(f"B60966 {self.id} clearing journal[{tail_index}:{ack_index}]")
+                        self.log.info(
+                            f"B60966 {self.log_id} clearing journal[{tail_index}:{ack_index}]"
+                        )
                     if self._journal_timer is not None:
                         self._journal_timer.cancel()  # got ack; no need to resend
                         self._journal_timer = None
                     if len(self._journal) < (ack_index - tail_index):
-                        logger.error(
-                            f"B19144 {self.id} error: "
+                        self.log.error(
+                            f"B19144 {self.log_id} error: "
                             + f"{len(self._journal)} < ({ack_index} - {tail_index})"
                         )
-                        raise PWUnrecoverableError(f"B44311 {self.id} impossible ack")
+                        raise PWUnrecoverableError(f"B44311 {self.log_id} impossible ack")
                     for i in range(tail_index, ack_index):
                         self._journal.popleft()
                     self.enable_journal_timer()  # set a new timer for remainder of _journal
                     if i_lsb == self._sig_resend:
                         await self._resend(ack_index)
                 elif i_lsb == self._sig_resend_error:
-                    logger.error(f"B75561 {self.id} received resend error signal")
-                    raise PWUnrecoverableError(f"B91221 {self.id} received resend error signal")
+                    self.log.error(f"B75561 {self.log_id} received resend error signal")
+                    raise PWUnrecoverableError(f"B91221 {self.log_id} received resend error signal")
                 elif i_lsb == self._sig_ping:
                     await self._send_raw(const_otw(self._sig_pong) + chunk[2:])
                 elif i_lsb == self._sig_pong:
                     pass
                 else:
-                    logger.error(f"B32405 {self.id} unknown signal {i_lsb}")
+                    self.log.error(f"B32405 {self.log_id} unknown signal {i_lsb}")
             del self._ipi
             return None
         except PWUnrecoverableError:
             raise
         except Exception:
             del self._ipi
-            logger.error(f"B88756 {self.id} wsexception, {traceback.format_exc().rstrip()}")
+            self.log.error(f"B88756 {self.log_id} wsexception, {traceback.format_exc().rstrip()}")
 
     async def _send_ack(self):
         self._in_last_ack = self._in_index
@@ -438,12 +443,12 @@ class PersistentWebsocket:
             return
         try:
             await self._ws.close()
-            logger.info(f"B89445 {self.id} WebSocket closed")
+            self.log.info(f"B89445 {self.log_id} WebSocket closed")
         except RuntimeError as e:
             # probably websocket close after close
-            logger.debug(f"B79020 {self.id} WebSocket error {e}")
+            self.log.debug(f"B79020 {self.log_id} WebSocket error {e}")
         except Exception:
-            logger.error(f"B39425 {self.id} wsexception, {traceback.format_exc().rstrip()}")
+            self.log.error(f"B39425 {self.log_id} wsexception, {traceback.format_exc().rstrip()}")
         finally:
             self._ws = None
             if self._journal_timer is not None:
@@ -454,9 +459,9 @@ class PersistentWebsocket:
                 self._in_last_ack_timer = None
 
     def set_online_mode(self, ws):
-        assert self.is_offline(), f"B39653 {self.id} cannot go online twice"
+        assert self.is_offline(), f"B39653 {self.log_id} cannot go online twice"
         self._ws = ws
-        logger.info(f"B17183 {self.id} WebSocket reconnect {self.connects}")
+        self.log.info(f"B17183 {self.log_id} WebSocket reconnect {self.connects}")
         self.connects += 1
         self.enable_journal_timer()
         self.enable_in_timer()

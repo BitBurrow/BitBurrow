@@ -6,6 +6,7 @@ import 'dart:convert' as convert;
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:io' as io;
+import 'package:logging/logging.dart';
 import 'package:mutex/mutex.dart';
 import 'package:web_socket_channel/io.dart' as wsc;
 
@@ -88,7 +89,9 @@ class PersistentWebSocket {
   static const _sigResendError = 0x8012;
   static const _sigPing = 0x8020;
   static const _sigPong = 0x8021;
-  final String id;
+  final String logId;
+  // convert Python logger: error→severe; warn→warning; info→info; debug→config
+  final Logger _log;
   wsc.IOWebSocketChannel? _ws;
   // String? _url;
   int _inIndex = 0;
@@ -108,7 +111,7 @@ class PersistentWebSocket {
   StreamSink get sink => _outController.sink; // out-bound (String or Uint8List)
   bool _ipi = false;
 
-  PersistentWebSocket(this.id) {
+  PersistentWebSocket(this.logId, this._log) {
     _outController.stream.listen((message) {
       send(message);
     });
@@ -116,7 +119,7 @@ class PersistentWebSocket {
 
   Future<void> connected(wsc.IOWebSocketChannel ws) async {
     if (connectLock.isLocked) {
-      print("B30103 $id waiting for current WebSocket to close");
+      _log.warning("B30103 $logId waiting for current WebSocket to close");
     }
     try {
       await connectLock.protect(() async {
@@ -127,7 +130,7 @@ class PersistentWebSocket {
     } on PWUnrecoverableError {
       rethrow;
     } catch (err) {
-      print("B99843 unknown exception $err");
+      _log.severe("B99843 unknown exception $err");
       rethrow;
     } finally {
       await setOfflineMode();
@@ -151,25 +154,26 @@ class PersistentWebSocket {
         var e = err.toString();
         if (e.startsWith('WebSocketException: Connection to ') &&
             e.endsWith(' was not upgraded to websocket')) {
-          print("B66703 not upgraded to WebSocket"); // maybe 403 Forbidden
+          _log.severe(
+              "B66703 not upgraded to WebSocket"); // maybe 403 Forbidden
         } else {
-          print("B44148 WebSocketException $e");
+          _log.severe("B44148 WebSocketException $e");
         }
       } on io.SocketException catch (err) {
         var e = err.toString();
         if (e.startsWith('SocketException: Connection refused')) {
-          print("B66702 connection refused");
+          _log.severe("B66702 connection refused");
         } else if (e.startsWith('SocketException: Connection reset by peer')) {
-          print("B66704 connection reset by peer");
+          _log.severe("B66704 connection reset by peer");
         } else if (e.startsWith('SocketException: HTTP connection timed out')) {
-          print("B66705 connection timed out");
+          _log.severe("B66705 connection timed out");
         } else if (e.startsWith('SocketException: No route to host')) {
-          print("B55714 no route to host");
+          _log.severe("B55714 no route to host");
         } else {
-          print("B19891 SocketException $e");
+          _log.severe("B19891 SocketException $e");
         }
       } catch (err) {
-        print("B66701 $e");
+        _log.severe("B66701 $e");
         rethrow;
       }
       await Future.delayed(Duration(seconds: 5));
@@ -178,7 +182,7 @@ class PersistentWebSocket {
 
   Future<void> connect(String url) async {
     if (connectLock.isLocked) {
-      print("B18450 $id waiting for current WebSocket to close");
+      _log.warning("B18450 $logId waiting for current WebSocket to close");
     }
     try {
       await connectLock.protect(() async {
@@ -192,7 +196,7 @@ class PersistentWebSocket {
     } on PWUnrecoverableError {
       rethrow;
     } catch (err, stackTrace) {
-      print("B76104 unknown exception $err; \nstacktrace:\n$stackTrace");
+      _log.severe("B76104 unknown exception $err; \nstacktrace:\n$stackTrace");
       rethrow;
     } finally {
       await setOfflineMode();
@@ -206,16 +210,17 @@ class PersistentWebSocket {
     enableJournalTimer();
     await for (var chunk in _ws!.stream) {
       if (chunk is String) {
-        print("B39284 $id expected bytes, got string: $chunk");
+        _log.severe("B39284 $logId expected bytes, got string: $chunk");
         throw PWUnrecoverableError("B46517 server sent string, not bytes");
       }
       var hex = chunk.map((e) => e.toRadixString(16)).join(' ').toUpperCase();
-      print("B18043 $id received: $hex");
+      _log.config("B18043 $logId received: $hex");
       var message = await processInbound(chunk);
       if (chaos > 0) {
         final random = Random();
         if (chaos > random.nextInt(1000)) {
-          print("B66741 $id randomly closing WebSocket to test recovery");
+          _log.warning(
+              "B66741 $logId randomly closing WebSocket to test recovery");
           await Future.delayed(Duration(seconds: random.nextInt(3)));
           await setOfflineMode();
           await Future.delayed(Duration(seconds: random.nextInt(3)));
@@ -225,7 +230,7 @@ class PersistentWebSocket {
         _inController.sink.add(message);
       }
     }
-    print("B39654 $id WebSocket closed");
+    _log.info("B39888 $logId WebSocket closed");
     await setOfflineMode();
   }
 
@@ -233,7 +238,7 @@ class PersistentWebSocket {
     var flowControlDelay = 1;
     while (_journal.length > maxSendBuffer) {
       if (flowControlDelay == 1) {
-        print("B60015 $id outbound buffer is full--waiting");
+        _log.info("B60014 $logId outbound buffer is full--waiting");
       }
       await Future.delayed(Duration(seconds: flowControlDelay));
       if (flowControlDelay < 30) {
@@ -241,7 +246,7 @@ class PersistentWebSocket {
       }
     }
     if (flowControlDelay > 1) {
-      print("B60016 $id resuming send");
+      _log.config("B64415 $logId resuming send");
     }
     Uint8List chunk;
     if (message is String) {
@@ -251,7 +256,7 @@ class PersistentWebSocket {
     } else if (message is Uint8List) {
       chunk = cat(lsb(_journalIndex), message);
     } else {
-      print("B64474 unsupported type");
+      _log.info("B64474 unsupported type");
       chunk = Uint8List(0);
     }
     _journalIndex++;
@@ -261,7 +266,8 @@ class PersistentWebSocket {
     if (chaos > 0) {
       final random = Random();
       if (chaos > random.nextInt(1000)) {
-        print("B14264 $id randomly closing WebSocket to test recovery");
+        _log.warning(
+            "B14264 $logId randomly closing WebSocket to test recovery");
         await Future.delayed(Duration(seconds: random.nextInt(3)));
         await setOfflineMode();
         await Future.delayed(Duration(seconds: random.nextInt(3)));
@@ -287,12 +293,12 @@ class PersistentWebSocket {
     }
     var tailIndex = _journalIndex - _journal.length;
     if (endIndex < startIndex || startIndex < tailIndex) {
-      print("B38395 $id remote wants journal[$startIndex:$endIndex] "
+      _log.severe("B38395 $logId remote wants journal[$startIndex:$endIndex] "
           "but we only have journal[$tailIndex:$_journalIndex]");
       _sendRaw(constOtw(_sigResendError));
-      throw PWUnrecoverableError("B34923 $id impossible resend request");
+      throw PWUnrecoverableError("B34923 $logId impossible resend request");
     }
-    print("B57685 $id resending journal[$startIndex:$endIndex]");
+    _log.info("B57685 $logId resending journal[$startIndex:$endIndex]");
     // send requested chunks from oldest to newest
     var start = startIndex - _journalIndex;
     var i = 0 - _journal.length;
@@ -312,13 +318,13 @@ class PersistentWebSocket {
     }
     _ws!.sink.add(chunk);
     var hex = chunk.map((e) => e.toRadixString(16)).join(' ').toUpperCase();
-    print("B41790 $id sent: $hex");
+    _log.config("B41790 $logId sent: $hex");
   }
 
   /// Test and respond to chunk, returning a message or null.
   Future<Uint8List?> processInbound(Uint8List chunk) async {
     if (_ipi == true) {
-      print("B14726 $id processInbound is not reentrant");
+      _log.severe("B14726 $logId processInbound is not reentrant");
       await Future.delayed(Duration(seconds: 1)); // avoid uninterruptible loop
       return null;
     }
@@ -345,7 +351,7 @@ class PersistentWebSocket {
         _sendResend(); // request the other end resend what we're missing
       } else {
         // index < _inIndex
-        print("B73823 $id ignoring duplicate chunk $index");
+        _log.info("B73823 $logId ignoring duplicate chunk $index");
       }
     } else {
       // signal
@@ -353,16 +359,16 @@ class PersistentWebSocket {
         var ackIndex = unmod(bytesToInt(chunk, 2), _journalIndex);
         var tailIndex = _journalIndex - _journal.length;
         if (tailIndex < ackIndex) {
-          print("B60967 $id clearing journal[$tailIndex:$ackIndex]");
+          _log.info("B60967 $logId clearing journal[$tailIndex:$ackIndex]");
         }
         if (_journalTimer != null) {
           _journalTimer!.cancel();
           _journalTimer = null;
         }
         if (_journal.length < (ackIndex - tailIndex)) {
-          print("B19145 $id error: "
+          _log.severe("B19145 $logId error: "
               "${_journal.length} < ($ackIndex - $tailIndex)");
-          throw PWUnrecoverableError("B44312 $id impossible ack");
+          throw PWUnrecoverableError("B44312 $logId impossible ack");
         }
         for (var i = tailIndex; i < ackIndex; i++) {
           _journal.removeFirst();
@@ -372,14 +378,15 @@ class PersistentWebSocket {
           await _resend(ackIndex);
         }
       } else if (iLsb == _sigResendError) {
-        print("B75562 $id received resend error signal");
-        throw PWUnrecoverableError("B91222 $id received resend error signal");
+        _log.severe("B75562 $logId received resend error signal");
+        throw PWUnrecoverableError(
+            "B91222 $logId received resend error signal");
       } else if (iLsb == _sigPing) {
         _sendRaw(cat(constOtw(_sigPong), chunk.sublist(2)));
       } else if (iLsb == _sigPong) {
         // pass
       } else {
-        print("B32406 $id unknown signal $iLsb");
+        _log.severe("B32406 $logId unknown signal $iLsb");
       }
     }
     _ipi = false;
@@ -424,11 +431,11 @@ class PersistentWebSocket {
     }
     try {
       await _ws!.sink.close();
-      print("B89446 $id WebSocket closed");
+      _log.info("B89446 $logId WebSocket closed");
     } on PWUnrecoverableError {
       rethrow;
     } catch (e) {
-      print("B39426 $id wsexception, ${e.toString().trim()}");
+      _log.severe("B39426 $logId wsexception, ${e.toString().trim()}");
     } finally {
       _ws = null;
       if (_journalTimer != null) {
@@ -444,10 +451,10 @@ class PersistentWebSocket {
 
   Future<void> setOnlineMode(ws) async {
     if (isOnline()) {
-      throw PWUnrecoverableError("B65752 $id cannot go online twice");
+      throw PWUnrecoverableError("B65752 $logId cannot go online twice");
     }
     _ws = ws;
-    print("B17184 $id WebSocket reconnect $connects");
+    _log.info("B17184 $logId WebSocket reconnect $connects");
     connects++;
     enableJournalTimer();
     enableInTimer();

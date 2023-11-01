@@ -28,8 +28,6 @@ class HubRpc {
 
   static HubRpc get instance {
     _instance ??= HubRpc._();
-    _convId ??= newConvId(); // new each time the app restarts
-    _hubMessages ??= PersistentWebSocket(_convId!.substring(5));
     return _instance!;
   }
 
@@ -49,6 +47,12 @@ class HubRpc {
       authAccount = loginState.pureLoginKey;
     }
     try {
+      if (_convId == null) {
+        // get new _convId when app restarts or fatal error in conversation
+        _convId = newConvId();
+        var logId = _convId!.substring(_convId!.length - 4); // only for logging
+        _hubMessages = PersistentWebSocket(logId, Logger('pws'));
+      }
       var url = Uri(
               scheme: 'wss',
               host: loginState.hub,
@@ -56,14 +60,15 @@ class HubRpc {
               path: '/rpc1/$authAccount/$_convId')
           .toString();
       _log.info("connecting to $url");
-      final hubMessages = PersistentWebSocket('');
-      hubMessages.connect(url).onError((err, stackTrace) {
+      _hubMessages!.connect(url).onError((err, stackTrace) {
         _log.warning("B17834 pws: $err");
       });
       var channel = sc.StreamChannel(
-          hubMessages.stream
+          // in-bound stream, convert bytes to String (JSON)
+          _hubMessages!.stream
               .asyncMap((data) => convert.utf8.decode(List<int>.from(data))),
-          hubMessages.sink);
+          // out-bound sink
+          _hubMessages!.sink);
       _rpc = jsonrpc.Peer(channel.cast<String>());
     } catch (err) {
       _log.warning("B40125 pws: $err");

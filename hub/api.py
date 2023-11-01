@@ -91,12 +91,14 @@ async def rpc(websocket: WebSocket, rpc_ver: str, auth_account: str, conv_id: st
         #         -H "Host: $HOST" -H "Origin: $URL" "$URL"
         raise HTTPException(status_code=403, detail="")
     if conv_id not in messages:
-        messages[conv_id] = persistent_websocket.PersistentWebsocket(conv_id)
-        persistent_websocket.logger.setLevel(logging.DEBUG)
+        log_id = conv_id[-4:]  # only for logging
+        pws_log = logging.getLogger('persistent_websocket')
+        pws_log.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
+        messages[conv_id] = persistent_websocket.PersistentWebsocket(log_id, pws_log)
     try:
         await websocket.accept()
         async for m in messages[conv_id].connected(websocket):
-            logger.info(f"------------------------------- {conv_id} incoming: {m.decode('utf-8')}")
+            logger.info(f"------------------------------- {log_id} incoming: {m.decode('utf-8')}")
     except persistent_websocket.PWUnrecoverableError:
         del messages[conv_id]  # data is no longer usable
 

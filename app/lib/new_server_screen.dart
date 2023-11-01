@@ -33,7 +33,7 @@ class NewServerForm extends ParentForm {
 }
 
 class NewServerFormState extends ParentFormState {
-  final _hubMessages = PersistentWebSocket('');
+  final _hubMessages = PersistentWebSocket('', Logger('pws'));
   final hub = loginState.hub;
   final lk = loginState.pureLoginKey;
   async.Completer _buttonPressed = async.Completer();
