@@ -238,7 +238,7 @@ class PersistentWebSocket {
     var flowControlDelay = 1;
     while (_journal.length > maxSendBuffer) {
       if (flowControlDelay == 1) {
-        _log.info("B60014 $logId outbound buffer is full--waiting");
+        _log.info("B60015 $logId outbound buffer is full--waiting");
       }
       await Future.delayed(Duration(seconds: flowControlDelay));
       if (flowControlDelay < 30) {
@@ -246,7 +246,7 @@ class PersistentWebSocket {
       }
     }
     if (flowControlDelay > 1) {
-      _log.config("B64415 $logId resuming send");
+      _log.config("B60016 $logId resuming send");
     }
     Uint8List chunk;
     if (message is String) {
@@ -317,7 +317,10 @@ class PersistentWebSocket {
       return;
     }
     _ws!.sink.add(chunk);
-    var hex = chunk.map((e) => e.toRadixString(16)).join(' ').toUpperCase();
+    var hex = chunk
+        .map((e) => e.toRadixString(16).padLeft(2, '0'))
+        .join(' ')
+        .toUpperCase();
     _log.config("B41790 $logId sent: $hex");
   }
 
