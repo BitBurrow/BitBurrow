@@ -237,7 +237,7 @@ class PersistentWebsocket:
                     await asyncio.sleep(random.randint(0, 2))
                 if message is not None:
                     yield message
-            self.log.info(f"B39653 {self.log_id} WebSocket closed")
+            self.log.info(f"B99953 {self.log_id} WebSocket closed")
         except websockets.ConnectionClosed:
             self.log.warn(f"B60441 {self.log_id} WebSocket closed")
         except asyncio.exceptions.CancelledError:  # ctrl-C

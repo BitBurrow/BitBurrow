@@ -8,6 +8,7 @@ from typing import Final
 import yaml
 import hub.login_key as lk
 
+
 # for security, partially redact anything that looks like a login key
 class RedactingFilter(logging.Filter):
     # based on: https://relaxdiego.com/2014/07/logging-in-python.html

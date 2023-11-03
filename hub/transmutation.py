@@ -46,7 +46,7 @@ class ServerSetup:
             async for m in self._pws.connected(self._ws):
                 logger.debug(f"app WebSocket reply: {m.decode()}")
         except Exception as err:
-            print(f"B38924 error: {err}")
+            print(f"B99924 error: {err}")
             sys.exit(1)
 
     async def send_command_to_client(self, json_string):
