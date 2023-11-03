@@ -7,7 +7,7 @@ set -eo pipefail
 pushd $(git rev-parse --show-toplevel) >/dev/null
 
 # enforce formatting with Black
-poetry run black --quiet --line-length 100 --skip-string-normalization .
+poetry run black --check --quiet --line-length 100 --skip-string-normalization .
 
 # make sure there are no duplicate Berror codes (Bxxxxx codes to help ID points in the code)
 export DUP_BERROR_CODES=$(git ls-files '*.py' '*.dart' |while read -r F; do if [ ! -L "$F" ]; then grep -o --no-filename 'B[0-9][0-9][0-9][0-9][0-9] ' "$F"; fi; done |sort |uniq --repeated)
