@@ -22,7 +22,7 @@ class HubRpc {
   var _state = States.notConnected;
   static String? _convId; // conversation ID, unique per hub conversation
   static PersistentWebSocket? _hubMessages;
-  var _rpc;
+  jsonrpc.Peer? _rpc;
   static HubRpc? _instance; // singleton--one conversation with hub for the app
   HubRpc._();
 
@@ -33,7 +33,7 @@ class HubRpc {
 
   void sendRequest(String method, [parameters]) {
     connect(); // make sure we're connected
-    _rpc.sendRequest(method, parameters);
+    _rpc!.sendRequest(method, parameters);
   }
 
   Future<void> connect() async {

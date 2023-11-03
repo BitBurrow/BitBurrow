@@ -146,7 +146,9 @@ class SignInFormState extends ParentFormState {
                         'images/device-floppy.svg',
                         width: 30,
                         height: 30,
-                        color: Theme.of(context).colorScheme.primary,
+                        colorFilter: ColorFilter.mode(
+                            Theme.of(context).colorScheme.primary,
+                            BlendMode.srcIn),
                       ),
                     ],
                   ),

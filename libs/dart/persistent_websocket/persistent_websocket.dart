@@ -143,7 +143,7 @@ class PersistentWebSocket {
       // loop until we connect or get fatal error
       // https://github.com/dart-lang/web_socket_channel/issues/61#issuecomment-1127554042
       final httpClient = io.HttpClient();
-      httpClient.connectionTimeout = Duration(seconds: 20);
+      httpClient.connectionTimeout = const Duration(seconds: 20);
       try {
         return wsc.IOWebSocketChannel(
             await io.WebSocket.connect(url, customClient: httpClient));
@@ -176,7 +176,7 @@ class PersistentWebSocket {
         _log.severe("B66701 $e");
         rethrow;
       }
-      await Future.delayed(Duration(seconds: 5));
+      await Future.delayed(const Duration(seconds: 5));
     }
   }
 
@@ -328,7 +328,8 @@ class PersistentWebSocket {
   Future<Uint8List?> processInbound(Uint8List chunk) async {
     if (_ipi == true) {
       _log.severe("B14726 $logId processInbound is not reentrant");
-      await Future.delayed(Duration(seconds: 1)); // avoid uninterruptible loop
+      await Future.delayed(
+          const Duration(seconds: 1)); // avoid uninterruptible loop
       return null;
     }
     _ipi = true;
@@ -468,7 +469,7 @@ class PersistentWebSocket {
       return;
     }
     if (_journal.isNotEmpty && _journalTimer == null) {
-      _journalTimer = Timer.periodic(Duration(seconds: 2), _resendOne);
+      _journalTimer = Timer.periodic(const Duration(seconds: 2), _resendOne);
     }
   }
 
@@ -477,7 +478,7 @@ class PersistentWebSocket {
       return;
     }
     if (_inIndex > _inLastAck && _inLastAckTimer == null) {
-      _inLastAckTimer = Timer(Duration(seconds: 1), _sendAck);
+      _inLastAckTimer = Timer(const Duration(seconds: 1), _sendAck);
     }
   }
 }

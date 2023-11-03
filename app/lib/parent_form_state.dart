@@ -240,6 +240,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
           "and that you are connected to the internet.";
     }
     var title = "Unable to connect";
+    // FIXME: filter displayError for login codes; see pureAccountRE
     var text = '$displayError (Error "$error".)';
     var titleSplit = RegExp(r'^([^\.]{3,30})\. (.+)$').firstMatch(text);
     if (titleSplit != null) {
@@ -293,7 +294,8 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
             'images/cloud-data-connection.svg',
             width: 30,
             height: 30,
-            color: Theme.of(context).colorScheme.primary,
+            colorFilter: ColorFilter.mode(
+                Theme.of(context).colorScheme.primary, BlendMode.srcIn),
           ),
           hintText: "example.org",
           labelText: "Hub*",
@@ -322,7 +324,8 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
             icon,
             width: 30,
             height: 30,
-            color: Theme.of(context).colorScheme.primary,
+            colorFilter: ColorFilter.mode(
+                Theme.of(context).colorScheme.primary, BlendMode.srcIn),
           ),
           hintText: "xxxx-xxxxx-xxxx-xxxxx",
           labelText: "$accountKind*".capitalize(),
@@ -430,7 +433,9 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
                                 'images/router.svg',
                                 width: 30,
                                 height: 30,
-                                color: Theme.of(context).colorScheme.primary,
+                                colorFilter: ColorFilter.mode(
+                                    Theme.of(context).colorScheme.primary,
+                                    BlendMode.srcIn),
                               ),
                             ),
                           ),

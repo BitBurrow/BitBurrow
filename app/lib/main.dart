@@ -250,14 +250,16 @@ Widget ourScreenLayout(BuildContext context, Widget body,
                           value: item.key,
                           child: Row(
                             children: [
-                              SvgPicture.asset(
-                                item.value,
-                                width: 20,
-                                height: 20,
-                                color: item.key == "Forget login key"
-                                    ? Colors.red
-                                    : Theme.of(context).colorScheme.primary,
-                              ),
+                              SvgPicture.asset(item.value,
+                                  width: 20,
+                                  height: 20,
+                                  colorFilter: ColorFilter.mode(
+                                      item.key == "Forget login key"
+                                          ? Colors.red // make 'X' icon red
+                                          : Theme.of(context)
+                                              .colorScheme
+                                              .primary,
+                                      BlendMode.srcIn)),
                               const SizedBox(width: 7),
                               Text(item.key),
                             ],
