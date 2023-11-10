@@ -142,7 +142,9 @@ class WelcomeFormState extends ParentFormState {
                         'images/user-check.svg',
                         width: 30,
                         height: 30,
-                        color: Theme.of(context).colorScheme.primary,
+                        colorFilter: ColorFilter.mode(
+                            Theme.of(context).colorScheme.primary,
+                            BlendMode.srcIn),
                       ),
                     ],
                   ),
