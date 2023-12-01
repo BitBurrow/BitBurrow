@@ -249,8 +249,22 @@ def on_shutdown():
 
 
 @app.on_event("startup")
-@repeat_every(seconds=60 * 60 * 24)  # at startup and then daily
-def check_tls_cert_task() -> None:
+@repeat_every(seconds=60 * 60 * 24)
+def check_tls_cert_daily() -> None:
+    """Verify TLS certificate after 24 hours, 48 hours, etc."""
+    if not hasattr(check_tls_cert_daily, 'call_count'):
+        check_tls_cert_daily.call_count = 1
+        return  # handled by check_tls_cert_at_startup() (on_event("startup") above is required)
+    net.check_tls_cert(hub_state.domain, 8443)
+
+
+@app.on_event("startup")
+@repeat_every(seconds=20, max_repetitions=2)  # run at t+0 and t+20 only
+def check_tls_cert_at_startup() -> None:
+    """Verify TLS certificate 20 seconds after startup"""
+    if not hasattr(check_tls_cert_at_startup, 'call_count'):
+        check_tls_cert_at_startup.call_count = 1
+        return  # do nothing on first run (possible race condition)
     net.check_tls_cert(hub_state.domain, 8443)
 
 
@@ -273,6 +287,8 @@ def monitor_tls_cert_file() -> None:
             # reset 'restart' conditions ...
             monitor_tls_cert_file.minutes_waiting = 0
             net.watch_file(ssl_keyfile)
+            del check_tls_cert_daily.call_count
+            del check_tls_cert_at_startup.call_count
             logger.info("B50371 Restarting Uvicorn to load new TLS certificate")
             time.sleep(1)  # help avoid race condition where ssl_cerfile has not yet been updated
             restarts_remaining = 1  # so ctrl-C won't exit the 'while' loop around uvicorn.run()
