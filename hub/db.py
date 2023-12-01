@@ -558,7 +558,7 @@ def sudo_wg(args=[], input=None):
 
 def run_external(args, input=None):
     log_detail = f"running: {'␣'.join(args)}"  # alternatives: ␣⋄∘•⁕⁔⁃–
-    logger.info(log_detail if len(log_detail) < 170 else log_detail[:168] + "…")
+    logger.debug(log_detail if len(log_detail) < 170 else log_detail[:168] + "…")
     exec_count = 2 if args[0] == 'sudo' else 1
     for i, a in enumerate(args[:exec_count]):  # e.g. expand 'wg' to '/usr/bin/wg'
         for p in '/usr/sbin:/usr/bin:/sbin:/bin'.split(':'):

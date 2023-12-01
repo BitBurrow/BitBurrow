@@ -10,10 +10,12 @@ from fastapi import (
     Request,
     HTTPException,
 )
+from fastapi_restful.tasks import repeat_every
 from sqlmodel import SQLModel, create_engine, sql
 import hub.logs as logs
 import hub.db as db
 import hub.api as api
+import hub.net as net
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -240,6 +242,12 @@ def on_shutdown():
         db.Netif.shutdown()
 
 
+@app.on_event("startup")
+@repeat_every(seconds=60 * 60 * 24)  # at startup and then daily
+def check_tls_cert_task() -> None:
+    net.check_tls_cert(hub_state.domain, 8443)
+
+
 ###
 ### Startup (called from pyproject.toml)
 ###
@@ -325,7 +333,7 @@ def entry_point():
     logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
     logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
     logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
-    logger.info(f"❚   listening on: {hub_state.domain}")
+    logger.info(f"❚   listening on: {hub_state.domain}:8443")
     try:
         uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
             f'{app_name()}:app',
@@ -333,6 +341,7 @@ def entry_point():
             port=8443,
             # FIXME: when using `workers=3`, additional workers' messages aren't ...
             # delivered to api.messages.message_handler()
+            # may be helpful: https://medium.com/cuddle-ai/1bd809916130
             workers=1,
             log_level='info',
             log_config=logs.logging_config(console_log_level=args.console_log_level),

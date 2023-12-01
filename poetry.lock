@@ -128,6 +128,23 @@ typing-extensions = ">=4.5.0"
 all = ["email-validator (>=1.1.1)", "httpx (>=0.23.0)", "itsdangerous (>=1.1.0)", "jinja2 (>=2.11.2)", "orjson (>=3.2.1)", "python-multipart (>=0.0.5)", "pyyaml (>=5.3.1)", "ujson (>=4.0.1,!=4.0.2,!=4.1.0,!=4.2.0,!=4.3.0,!=5.0.0,!=5.1.0)", "uvicorn[standard] (>=0.12.0)"]
 
 [[package]]
+name = "fastapi-restful"
+version = "0.5.0"
+description = "Quicker FastApi developing tools"
+category = "main"
+optional = false
+python-versions = ">=3.7,<4.0"
+
+[package.dependencies]
+fastapi = ">=0.89,<1.0"
+psutil = ">=5,<6"
+pydantic = ">1.0,<3.0"
+
+[package.extras]
+all = ["sqlalchemy (>=1.4,<3.0)", "pydantic-settings (>=2.0.1,<3.0.0)", "typing-inspect (>=0.9.0,<0.10.0)"]
+session = ["sqlalchemy (>=1.4,<3.0)"]
+
+[[package]]
 name = "greenlet"
 version = "2.0.2"
 description = "Lightweight in-process concurrent programming"
@@ -203,6 +220,17 @@ docs = ["furo (>=2023.5.20)", "proselint (>=0.13)", "sphinx-autodoc-typehints (>
 test = ["appdirs (==1.4.4)", "covdefaults (>=2.3)", "pytest-cov (>=4.1)", "pytest-mock (>=3.10)", "pytest (>=7.3.1)"]
 
 [[package]]
+name = "psutil"
+version = "5.9.6"
+description = "Cross-platform lib for process and system monitoring in Python."
+category = "main"
+optional = false
+python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, !=3.5.*"
+
+[package.extras]
+test = ["enum34", "ipaddress", "mock", "pywin32", "wmi"]
+
+[[package]]
 name = "pycparser"
 version = "2.21"
 description = "C parser in Python"
@@ -226,6 +254,17 @@ dotenv = ["python-dotenv (>=0.10.4)"]
 email = ["email-validator (>=1.0.3)"]
 
 [[package]]
+name = "python-dateutil"
+version = "2.8.2"
+description = "Extensions to the standard Python datetime module"
+category = "main"
+optional = false
+python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
+
+[package.dependencies]
+six = ">=1.5"
+
+[[package]]
 name = "python-dotenv"
 version = "1.0.0"
 description = "Read key-value pairs from a .env file and set them as environment variables"
@@ -243,6 +282,14 @@ description = "YAML parser and emitter for Python"
 category = "main"
 optional = false
 python-versions = ">=3.6"
+
+[[package]]
+name = "six"
+version = "1.16.0"
+description = "Python 2 and 3 compatibility utilities"
+category = "main"
+optional = false
+python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*"
 
 [[package]]
 name = "sniffio"
@@ -396,7 +443,7 @@ python-versions = ">=3.7"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.9"
-content-hash = "2dba7f80a2831f5b7356817380bfb533db35b4918ea3c02eddb383cf5fe28373"
+content-hash = "95fb654d4dc1e2a22033bf26980ae9fb7b8579f206fd06b2a284f72ea7779d40"
 
 [metadata.files]
 anyio = []
@@ -408,6 +455,7 @@ click = []
 colorama = []
 exceptiongroup = []
 fastapi = []
+fastapi-restful = []
 greenlet = []
 h11 = []
 httptools = []
@@ -416,10 +464,13 @@ mypy-extensions = []
 packaging = []
 pathspec = []
 platformdirs = []
+psutil = []
 pycparser = []
 pydantic = []
+python-dateutil = []
 python-dotenv = []
 pyyaml = []
+six = []
 sniffio = []
 sqlalchemy = []
 sqlalchemy2-stubs = []
