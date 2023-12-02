@@ -133,8 +133,9 @@ async def new_server(login_key: str):
 async def websocket_setup(websocket: WebSocket, login_key: str, server_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     await websocket.accept()
-    persistent_websocket.logger.setLevel(logging.DEBUG)
-    messages = persistent_websocket.PersistentWebsocket(server_id)
+    pws_log = logging.getLogger('persistent_websocket')
+    pws_log.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
+    messages = persistent_websocket.PersistentWebsocket(server_id, pws_log)
     runTasks = transmutation.ServerSetup(websocket, messages)
     try:
         await runTasks.transmute_steps()

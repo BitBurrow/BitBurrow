@@ -1,6 +1,5 @@
 import asyncio
 import collections
-import logging
 import random
 from timeit import default_timer as timer
 import traceback

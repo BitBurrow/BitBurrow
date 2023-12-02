@@ -54,7 +54,7 @@ def logging_config(
                         format: '%(asctime)s.%(msecs)03d %(levelname)s %(message)s'
                         datefmt: '%H:%M:%S'
                     file_log_format:
-                        format: '%(asctime)s.%(msecs)03d %(rootname)s %(levelname)s %(message)s'
+                        format: '%(asctime)s %(levelname)s %(message)s'
                         datefmt: '%Y-%m-%d_%H:%M:%S'
                 filters:
                     redact_login_keys:
