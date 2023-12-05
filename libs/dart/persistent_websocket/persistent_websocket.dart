@@ -76,6 +76,48 @@ Uint8List cat(Uint8List part1, Uint8List part2) {
   return (chunk.toBytes());
 }
 
+// make binary data more readable for humans
+String printableHex(Uint8List chunk) {
+  StringBuffer out = StringBuffer();
+  StringBuffer quote = StringBuffer(); // quoted ascii text
+  for (int item in chunk) {
+    if (item >= 32 && item <= 126 && item != 39) {
+      // printable character, but not single quote
+      quote.write(String.fromCharCode(item));
+    } else {
+      // non-printable character
+      if (quote.isNotEmpty) {
+        if (quote.length <= 3) {
+          // isolated short strings remain as hex
+          out.write(quote
+              .toString()
+              .codeUnits
+              .map((e) => e.toRadixString(16).padLeft(2, '0').toUpperCase())
+              .join(' '));
+          out.write(' ');
+        } else {
+          out.write("'${quote.toString()}' ");
+        }
+        quote.clear();
+      }
+      out.write('${item.toRadixString(16).padLeft(2, '0').toUpperCase()} ');
+    }
+  }
+  if (quote.isNotEmpty) {
+    out.write("'${quote.toString()}'");
+  }
+  return out.toString().trim();
+}
+
+printableHexTest() {
+  var chunkTest = "1234\x0056789\x01\x02abcd\nefg\nhi\nhello\n\n"
+      "hello\n\n\nshouldn't \\ backslash\xe2\x9c\x94 done\n";
+  var chunkTestOut =
+      "'1234' 00 '56789' 01 02 'abcd' 0A 65 66 67 0A 68 69 0A 'hello' 0A 0A "
+      "'hello' 0A 0A 0A 'shouldn' 27 't \\ backslash' E2 9C 94 ' done' 0A";
+  assert(printableHex(Uint8List.fromList(chunkTest.codeUnits)) == chunkTestOut);
+}
+
 /// Adds to WebSockets auto-reconnect and auto-resend of lost messages.
 ///
 /// This class adds to WebSockets (client and server) the ability to automatically reconnect,
@@ -213,8 +255,10 @@ class PersistentWebSocket {
         _log.severe("B39284 $logId expected bytes, got string: $chunk");
         throw PWUnrecoverableError("B46517 server sent string, not bytes");
       }
-      var hex = chunk.map((e) => e.toRadixString(16)).join(' ').toUpperCase();
-      _log.config("B18043 $logId received: $hex");
+      if (_log.level <= Level.CONFIG) {
+        // call printableHex() only when needed
+        _log.config("B18043 $logId received: ${printableHex(chunk)}");
+      }
       var message = await processInbound(chunk);
       if (chaos > 0) {
         final random = Random();
@@ -311,17 +355,16 @@ class PersistentWebSocket {
     }
   }
 
-  /// Send chunk of bytes of we can.
+  /// Send chunk of bytes if we can.
   void _sendRaw(Uint8List chunk) {
     if (isOffline()) {
       return;
     }
     _ws!.sink.add(chunk);
-    var hex = chunk
-        .map((e) => e.toRadixString(16).padLeft(2, '0'))
-        .join(' ')
-        .toUpperCase();
-    _log.config("B41790 $logId sent: $hex");
+    if (_log.level <= Level.CONFIG) {
+      // call printableHex() only when needed
+      _log.config("B41790 $logId sent: ${printableHex(chunk)}");
+    }
   }
 
   /// Test and respond to chunk, returning a message or null.

@@ -1,5 +1,6 @@
 import asyncio
 import collections
+import logging
 import random
 from timeit import default_timer as timer
 import traceback
@@ -111,6 +112,38 @@ class PWUnrecoverableError(Exception):
     def __init__(self, message=""):
         self.message = message
         super().__init__(self.message)
+
+
+# make binary data more readable for humans
+def printable_hex(chunk):
+    out = list()
+    quote = list()  # quoted ascii text
+    for item in chunk:
+        if 32 <= item <= 126 and item != 39:  # printable character, but not single quote
+            quote.append(chr(item))
+        else:  # non-printable character
+            if quote:
+                if len(quote) <= 3:  # isolated short strings remain as hex
+                    out.extend([f"{ord(e):02X} " for e in quote])
+                else:
+                    out.append(f"'{''.join(quote)}' ")
+                quote.clear()
+            out.append(f"{item:02X} ")
+    if quote:
+        out.append(f"'{''.join(quote)}'")
+    return ''.join(out).strip()
+
+
+def printable_hex_test():
+    chunk_test = (
+        "1234\x0056789\x01\x02abcd\nefg\nhi\nhello\n\n"
+        "hello\n\n\nshouldn't \\ backslash\xe2\x9c\x94 done\n"
+    )
+    chunk_test_out = (
+        "'1234' 00 '56789' 01 02 'abcd' 0A 65 66 67 0A 68 69 0A 'hello' 0A 0A "
+        "'hello' 0A 0A 0A 'shouldn' 27 't \\ backslash' E2 9C 94 ' done' 0A"
+    )
+    assert printable_hex([ord(c) for c in chunk_test]) == chunk_test_out
 
 
 class PersistentWebsocket:
@@ -225,7 +258,8 @@ class PersistentWebsocket:
         await self._send_resend()  # chunks were probably lost in the reconnect
         try:
             async for chunk in (self._ws.iter_bytes() if using_starlette else self._ws):
-                self.log.debug(f"B18042 {self.log_id} received: {chunk.hex(' ', -1)}")
+                if self.log.isEnabledFor(logging.DEBUG):  # call printable_hex() only when needed
+                    self.log.debug(f"B18042 {self.log_id} received: {printable_hex(chunk)}")
                 message = await self.process_inbound(chunk)
                 if self.chaos > 0 and self.chaos > random.randint(0, 999):
                     self.log.warn(
@@ -328,7 +362,8 @@ class PersistentWebsocket:
             else:
                 # https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html#websockets.client.WebSocketClientProtocol.send
                 await self._ws.send(chunk)
-            self.log.debug(f"B41789 {self.log_id} sent: {chunk.hex(' ', -1)}")
+            if self.log.isEnabledFor(logging.DEBUG):  # call printable_hex() only when needed
+                self.log.debug(f"B41789 {self.log_id} sent: {printable_hex(chunk)}")
         except (
             WebSocketDisconnect,
             websockets.exceptions.ConnectionClosedError,
