@@ -114,6 +114,17 @@ class PWUnrecoverableError(Exception):
         super().__init__(self.message)
 
 
+# use around printable_hex() to not evaluate unless needed
+class r:
+    # credit: https://stackoverflow.com/a/60072502
+    def __init__(self, callback, arg1):
+        self._callback = callback
+        self._arg1 = arg1
+
+    def __repr__(self):
+        return self._callback(self._arg1)
+
+
 # make binary data more readable for humans
 def printable_hex(chunk):
     out = list()
@@ -258,8 +269,7 @@ class PersistentWebsocket:
         await self._send_resend()  # chunks were probably lost in the reconnect
         try:
             async for chunk in (self._ws.iter_bytes() if using_starlette else self._ws):
-                if self.log.isEnabledFor(logging.DEBUG):  # call printable_hex() only when needed
-                    self.log.debug(f"B18042 {self.log_id} received: {printable_hex(chunk)}")
+                self.log.debug("B18042 %s received: %r", self.log_id, r(printable_hex, chunk))
                 message = await self.process_inbound(chunk)
                 if self.chaos > 0 and self.chaos > random.randint(0, 999):
                     self.log.warn(
@@ -362,8 +372,7 @@ class PersistentWebsocket:
             else:
                 # https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html#websockets.client.WebSocketClientProtocol.send
                 await self._ws.send(chunk)
-            if self.log.isEnabledFor(logging.DEBUG):  # call printable_hex() only when needed
-                self.log.debug(f"B41789 {self.log_id} sent: {printable_hex(chunk)}")
+            self.log.debug("B41789 %s sent: %r", self.log_id, r(printable_hex, chunk))
         except (
             WebSocketDisconnect,
             websockets.exceptions.ConnectionClosedError,
