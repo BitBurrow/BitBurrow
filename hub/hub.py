@@ -121,7 +121,7 @@ def cli(return_help_text=False):
         "--quiet",
         action='append_const',
         const=-1,
-        dest="verbose",  # mapping:  "-q"->ERROR / ""->WARNING / "-v"->INFO / "-vv"->DEBUG
+        dest="verbose",  # see log_levels for mapping
         help="Silence warning messages",
     )
     parser.add_argument(
@@ -139,16 +139,17 @@ def cli(return_help_text=False):
     log_index = 2 + (0 if args.verbose is None else sum(args.verbose))
     del args.verbose
     log_levels = [
-        logging.CRITICAL,
-        logging.ERROR,
-        logging.WARNING,
-        logging.INFO,
-        logging.DEBUG,
-        logging.DEBUG,  # corresponds to 'trace' in uvicorn
+        logging.CRITICAL,  # 0, -qq
+        logging.ERROR,  # 1, -q
+        logging.WARNING,  # 2, default
+        logging.INFO,  # 3, -v
+        logging.DEBUG,  # 4, -vv
+        logging.DEBUG,  # 5, -vvv; sets 'echo=True' in create_engine()
     ]
     if log_index < 0 or log_index >= len(log_levels):
         raise ValueError("Invalid log level")
     args.console_log_level = log_levels[log_index]
+    args.create_engine_echo = log_index == 5
     logging.config.dictConfig(logs.logging_config(console_log_level=args.console_log_level))
     return args
 
@@ -213,9 +214,7 @@ def init(args):
         db_file = ':memory:'
     else:
         db_file = args.dbfile
-    db.engine = create_engine(
-        f'sqlite:///{db_file}', echo=(args.console_log_level <= logging.DEBUG)
-    )
+    db.engine = create_engine(f'sqlite:///{db_file}', echo=args.create_engine_echo)
     if is_worker_zero:
         # avoid race condition creating tables: OperationalError: table ... already exists
         SQLModel.metadata.create_all(db.engine)
