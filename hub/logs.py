@@ -4,9 +4,19 @@
 
 import logging
 import textwrap
-from typing import Final
 import yaml
 import hub.login_key as lk
+
+
+# use around persistent_websocket.printable_hex() to not evaluate unless needed
+class r:
+    # credit: https://stackoverflow.com/a/60072502
+    def __init__(self, callback, arg1):
+        self._callback = callback
+        self._arg1 = arg1
+
+    def __repr__(self):
+        return self._callback(self._arg1)
 
 
 # for security, partially redact anything that looks like a login key
@@ -16,14 +26,14 @@ class RedactingFilter(logging.Filter):
     def __init__(self):
         super(RedactingFilter, self).__init__()
 
-    def filter(self, record):
+    def filter(self, record: logging.LogRecord):
         record.msg = self.redact(record.msg)
         if isinstance(record.args, dict):
             for k in record.args.keys():
                 record.args[k] = self.redact(record.args[k])
         else:
             record.args = tuple(self.redact(arg) for arg in record.args)
-        return True
+        return True  # keep this log entry
 
     @staticmethod
     def redact(msg):
@@ -51,10 +61,11 @@ def logging_config(
                 disable_existing_loggers: false
                 formatters:
                     console_log_format:
-                        format: '%(asctime)s.%(msecs)03d %(levelname)s %(message)s'
+                        # to see logger names, add '%(name)s ' below
+                        format: '%(asctime)s.%(msecs)03d %(levelname)-5s %(message)s'
                         datefmt: '%H:%M:%S'
                     file_log_format:
-                        format: '%(asctime)s %(levelname)s %(message)s'
+                        format: '%(asctime)s %(levelname)-5s %(message)s'
                         datefmt: '%Y-%m-%d_%H:%M:%S'
                 filters:
                     redact_login_keys:
