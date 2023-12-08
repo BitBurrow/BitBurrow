@@ -16,7 +16,14 @@ class r:
         self._arg1 = arg1
 
     def __repr__(self):
-        return self._callback(self._arg1)
+        # need to redact() here because RedactingFilter.filter() only sees instance of class r
+        return redact(self._callback(self._arg1))
+
+
+def redact(msg):
+    if isinstance(msg, str):
+        return lk.login_key_re.sub(r'\1..............', msg)
+    return msg
 
 
 # for security, partially redact anything that looks like a login key
@@ -27,19 +34,13 @@ class RedactingFilter(logging.Filter):
         super(RedactingFilter, self).__init__()
 
     def filter(self, record: logging.LogRecord):
-        record.msg = self.redact(record.msg)
+        record.msg = redact(record.msg)
         if isinstance(record.args, dict):
             for k in record.args.keys():
-                record.args[k] = self.redact(record.args[k])
-        else:
-            record.args = tuple(self.redact(arg) for arg in record.args)
+                record.args[k] = redact(record.args[k])
+        else:  # redact additional logging.debug() arguments
+            record.args = tuple(redact(arg) for arg in record.args)
         return True  # keep this log entry
-
-    @staticmethod
-    def redact(msg):
-        if not isinstance(msg, str):
-            return msg
-        return lk.login_key_re.sub(r'\1..............', msg)
 
 
 # use only base logger name, e.g. 'uvicorn.error' → 'uvicorn'
