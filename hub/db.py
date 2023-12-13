@@ -76,7 +76,7 @@ class Hub(SQLModel, table=True):
     domain: str = ''  # API url in form example.org or vxm.example.org
     public_ip: str = ''
     wg_port: int = 0
-    hub_number = lk.generate_login_key(lk.login_len)  # uniquely identify this hub
+    hub_number: str = lk.generate_login_key(lk.login_len)  # uniquely identify this hub
     # note /etc/machine-id identifies the machine while hub_number identifies the database
     db_version: int = 1
 
