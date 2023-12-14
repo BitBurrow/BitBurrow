@@ -575,3 +575,17 @@ def run_external(args, input=None):
     if proc.returncode != 0:
         raise RuntimeError(f"`{' '.join(args)}` returned error: {proc.stderr.decode().rstrip()}")
     return proc.stdout.decode().rstrip()
+
+
+def simplify(obj):
+    """Return a serializable version of a SQLModel class or structure containing a class.
+
+    Example usage: json.dumps(simplify(data_structure))
+    """
+    if isinstance(obj, SQLModel):
+        return simplify(obj.model_dump())
+    if isinstance(obj, list):
+        return [simplify(item) for item in obj]
+    if isinstance(obj, dict):
+        return {k: simplify(v) for k, v in obj.items()}
+    return obj

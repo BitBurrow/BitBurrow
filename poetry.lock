@@ -193,6 +193,14 @@ optional = false
 python-versions = ">=3.5"
 
 [[package]]
+name = "json-rpc"
+version = "1.15.0"
+description = "JSON-RPC transport implementation"
+category = "main"
+optional = false
+python-versions = "*"
+
+[[package]]
 name = "mypy-extensions"
 version = "1.0.0"
 description = "Type system extensions for programs checked with the mypy type checker."
@@ -456,7 +464,7 @@ python-versions = ">=3.8"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.9"
-content-hash = "1cb69c6dea56430270b8f24709dcdf8feae48ac8a28d7cd6ac172530418a652a"
+content-hash = "71d00ee1fe167f38c56f3c346b4cb05c559974a2ca5a984b11fdfe605c6dc7c4"
 
 [metadata.files]
 annotated-types = []
@@ -474,6 +482,7 @@ greenlet = []
 h11 = []
 httptools = []
 idna = []
+json-rpc = []
 mypy-extensions = []
 packaging = []
 pathspec = []

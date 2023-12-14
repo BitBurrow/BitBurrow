@@ -8,6 +8,7 @@ import 'dart:convert' as convert;
 import 'dart:math';
 import 'main.dart';
 import 'parent_form_state.dart';
+import 'hub_rpc.dart';
 
 final _log = Logger('sign_in_screen');
 var loginState = LoginState.instance;
@@ -43,10 +44,9 @@ class SignInFormState extends ParentFormState {
 
   @override
   Future<http.Response?> callApi() {
-    String domain = '${loginState.hub}:8443';
-    String path = '/v1/managers/${loginState.pureLoginKey}/servers';
-    _log.info("GET https $domain$path");
-    return http.get(Uri.https(domain, path));
+    var rpc = HubRpc.instance;
+    rpc.sendRequest('list_servers', {'login_key': loginState.pureLoginKey});
+    return Future.value(null); // FIXME: work-in-progress
   }
 
   @override

@@ -7,8 +7,10 @@ from fastapi import (
     WebSocket,
     HTTPException,
 )
-from sqlmodel import Session, select
+from sqlmodel import Session, SQLModel, select
 from typing import Dict, List
+import json
+import jsonrpc
 import logging
 import os
 import sys
@@ -97,8 +99,13 @@ async def rpc(websocket: WebSocket, rpc_ver: str, auth_account: str, conv_id: st
         messages[conv_id] = persistent_websocket.PersistentWebsocket(log_id, pws_log)
     try:
         await websocket.accept()
+        # Notes on RPC options (see https://pypi.org/project/PACKAGE/ where PACKAGE is below):
+        #     * fastapi-jsonrpc → can only use HTTP (no PersistentWebsocket); snyk.io 72
+        #     * grpc → uses HTTP/2; does not gracefully recover from disconnects; snyk.io 63
+        #     * json-rpc → simple, no async but seems to work well; snyk.io 71
         async for m in messages[conv_id].connected(websocket):
-            logger.info(f"------------------------------- {log_id} incoming: {m.decode('utf-8')}")
+            response = jsonrpc.JSONRPCResponseManager.handle(m, jsonrpc.dispatcher)
+            await messages[conv_id].send(json.dumps(db.simplify(response.data)))
     except persistent_websocket.PWUnrecoverableError:
         del messages[conv_id]  # data is no longer usable
 
@@ -114,8 +121,8 @@ async def create_manager(request: Request, coupon: str):
     # do not store login_key!
 
 
-@router.get('/v1/managers/{login_key}/servers', response_model=List[db.Server])
-async def list_servers(request: Request, login_key: str):
+@jsonrpc.dispatcher.add_method
+def list_servers(login_key: str):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     with Session(db.engine) as session:
         statement = select(db.Server).where(db.Server.account_id == account.id)
