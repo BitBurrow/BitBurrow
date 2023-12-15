@@ -1,3 +1,4 @@
+import 'dart:convert' as convert;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -98,7 +99,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
   final _AccountTextInputFormatter _accountFormatter =
       _AccountTextInputFormatter();
 
-  Future<http.Response?> callApi();
+  Future callApi();
   String statusCodeCheck(status);
   String processApiResponse(response);
   nextScreen();
@@ -168,13 +169,17 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       }
     });
     var futureDelay = Future.delayed(const Duration(seconds: 1), () {});
-    http.Response? response;
+    dynamic response;
     var error = "";
     try {
       response = await callApi()
           .timeout(const Duration(seconds: 45)); // default 120 in my test
     } catch (err) {
       error = err.toString();
+    }
+    if (response is! http.Response) {
+      // FIXME: after all calls are RPC, don't use http.Response, jsonEncode(), etc.
+      response = http.Response(convert.jsonEncode(response), 200);
     }
     await futureDelay; // ensure user always sees that something is happening
     if (dialogState == DialogStates.canceled) {

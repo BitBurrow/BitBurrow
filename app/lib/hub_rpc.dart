@@ -22,7 +22,7 @@ class HubRpc {
   var _state = States.notConnected;
   static String? _convId; // conversation ID, unique per hub conversation
   static PersistentWebSocket? _hubMessages;
-  jsonrpc.Peer? _rpc;
+  jsonrpc.Client? _rpc;
   static HubRpc? _instance; // singleton--one conversation with hub for the app
   HubRpc._();
 
@@ -31,9 +31,15 @@ class HubRpc {
     return _instance!;
   }
 
-  void sendRequest(String method, [parameters]) {
+  Future sendRequest(String method, [parameters]) {
     connect(); // make sure we're connected
-    _rpc!.sendRequest(method, parameters);
+    try {
+      return _rpc!.sendRequest(method, parameters);
+    } on jsonrpc.RpcException catch (err) {
+      // FIXME: fails to catch exception; see https://pub.dev/packages/json_rpc_2`
+      _log.warning("B37489 $err");
+      return Future.value(null);
+    }
   }
 
   Future<void> connect() async {
@@ -63,13 +69,15 @@ class HubRpc {
       _hubMessages!.connect(url).onError((err, stackTrace) {
         _log.warning("B17834 pws: $err");
       });
+      _state = States.connecting;
       var channel = sc.StreamChannel(
           // in-bound stream, convert bytes to String (JSON)
           _hubMessages!.stream
               .asyncMap((data) => convert.utf8.decode(List<int>.from(data))),
           // out-bound sink
           _hubMessages!.sink);
-      _rpc = jsonrpc.Peer(channel.cast<String>());
+      _rpc = jsonrpc.Client(channel.cast<String>());
+      dasync.unawaited(_rpc!.listen()); // tell jsonrpc to subscribe to input
     } catch (err) {
       _log.warning("B40125 pws: $err");
     }

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
@@ -43,10 +42,12 @@ class SignInFormState extends ParentFormState {
   String get restorationId => 'sign_in_form';
 
   @override
-  Future<http.Response?> callApi() {
+  Future callApi() {
     var rpc = HubRpc.instance;
-    rpc.sendRequest('list_servers', {'login_key': loginState.pureLoginKey});
-    return Future.value(null); // FIXME: work-in-progress
+    return rpc.sendRequest(
+      'list_servers',
+      {'login_key': loginState.pureLoginKey},
+    );
   }
 
   @override
