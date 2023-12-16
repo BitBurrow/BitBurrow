@@ -1,7 +1,5 @@
-import 'dart:convert' as convert;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
 import 'main.dart';
@@ -99,9 +97,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
   final _AccountTextInputFormatter _accountFormatter =
       _AccountTextInputFormatter();
 
-  Future callApi();
-  String statusCodeCheck(status);
-  String processApiResponse(response);
+  Future<void> callApi(); // throws an exception for any error
   nextScreen();
   String getHubValue();
   void setHubValue(String value);
@@ -169,71 +165,37 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       }
     });
     var futureDelay = Future.delayed(const Duration(seconds: 1), () {});
-    dynamic response;
     var error = "";
     try {
-      response = await callApi()
-          .timeout(const Duration(seconds: 45)); // default 120 in my test
+      await callApi();
     } catch (err) {
       error = err.toString();
-    }
-    if (response is! http.Response) {
-      // FIXME: after all calls are RPC, don't use http.Response, jsonEncode(), etc.
-      response = http.Response(convert.jsonEncode(response), 200);
     }
     await futureDelay; // ensure user always sees that something is happening
     if (dialogState == DialogStates.canceled) {
       // ignore user-canceled result, successful or not
       _log.info(
-          "(finished http $hub but ignoring because it was user-canceled)");
+          "(finished $hub RPC but ignoring because it was user-canceled)");
       return;
     }
     if (!mounted) {
-      _log.warning("B25600 finished http $hub but !mounted");
+      _log.warning("B25600 finished $hub RPC but !mounted");
       return;
     }
     dialogState = DialogStates.closing;
     Navigator.pop(context); // close dialog
     var displayError = "";
     if (error.isEmpty) {
-      if (response == null) {
-        error = "B29348 response is null";
-      }
-    }
-    if (error.isEmpty) {
-      // response is not null
-      displayError = statusCodeCheck(response!.statusCode);
-      if (displayError.isNotEmpty) {
-        error = "B14514 invalid status code ${response.statusCode}";
-      }
-    }
-    if (error.isEmpty) {
-      // status code is okay
-      try {
-        error = processApiResponse(response);
-        if (error.isNotEmpty) {
-          displayError = "Unknown error. Received invalid data from the "
-              "hub. Contact the hub administrator.";
-        } else {
-          _log.fine("$hub returned status code ${response!.statusCode}");
-        }
-      } catch (err) {
-        error = err.toString();
-        displayError = "Unknown error. Unable to parse the hub's "
-            "response. Make sure you typed the hub correctly, try again "
-            "later, or contact the hub administrator.";
-      }
-    }
-    if (error.isEmpty) {
       if (loginState.hub != hub) {
         error = "B99034 '${loginState.hub}'!='$hub'";
       }
     }
     if (error.isEmpty) {
+      _log.fine("finished $hub RPC successfully");
       nextScreen();
       return;
     }
-    _log.warning("B84481 finished http $hub: $error");
+    _log.warning("B84481 finished $hub RPC: $error");
     if (displayError.isEmpty) {
       if (error.startsWith("Failed host lookup:") ||
           error == "Network is unreachable") {

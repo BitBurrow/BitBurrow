@@ -31,15 +31,13 @@ class HubRpc {
     return _instance!;
   }
 
-  Future sendRequest(String method, [parameters]) {
-    connect(); // make sure we're connected
-    try {
-      return _rpc!.sendRequest(method, parameters);
-    } on jsonrpc.RpcException catch (err) {
-      // FIXME: fails to catch exception; see https://pub.dev/packages/json_rpc_2`
-      _log.warning("B37489 $err");
-      return Future.value(null);
-    }
+  Future sendRequest(String method, [parameters, int timeOut = 45]) {
+    connect(); // make sure we're connected or connecting
+    // docs: https://pub.dev/packages/json_rpc_2`
+    return _rpc!
+        .sendRequest(method, parameters)
+        .timeout(Duration(seconds: timeOut));
+    // pass exceptions on to caller
   }
 
   Future<void> connect() async {

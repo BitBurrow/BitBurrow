@@ -67,13 +67,7 @@ class NewServerFormState extends ParentFormState {
   String get restorationId => 'new_server_form';
 
   @override
-  Future callApi() => Future.value(null);
-
-  @override
-  String statusCodeCheck(status) => "Not implemented.";
-
-  @override
-  String processApiResponse(response) => "Not implemented.";
+  Future<void> callApi() async {}
 
   @override
   nextScreen() {

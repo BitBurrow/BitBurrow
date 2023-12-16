@@ -3,7 +3,6 @@ import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart' as storage;
 import 'package:logging/logging.dart';
-import 'dart:convert' as convert;
 import 'dart:math';
 import 'main.dart';
 import 'parent_form_state.dart';
@@ -42,21 +41,17 @@ class SignInFormState extends ParentFormState {
   String get restorationId => 'sign_in_form';
 
   @override
-  Future callApi() {
-    var rpc = HubRpc.instance;
-    return rpc.sendRequest(
+  Future<void> callApi() async {
+    loginState.loginKeyVerified = false; // in case an exception is thrown
+    final rpc = HubRpc.instance;
+    var response = await rpc.sendRequest(
       'list_servers',
       {'login_key': loginState.pureLoginKey},
     );
-  }
-
-  @override
-  String statusCodeCheck(status) {
-    var displayError = statusCodeMessage(status, item: "login key");
-    loginState.loginKeyVerified = displayError.isEmpty;
+    loginState.loginKeyVerified = true; // no exceptions ∴ hub said it's valid
     const keyStore = storage.FlutterSecureStorage();
     // if loginState.saveLoginKey == false, values have already been cleared
-    if (loginState.saveLoginKey && loginState.loginKeyVerified) {
+    if (loginState.saveLoginKey) {
       // only save login key if user opts in AND login key is valid
       _log.info("Save to secure storage: hub ${loginState.hub}");
       keyStore.write(key: 'hub', value: loginState.hub);
@@ -66,13 +61,7 @@ class SignInFormState extends ParentFormState {
       _log.info("Save to secure storage: verification state 'true'");
       keyStore.write(key: 'login_key_verified', value: 'true');
     }
-    return displayError;
-  }
-
-  @override
-  String processApiResponse(response) {
-    loginState.servers = convert.jsonDecode(response.body) as List<dynamic>;
-    return "";
+    loginState.servers = response as List<dynamic>;
   }
 
   @override

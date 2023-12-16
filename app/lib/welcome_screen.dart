@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
-import 'dart:convert' as convert;
 import 'dart:math';
 import 'main.dart';
 import 'parent_form_state.dart';
@@ -35,33 +34,18 @@ class WelcomeFormState extends ParentFormState {
   String get restorationId => 'welcome_form';
 
   @override
-  Future callApi() {
-    var rpc = HubRpc.instance;
-    return rpc.sendRequest(
+  Future<void> callApi() async {
+    loginState.loginKeyVerified = false; // for success or excpetion, invalidate
+    final rpc = HubRpc.instance;
+    var response = await rpc.sendRequest(
       'create_manager',
       {'coupon': loginState.pureCoupon},
     );
-  }
-
-  @override
-  String statusCodeCheck(status) => statusCodeMessage(
-        status,
-        expected: 200,
-        item: "coupon",
-        fullItem: "coupon code",
-      );
-
-  @override
-  String processApiResponse(response) {
-    String? pureLoginKey = convert.jsonDecode(response.body);
-    // API response is without the 3 dashes
-    if (pureLoginKey == null || pureLoginKey.length != accountLen - 3) {
-      return "login_key is $pureLoginKey"; // error
+    if (response == null || response.length != accountLen - 3) {
+      throw Exception("login_key is $response");
     }
-    loginState.newLoginKey = loginState.dressLoginKey(pureLoginKey);
+    loginState.newLoginKey = loginState.dressLoginKey(response); // add dashes
     loginState.loginKey = ''; // force user to type it
-    loginState.loginKeyVerified = false;
-    return "";
   }
 
   @override

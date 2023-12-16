@@ -5,7 +5,6 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 import 'package:logging/logging.dart';
 import 'dart:math';
-import 'dart:convert' as convert;
 import 'main.dart';
 import 'parent_form_state.dart';
 import 'hub_rpc.dart';
@@ -32,28 +31,14 @@ class ServersFormState extends ParentFormState {
   String get restorationId => 'servers_form';
 
   @override
-  Future callApi() {
-    var rpc = HubRpc.instance;
-    return rpc.sendRequest(
+  Future<void> callApi() async {
+    final rpc = HubRpc.instance;
+    var response = await rpc.sendRequest(
       'create_server',
       {'login_key': loginState.pureLoginKey},
     );
-  }
-
-  @override
-  String statusCodeCheck(status) => statusCodeMessage(
-        status,
-        expected: 200,
-        item: "login key",
-      );
-
-  @override
-  String processApiResponse(response) {
-    int? serverId = convert.jsonDecode(response.body) as int?;
-    if (serverId == null) {
-      return "B91194 invalid server response: ${response.body}"; // error
-    } else {
-      return "";
+    if (response is! int) {
+      throw Exception("B91194 invalid response: $response");
     }
   }
 
