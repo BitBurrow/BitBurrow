@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
@@ -36,29 +35,25 @@ class WelcomeFormState extends ParentFormState {
   String get restorationId => 'welcome_form';
 
   @override
-  Future<http.Response?> callApi() {
+  Future callApi() {
     var rpc = HubRpc.instance;
-    rpc.sendRequest(
-        'test_call', {'word': 'déjà vus', 'number': 3, 'emoji': '❤️☕🙃'});
-    String domain = '${loginState.hub}:8443';
-    String path = '/v1/coupons/${loginState.pureCoupon}/managers';
-    _log.info("POST https $domain$path");
-    return http.post(Uri.https(domain, path));
+    return rpc.sendRequest(
+      'create_manager',
+      {'coupon': loginState.pureCoupon},
+    );
   }
 
   @override
   String statusCodeCheck(status) => statusCodeMessage(
         status,
-        expected: 201,
+        expected: 200,
         item: "coupon",
         fullItem: "coupon code",
       );
 
   @override
   String processApiResponse(response) {
-    final jsonResponse =
-        convert.jsonDecode(response.body) as Map<String, dynamic>;
-    String? pureLoginKey = jsonResponse['login_key'];
+    String? pureLoginKey = convert.jsonDecode(response.body);
     // API response is without the 3 dashes
     if (pureLoginKey == null || pureLoginKey.length != accountLen - 3) {
       return "login_key is $pureLoginKey"; // error

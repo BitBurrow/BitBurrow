@@ -110,14 +110,10 @@ async def rpc(websocket: WebSocket, rpc_ver: str, auth_account: str, conv_id: st
         del messages[conv_id]  # data is no longer usable
 
 
-@router.post('/v1/coupons/{coupon}/managers')
-async def create_manager(request: Request, coupon: str):
+@jsonrpc.dispatcher.add_method
+def create_manager(coupon: str):
     account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
-    login_key = db.Account.new(db.Account_kind.MANAGER)
-    return responses.JSONResponse(
-        status_code=status.HTTP_201_CREATED,
-        content={'login_key': login_key},
-    )
+    return db.Account.new(db.Account_kind.MANAGER)
     # do not store login_key!
 
 
