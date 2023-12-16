@@ -112,7 +112,7 @@ async def rpc(websocket: WebSocket, rpc_ver: str, auth_account: str, conv_id: st
 
 @jsonrpc.dispatcher.add_method
 def create_manager(coupon: str):
-    account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
+    account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)  # verfiy validity
     return db.Account.new(db.Account_kind.MANAGER)
     # do not store login_key!
 
@@ -125,11 +125,10 @@ def list_servers(login_key: str):
         return list(session.exec(statement))
 
 
-@router.post('/v1/managers/{login_key}/servers', status_code=status.HTTP_201_CREATED)
-async def new_server(login_key: str):
+@jsonrpc.dispatcher.add_method
+def create_server(login_key: str):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    server_id = db.Server.new(account.id)
-    return server_id
+    return db.Server.new(account.id)
 
 
 @router.websocket('/v1/managers/{login_key}/servers/{server_id}/setup')

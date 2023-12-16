@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
 import 'logger_manager.dart' as logm;
@@ -68,7 +67,7 @@ class NewServerFormState extends ParentFormState {
   String get restorationId => 'new_server_form';
 
   @override
-  Future<http.Response?> callApi() => Future<http.Response?>.value(null);
+  Future callApi() => Future.value(null);
 
   @override
   String statusCodeCheck(status) => "Not implemented.";

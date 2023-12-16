@@ -1,7 +1,6 @@
 // ignore_for_file: prefer_const_constructors, prefer_const_literals_to_create_immutables
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 import 'package:logging/logging.dart';
@@ -9,6 +8,7 @@ import 'dart:math';
 import 'dart:convert' as convert;
 import 'main.dart';
 import 'parent_form_state.dart';
+import 'hub_rpc.dart';
 
 final _log = Logger('servers_screen');
 var loginState = LoginState.instance;
@@ -32,17 +32,18 @@ class ServersFormState extends ParentFormState {
   String get restorationId => 'servers_form';
 
   @override
-  Future<http.Response?> callApi() {
-    String domain = '${loginState.hub}:8443';
-    String path = '/v1/managers/${loginState.pureLoginKey}/servers';
-    _log.info("POST https $domain$path");
-    return http.post(Uri.https(domain, path));
+  Future callApi() {
+    var rpc = HubRpc.instance;
+    return rpc.sendRequest(
+      'create_server',
+      {'login_key': loginState.pureLoginKey},
+    );
   }
 
   @override
   String statusCodeCheck(status) => statusCodeMessage(
         status,
-        expected: 201,
+        expected: 200,
         item: "login key",
       );
 
