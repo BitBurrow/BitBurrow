@@ -104,37 +104,6 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
   String getAccountValue();
   void setAccountValue(String value);
 
-  String statusCodeMessage(status, {expected = 200, item, fullItem = ""}) {
-    // called from statusCodeCheck()
-    if (status == expected) {
-      return ""; // no error
-    }
-    if (fullItem == "") fullItem = item;
-    // first sentence of returned value, if short, becomes the dialog box title
-    if (status == 401) {
-      return "Invalid $item. Please carefully check that you typed the "
-          "$fullItem correctly and try again.";
-    }
-    if (status == 403) {
-      return "${item.capitalize()} expired. Please use a "
-          "valid $fullItem.";
-    }
-    if (status == 422) {
-      if (item == "coupon") {
-        return "Not a $fullItem. This code is valid but cannot be "
-            "used as a $item. If you want to sign in, use the ⋮ icon "
-            "at the top of the screen.";
-      } else {
-        return "Not a $fullItem. This code is valid but cannot be "
-            "used as a $item.";
-      }
-    } else {
-      return "Unknown error. The hub responseded with an invalid status code. "
-          "Make sure you typed the hub correctly, try again later, or "
-          "contact the hub administrator.";
-    }
-  }
-
   bool validateTextFields() {
     final form = formKey.currentState!;
     if (!form.validate()) {
@@ -165,11 +134,21 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       }
     });
     var futureDelay = Future.delayed(const Duration(seconds: 1), () {});
-    var error = "";
+    String title = "Verification failed";
+    String? error;
     try {
       await callApi();
     } catch (err) {
       error = err.toString();
+      int beforeLen = error.length;
+      // -25718 is arbitrary, matches use in hub/db.py
+      error = error.replaceFirst("JSON-RPC error -25718: ", "");
+      if (beforeLen == error.length) {
+        // message is not from hub, i.e. network issue or hub is down
+        title = "Unable to connect";
+        error = "Unable to connect to hub \"$hub\" (error \"$error\").";
+      }
+      // FIXME: filter displayError for login codes; see pureAccountRE
     }
     await futureDelay; // ensure user always sees that something is happening
     if (dialogState == DialogStates.canceled) {
@@ -184,40 +163,19 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     }
     dialogState = DialogStates.closing;
     Navigator.pop(context); // close dialog
-    var displayError = "";
-    if (error.isEmpty) {
-      if (loginState.hub != hub) {
-        error = "B99034 '${loginState.hub}'!='$hub'";
-      }
+    if (loginState.hub != hub) {
+      error = "B99034 '${loginState.hub}'!='$hub'";
     }
-    if (error.isEmpty) {
+    if (error == null) {
       _log.fine("finished $hub RPC successfully");
       nextScreen();
       return;
     }
     _log.warning("B84481 finished $hub RPC: $error");
-    if (displayError.isEmpty) {
-      if (error.startsWith("Failed host lookup:") ||
-          error == "Network is unreachable") {
-        displayError = 'Cannot find hub "$hub".';
-      } else {
-        displayError = 'Unable to connect to hub "$hub".';
-      }
-      displayError += " Make sure that you typed the hub correctly "
-          "and that you are connected to the internet.";
-    }
-    var title = "Unable to connect";
-    // FIXME: filter displayError for login codes; see pureAccountRE
-    var text = '$displayError (Error "$error".)';
-    var titleSplit = RegExp(r'^([^\.]{3,30})\. (.+)$').firstMatch(text);
-    if (titleSplit != null) {
-      title = titleSplit.group(1)!; // first sentence becomes title
-      text = titleSplit.group(2)!;
-    }
     await notificationDialog(
       context: context,
       title: title,
-      text: text,
+      text: error,
       buttonText: "OK",
     );
     return;

@@ -57,7 +57,6 @@ router = APIRouter()
 # §  delete coupon, manager, or user
 # https://medium.com/hashmapinc/rest-good-practices-for-api-design-881439796dc9
 
-
 messages: Dict[str, persistent_websocket.PersistentWebsocket] = dict()  # one entry for each conv_id
 
 # FIXME: to limit brute-force attacks, throttle any IP address with 4 connects in 60 seconds; https://github.com/tiangolo/fastapi/issues/448
@@ -77,8 +76,8 @@ async def rpc(websocket: WebSocket, rpc_ver: str, auth_account: str, conv_id: st
             auth_account, allowed_kinds=db.admin_manager_or_coupon
         )
     except Exception as e:
-        if type(e) is HTTPException:
-            logger.info(f"B12874 invalid auth_account: {e.detail}")
+        if isinstance(e, jsonrpc.exceptions.JSONRPCDispatchException):
+            logger.info(f"B12874 invalid auth_account: {e.error.message}")
         else:
             logger.info(f"B23915 validation error {type(e)}")
         await websocket.close()

@@ -1,8 +1,8 @@
 import argon2
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import enum
-from fastapi import HTTPException
 import ipaddress
+import jsonrpc
 import logging
 import os
 import re
@@ -19,6 +19,12 @@ import hub.login_key as lk
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 engine = None
+
+
+class RpcException(jsonrpc.exceptions.JSONRPCDispatchException):
+    def __init__(self, message):
+        # -25718 is arbitrary, matches use in app/lib/parent_form_state.dart
+        super().__init__(code=-25718, message=message)
 
 
 ###
@@ -249,11 +255,9 @@ class Account(SQLModel, table=True):
     @staticmethod
     def validate_login_key(login_key, allowed_kinds=None):
         if len(login_key) != lk.login_key_len:
-            raise HTTPException(
-                status_code=400, detail=f"Login key length must be {lk.login_key_len}"
-            )
+            raise RpcException(f"Login key length must be {lk.login_key_len} (error B64292).")
         if not set(lk.base28_digits).issuperset(login_key):
-            raise HTTPException(status_code=400, detail="Invalid login key characters")
+            raise RpcException("Invalid login key characters (error B51850).")
         with Session(engine) as session:
             statement = select(Account).where(Account.login == Account.login_portion(login_key))
             result = session.exec(statement).one_or_none()
@@ -264,16 +268,18 @@ class Account(SQLModel, table=True):
         try:
             hasher.verify(key_hash_to_test, key)
         except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.InvalidHash):
-            raise HTTPException(status_code=401, detail="Login key not found")
+            raise RpcException(
+                "Login key not found (error B54441). Make sure it was entered correctly."
+            )
         if hasher.check_needs_rehash(key_hash_to_test):
             result.key_hash = hasher.hash(key)  # FIXME: untested
             result.update()
-            logger.info("Rehashed {login_key}")
+            logger.info("B74657 rehashed {login_key}")
         if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise HTTPException(status_code=403, detail="Login key expired")
+            raise RpcException("Login key expired (error B18952).")
         if allowed_kinds is not None:
             if result.kind not in allowed_kinds:
-                raise HTTPException(status_code=422, detail="Invalid account kind")
+                raise RpcException("Invalid account kind (error 96593).")
         # FIXME: verify pubkey limit
         return result
 
@@ -444,9 +450,9 @@ class Client(SQLModel, table=True):
     @staticmethod
     def validate_pubkey(k):
         if not (42 <= len(k) < 72):
-            raise HTTPException(status_code=422, detail="Invalid pubkey length")
+            raise RpcException("Invalid pubkey length (error B64879).")
         if re.search(r'[^A-Za-z0-9/+=]', k):
-            raise HTTPException(status_code=422, detail="Invalid pubkey characters")
+            raise RpcException("Invalid pubkey characters (error B16042).")
 
     @staticmethod
     def startup(wgif):
