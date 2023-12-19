@@ -114,6 +114,33 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     return false;
   }
 
+  String sentencify(String input) {
+    // Make more human-readable, e.g. "B32521 incorrect action;  invalidating"
+    // becomes: "Incorrect action. Invalidating. B32521"
+    String suffix = "";
+    var berrorCodeMatch = RegExp(r'^B\d{5}\s+').firstMatch(input);
+    if (berrorCodeMatch != null) {
+      var berrorCode = berrorCodeMatch.group(0) ?? "";
+      suffix = " ${berrorCode.trim()}";
+      input = input.substring(berrorCode.length);
+    }
+    if (input.isNotEmpty) {
+      input = input[0].toUpperCase() + input.substring(1);
+    }
+    var segments = input.split(';');
+    for (int i = 1; i < segments.length; i++) {
+      segments[i] = segments[i].trimLeft();
+      if (segments[i].isNotEmpty) {
+        segments[i] = segments[i][0].toUpperCase() + segments[i].substring(1);
+      }
+    }
+    input = segments.join('. ');
+    if (!input.endsWith('.')) {
+      input += '.';
+    }
+    return input + suffix;
+  }
+
   void handleSubmitted() async {
     final form = formKey.currentState!;
     form.save();
@@ -175,7 +202,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     await notificationDialog(
       context: context,
       title: title,
-      text: error,
+      text: sentencify(error),
       buttonText: "OK",
     );
     return;

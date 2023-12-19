@@ -255,9 +255,9 @@ class Account(SQLModel, table=True):
     @staticmethod
     def validate_login_key(login_key, allowed_kinds=None):
         if len(login_key) != lk.login_key_len:
-            raise RpcException(f"Login key length must be {lk.login_key_len} (error B64292).")
+            raise RpcException(f"B64292 login key length must be {lk.login_key_len}")
         if not set(lk.base28_digits).issuperset(login_key):
-            raise RpcException("Invalid login key characters (error B51850).")
+            raise RpcException("B51850 invalid login key characters")
         with Session(engine) as session:
             statement = select(Account).where(Account.login == Account.login_portion(login_key))
             result = session.exec(statement).one_or_none()
@@ -268,18 +268,16 @@ class Account(SQLModel, table=True):
         try:
             hasher.verify(key_hash_to_test, key)
         except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.InvalidHash):
-            raise RpcException(
-                "Login key not found (error B54441). Make sure it was entered correctly."
-            )
+            raise RpcException("B54441 login key not found; make sure it was entered correctly")
         if hasher.check_needs_rehash(key_hash_to_test):
             result.key_hash = hasher.hash(key)  # FIXME: untested
             result.update()
             logger.info("B74657 rehashed {login_key}")
         if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise RpcException("Login key expired (error B18952).")
+            raise RpcException("B18952 login key expired")
         if allowed_kinds is not None:
             if result.kind not in allowed_kinds:
-                raise RpcException("Invalid account kind (error 96593).")
+                raise RpcException("B96593 invalid account kind")
         # FIXME: verify pubkey limit
         return result
 
@@ -450,9 +448,9 @@ class Client(SQLModel, table=True):
     @staticmethod
     def validate_pubkey(k):
         if not (42 <= len(k) < 72):
-            raise RpcException("Invalid pubkey length (error B64879).")
+            raise RpcException("B64879 invalid pubkey length")
         if re.search(r'[^A-Za-z0-9/+=]', k):
-            raise RpcException("Invalid pubkey characters (error B16042).")
+            raise RpcException("B16042 invalid pubkey characters")
 
     @staticmethod
     def startup(wgif):
