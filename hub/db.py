@@ -183,6 +183,20 @@ class Account_kind(enum.Enum):
             pass
         return f"kind_{self.value}"
 
+    def token_name(self):
+        str_map = {
+            900: "admin login key",
+            700: "coupon code",
+            400: "login key",
+            200: "user login key",
+            0: "none",
+        }
+        try:
+            return str_map[self.value]
+        except:
+            pass
+        return f"kind_{self.value}"
+
 
 admin_or_manager = {Account_kind.ADMIN, Account_kind.MANAGER}
 coupon = {Account_kind.COUPON}
@@ -277,7 +291,12 @@ class Account(SQLModel, table=True):
             raise RpcException("B18952 login key expired")
         if allowed_kinds is not None:
             if result.kind not in allowed_kinds:
-                raise RpcException("B96593 invalid account kind")
+                if result.kind in admin_or_manager and allowed_kinds == coupon:
+                    raise RpcException("B10052 this is a login key; a coupon code is needed")
+                elif result.kind in coupon and allowed_kinds == admin_or_manager:
+                    raise RpcException("B20900 this is a coupon code; a login key is needed")
+                else:
+                    raise RpcException("B96593 invalid account kind")
         # FIXME: verify pubkey limit
         return result
 
