@@ -31,8 +31,8 @@ class HubRpc {
     return _instance!;
   }
 
-  Future sendRequest(String method, [parameters, int timeOut = 45]) {
-    connect(); // make sure we're connected or connecting
+  Future sendRequest(String method, [parameters, int timeOut = 45]) async {
+    await connect(); // make sure we're connected or connecting
     if (_rpc == null) {
       // should never happen
       throw PWUnrecoverableError("B98002 unexpected disconnect");
@@ -54,34 +54,28 @@ class HubRpc {
     } else {
       authAccount = loginState.pureLoginKey;
     }
-    try {
-      if (_convId == null) {
-        // get new _convId when app restarts or fatal error in conversation
-        _convId = newConvId();
-        var logId = _convId!.substring(_convId!.length - 4); // only for logging
-        _hubMessages = PersistentWebSocket(logId, Logger('pws'));
-      }
-      var uri = Uri(
-          scheme: 'wss',
-          host: loginState.hub,
-          port: 8443,
-          path: '/rpc1/$authAccount/$_convId');
-      _log.info("connecting to $uri");
-      _hubMessages!.connect(uri).onError((err, stackTrace) {
-        _log.warning("B17834 pws: $err");
-      });
-      _state = States.connecting;
-      var channel = sc.StreamChannel(
-          // in-bound stream, convert bytes to String (JSON)
-          _hubMessages!.stream
-              .asyncMap((data) => convert.utf8.decode(List<int>.from(data))),
-          // out-bound sink
-          _hubMessages!.sink);
-      _rpc = jsonrpc.Client(channel.cast<String>());
-      dasync.unawaited(_rpc!.listen()); // tell jsonrpc to subscribe to input
-    } catch (err) {
-      _log.warning("B40125 pws: $err");
+    if (_convId == null) {
+      // get new _convId when app restarts or fatal error in conversation
+      _convId = newConvId();
+      var logId = _convId!.substring(_convId!.length - 4); // only for logging
+      _hubMessages = PersistentWebSocket(logId, Logger('pws'));
     }
+    var uri = Uri(
+        scheme: 'wss',
+        host: loginState.hub,
+        port: 8443,
+        path: '/rpc1/$authAccount/$_convId');
+    _log.info("connecting to $uri");
+    _hubMessages!.connect(uri); // don't await; future doesn't complete until disconnect
+    _state = States.connecting;
+    var channel = sc.StreamChannel(
+        // in-bound stream, convert bytes to String (JSON)
+        _hubMessages!.stream
+            .asyncMap((data) => convert.utf8.decode(List<int>.from(data))),
+        // out-bound sink
+        _hubMessages!.sink);
+    _rpc = jsonrpc.Client(channel.cast<String>());
+    dasync.unawaited(_rpc!.listen()); // tell jsonrpc to subscribe to input
   }
 }
 

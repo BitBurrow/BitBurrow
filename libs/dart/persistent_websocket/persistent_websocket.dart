@@ -197,10 +197,11 @@ class PersistentWebSocket {
         var e = err.toString();
         if (e.startsWith('WebSocketException: Connection to ') &&
             e.endsWith(' was not upgraded to websocket')) {
-          _log.severe(
-              "B66703 not upgraded to WebSocket"); // maybe 403 Forbidden
+          // maybe 403 Forbidden
+          throw PWUnrecoverableError("B66703 coupon code or login key not found; "
+              "make sure it was entered correctly");
         } else {
-          _log.severe("B44148 WebSocketException $e");
+          throw PWUnrecoverableError("B44148 WebSocketException $e");
         }
       } on io.SocketException catch (err) {
         var e = err.toString();
@@ -215,8 +216,9 @@ class PersistentWebSocket {
         } else {
           _log.severe("B19891 SocketException $e");
         }
-      } catch (err) {
-        _log.severe("B66701 $e");
+      } catch (err, stackTrace) {
+        _log.severe("B66701 unknown exception $err; \n"
+            "======= stacktrace:\n$stackTrace");
         rethrow;
       }
       await Future.delayed(const Duration(seconds: 5));
