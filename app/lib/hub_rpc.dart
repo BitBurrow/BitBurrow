@@ -54,28 +54,34 @@ class HubRpc {
     } else {
       authAccount = loginState.pureLoginKey;
     }
-    if (_convId == null) {
-      // get new _convId when app restarts or fatal error in conversation
-      _convId = newConvId();
-      var logId = _convId!.substring(_convId!.length - 4); // only for logging
-      _hubMessages = PersistentWebSocket(logId, Logger('pws'));
+    try {
+      if (_convId == null) {
+        // get new _convId when app restarts or fatal error in conversation
+        _convId = newConvId();
+        var logId = _convId!.substring(_convId!.length - 4); // only for logging
+        _hubMessages = PersistentWebSocket(logId, Logger('pws'));
+      }
+      var uri = Uri(
+          scheme: 'wss',
+          host: loginState.hub,
+          port: 8443,
+          path: '/rpc1/$authAccount/$_convId');
+      _log.info("connecting to $uri");
+      _hubMessages!.connect(uri); // don't await; future doesn't complete until disconnect
+      _state = States.connecting;
+      var channel = sc.StreamChannel(
+          // in-bound stream, convert bytes to String (JSON)
+          _hubMessages!.stream
+              .asyncMap((data) => convert.utf8.decode(List<int>.from(data))),
+          // out-bound sink
+          _hubMessages!.sink);
+      _rpc = jsonrpc.Client(channel.cast<String>());
+      dasync.unawaited(_rpc!.listen()); // tell jsonrpc to subscribe to input
+    } on PWUnrecoverableError catch (err) {
+      // use specific name for what failed
+      throw Exception(err.message.replaceFirst(lkoccString,
+          authAccount == loginState.pureCoupon ? "coupon code" : "login key"));
     }
-    var uri = Uri(
-        scheme: 'wss',
-        host: loginState.hub,
-        port: 8443,
-        path: '/rpc1/$authAccount/$_convId');
-    _log.info("connecting to $uri");
-    _hubMessages!.connect(uri); // don't await; future doesn't complete until disconnect
-    _state = States.connecting;
-    var channel = sc.StreamChannel(
-        // in-bound stream, convert bytes to String (JSON)
-        _hubMessages!.stream
-            .asyncMap((data) => convert.utf8.decode(List<int>.from(data))),
-        // out-bound sink
-        _hubMessages!.sink);
-    _rpc = jsonrpc.Client(channel.cast<String>());
-    dasync.unawaited(_rpc!.listen()); // tell jsonrpc to subscribe to input
   }
 }
 

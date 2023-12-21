@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
+import 'persistent_websocket.dart';
 import 'main.dart';
 
 final _log = Logger('parent_form_state');
@@ -161,19 +162,19 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
       }
     });
     var futureDelay = Future.delayed(const Duration(seconds: 1), () {});
-    String title = "Verification failed";
     String? error;
     try {
       await callApi();
-    } catch (err) {
-      error = err.toString();
-      int beforeLen = error.length;
-      // -25718 is arbitrary, matches use in hub/db.py
-      error = error.replaceFirst("JSON-RPC error -25718: ", "");
-      if (beforeLen == error.length) {
-        // message is not from hub, i.e. network issue or hub is down
-        title = "Unable to connect";
-        error = "Unable to connect to hub \"$hub\" (error \"$error\").";
+    } catch (err, stackTrace) {
+      if (err is PWUnrecoverableError) {
+        error = err.message;
+      } else {
+        _log.severe("B51175 unknown exception $err; \n"
+            "======= stacktrace:\n$stackTrace");
+        error = err.toString();
+        // -25718 is arbitrary, matches use in hub/db.py
+        error = error.replaceFirst("JSON-RPC error -25718: ", "");
+        error = error.replaceFirst("Exception: ", "");
       }
       // FIXME: filter displayError for login codes; see pureAccountRE
     }
@@ -201,7 +202,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     _log.warning("B84481 finished $hub RPC: $error");
     await notificationDialog(
       context: context,
-      title: title,
+      title: "Something went wrong",
       text: sentencify(error),
       buttonText: "OK",
     );

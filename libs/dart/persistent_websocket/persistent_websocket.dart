@@ -68,6 +68,8 @@ class PWUnrecoverableError implements Exception {
   PWUnrecoverableError(this.message);
 }
 
+const lkoccString = '__login_key_or_coupon_code__';
+
 /// concatinate Uint8Lists
 Uint8List cat(Uint8List part1, Uint8List part2) {
   var chunk = BytesBuilder();
@@ -198,7 +200,7 @@ class PersistentWebSocket {
         if (e.startsWith('WebSocketException: Connection to ') &&
             e.endsWith(' was not upgraded to websocket')) {
           // maybe 403 Forbidden
-          throw PWUnrecoverableError("B66703 coupon code or login key not found; "
+          throw PWUnrecoverableError("B66703 $lkoccString not found; "
               "make sure it was entered correctly");
         } else {
           throw PWUnrecoverableError("B44148 WebSocketException $e");
