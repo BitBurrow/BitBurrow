@@ -33,6 +33,10 @@ class HubRpc {
 
   Future sendRequest(String method, [parameters, int timeOut = 45]) {
     connect(); // make sure we're connected or connecting
+    if (_rpc == null) {
+      // should never happen
+      throw PWUnrecoverableError("B98002 unexpected disconnect");
+    }
     // docs: https://pub.dev/packages/json_rpc_2`
     return _rpc!
         .sendRequest(method, parameters)
@@ -57,14 +61,13 @@ class HubRpc {
         var logId = _convId!.substring(_convId!.length - 4); // only for logging
         _hubMessages = PersistentWebSocket(logId, Logger('pws'));
       }
-      var url = Uri(
-              scheme: 'wss',
-              host: loginState.hub,
-              port: 8443,
-              path: '/rpc1/$authAccount/$_convId')
-          .toString();
-      _log.info("connecting to $url");
-      _hubMessages!.connect(url).onError((err, stackTrace) {
+      var uri = Uri(
+          scheme: 'wss',
+          host: loginState.hub,
+          port: 8443,
+          path: '/rpc1/$authAccount/$_convId');
+      _log.info("connecting to $uri");
+      _hubMessages!.connect(uri).onError((err, stackTrace) {
         _log.warning("B17834 pws: $err");
       });
       _state = States.connecting;

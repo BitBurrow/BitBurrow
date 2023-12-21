@@ -8,7 +8,7 @@ import 'dart:typed_data';
 import 'dart:io' as io;
 import 'package:logging/logging.dart';
 import 'package:mutex/mutex.dart';
-import 'package:web_socket_channel/io.dart' as wsc;
+import 'package:web_socket_channel/io.dart' as wsio;
 
 const maxLsb = 32768; // always 32768 (2**15) except for testing (tested 64, 32)
 const maxSendBuffer = 100; // not sure what a reasonable number here would be
@@ -134,7 +134,7 @@ class PersistentWebSocket {
   final String logId;
   // convert Python logger: error→severe; warn→warning; info→info; debug→config
   final Logger _log;
-  wsc.IOWebSocketChannel? _ws;
+  wsio.IOWebSocketChannel? _ws;
   // String? _url;
   int _inIndex = 0;
   int _inLastAck = 0;
@@ -159,7 +159,7 @@ class PersistentWebSocket {
     });
   }
 
-  Future<void> connected(wsc.IOWebSocketChannel ws) async {
+  Future<void> connected(wsio.IOWebSocketChannel ws) async {
     if (connectLock.isLocked) {
       _log.warning("B30103 $logId waiting for current WebSocket to close");
     }
@@ -180,15 +180,16 @@ class PersistentWebSocket {
   }
 
   // attempt to connect; return WebSocket upon connect, exception for fatal errors
-  Future<wsc.IOWebSocketChannel> _reconnect(String url) async {
+  Future<wsio.IOWebSocketChannel> _reconnect(Uri uri) async {
     while (true) {
       // loop until we connect or get fatal error
       // https://github.com/dart-lang/web_socket_channel/issues/61#issuecomment-1127554042
       final httpClient = io.HttpClient();
       httpClient.connectionTimeout = const Duration(seconds: 20);
       try {
-        return wsc.IOWebSocketChannel(
-            await io.WebSocket.connect(url, customClient: httpClient));
+        return wsio.IOWebSocketChannel(await io.WebSocket.connect(
+            uri.toString(),
+            customClient: httpClient));
         // ¿replace above with this?: return await wsc.IOWebSocketChannel.connect(url, customClient: httpClient);
       } on PWUnrecoverableError {
         rethrow;
@@ -222,7 +223,7 @@ class PersistentWebSocket {
     }
   }
 
-  Future<void> connect(String url) async {
+  Future<void> connect(Uri uri) async {
     if (connectLock.isLocked) {
       _log.warning("B18450 $logId waiting for current WebSocket to close");
     }
@@ -231,7 +232,7 @@ class PersistentWebSocket {
         // _url = url;
         // keep reconnecting
         while (true) {
-          setOnlineMode(await _reconnect(url));
+          setOnlineMode(await _reconnect(uri));
           await listen();
         }
       });

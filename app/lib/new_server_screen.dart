@@ -42,9 +42,13 @@ class NewServerFormState extends ParentFormState {
   bool _needToScrollToBottom = false;
 
   NewServerFormState() : super() {
-    var url = 'wss://$hub:8443/v1/managers/$lk/servers/18/setup';
+    var uri = Uri(
+        scheme: 'wss',
+        host: hub,
+        port: 8443,
+        path: '/v1/managers/$lk/servers/18/setup');
     try {
-      _hubMessages.connect(url).onError((err, stackTrace) {
+      _hubMessages.connect(uri).onError((err, stackTrace) {
         _log.warning("B47455 pws: $err");
       });
     } catch (err) {
