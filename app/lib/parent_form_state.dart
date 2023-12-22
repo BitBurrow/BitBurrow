@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
 import 'persistent_websocket.dart';
+import 'hub_rpc.dart';
 import 'main.dart';
 
 final _log = Logger('parent_form_state');
@@ -147,9 +148,11 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     form.save();
     var hub = getHubValue(); // if user cancels dialog, hub and ...
     // getHubValue() may not be the same because this method is re-entered
+    final rpc = HubRpc.instance;
     var connectingDialog = notificationDialog(
       context: context,
       title: "Connecting to hub ...",
+      messages: rpc.err,
       buttonText: "CANCEL",
     );
     var dialogState = DialogStates.open;
@@ -332,7 +335,16 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
                               ConnectionState.done) {
                             return const Text("");
                           } else if (snapshot.hasError) {
-                            return const Text("error 5007");
+                            if (snapshot.error is PWUnrecoverableError) {
+                              PWUnrecoverableError err =
+                                  snapshot.error as PWUnrecoverableError;
+                              return Text(sentencify(err.message));
+                            } else {
+                              _log.severe(
+                                  "B18189 unknown exception ${snapshot.error}; \n"
+                                  "======= stacktrace:\n${snapshot.stackTrace}");
+                              return const Text("B50071 internal error");
+                            }
                           } else {
                             return textMd(context, snapshot.data ?? "");
                           }

@@ -133,7 +133,7 @@ class PersistentWebSocket {
   static const _sigResendError = 0x8012;
   static const _sigPing = 0x8020;
   static const _sigPong = 0x8021;
-  final String logId;
+  String logId;
   // convert Python logger: error→severe; warn→warning; info→info; debug→config
   final Logger _log;
   wsio.IOWebSocketChannel? _ws;
@@ -153,6 +153,8 @@ class PersistentWebSocket {
   Stream<Uint8List> get stream => _inController.stream; // in-bound (Uint8List)
   final _outController = StreamController();
   StreamSink get sink => _outController.sink; // out-bound (String or Uint8List)
+  final _errController = StreamController<String>();
+  Stream<String> get err => _errController.stream; // status/error messages
   bool _ipi = false;
 
   PersistentWebSocket(this.logId, this._log) {
@@ -240,8 +242,8 @@ class PersistentWebSocket {
           await listen();
         }
       });
-    } on PWUnrecoverableError {
-      rethrow;
+    } on PWUnrecoverableError catch (err) {
+      _errController.sink.addError(err);
     } catch (err, stackTrace) {
       _log.severe("B76104 unknown exception $err; \nstacktrace:\n$stackTrace");
       rethrow;

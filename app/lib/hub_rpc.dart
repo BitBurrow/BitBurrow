@@ -11,18 +11,11 @@ import 'main.dart';
 final _log = Logger('hub_rpc');
 var loginState = LoginState.instance;
 
-enum States {
-  notConnected,
-  connectionFailed, // not worth retrying unless hub or authAccount change
-  connecting,
-  connected, // WebSocket may be attempting to reconnect
-}
-
 class HubRpc {
-  var _state = States.notConnected;
   static String? _convId; // conversation ID, unique per hub conversation
-  static PersistentWebSocket? _hubMessages;
-  jsonrpc.Client? _rpc;
+  final _hubMessages = PersistentWebSocket('null', Logger('pws'));
+  jsonrpc.Client? _rpc; // docs: https://pub.dev/packages/json_rpc_2
+  Stream<String> get err => _hubMessages.err; // status/error messages
   static HubRpc? _instance; // singleton--one conversation with hub for the app
   HubRpc._();
 
@@ -44,8 +37,11 @@ class HubRpc {
     // pass exceptions on to caller
   }
 
+  /// Establish connection to hub using JSON-RPC over PersistentWebSocket
   Future<void> connect() async {
-    if (_state == States.connecting || _state == States.connected) return;
+    if (_rpc != null) {
+      return;
+    }
     var authAccount = ""; // can be any valid login key or coupon
     if (loginState.loginKeyVerified && loginState.loginKey.isNotEmpty) {
       authAccount = loginState.pureLoginKey;
@@ -59,7 +55,7 @@ class HubRpc {
         // get new _convId when app restarts or fatal error in conversation
         _convId = newConvId();
         var logId = _convId!.substring(_convId!.length - 4); // only for logging
-        _hubMessages = PersistentWebSocket(logId, Logger('pws'));
+        _hubMessages.logId = logId;
       }
       var uri = Uri(
           scheme: 'wss',
@@ -67,14 +63,13 @@ class HubRpc {
           port: 8443,
           path: '/rpc1/$authAccount/$_convId');
       _log.info("connecting to $uri");
-      _hubMessages!.connect(uri); // don't await; future doesn't complete until disconnect
-      _state = States.connecting;
+      _hubMessages.connect(uri); // Future doesn't complete until disconnect
       var channel = sc.StreamChannel(
           // in-bound stream, convert bytes to String (JSON)
-          _hubMessages!.stream
+          _hubMessages.stream
               .asyncMap((data) => convert.utf8.decode(List<int>.from(data))),
           // out-bound sink
-          _hubMessages!.sink);
+          _hubMessages.sink);
       _rpc = jsonrpc.Client(channel.cast<String>());
       dasync.unawaited(_rpc!.listen()); // tell jsonrpc to subscribe to input
     } on PWUnrecoverableError catch (err) {
