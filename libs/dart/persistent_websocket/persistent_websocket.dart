@@ -243,9 +243,12 @@ class PersistentWebSocket {
         }
       });
     } on PWUnrecoverableError catch (err) {
-      _errController.sink.addError(err);
-    } catch (err, stackTrace) {
-      _log.severe("B76104 unknown exception $err; \nstacktrace:\n$stackTrace");
+      _errController.sink.addError(err); // convey message to UI
+      _inController.sink.addError(err); // cause jsonrpc.sendRequest() to abort
+      rethrow; // force `_rpc = null;` in HubRpc to force reconnection
+    } catch (err, stacktrace) {
+      _log.severe("B76104 unknown exception $err; \n"
+          "======= stacktrace:\n$stacktrace");
       rethrow;
     } finally {
       await setOfflineMode();
