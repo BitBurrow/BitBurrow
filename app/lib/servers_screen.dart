@@ -31,6 +31,9 @@ class ServersFormState extends ParentFormState {
   String get restorationId => 'servers_form';
 
   @override
+  String get lkocc => "null";
+
+  @override
   Future<void> callApi() async {
     final rpc = HubRpc.instance;
     var response = await rpc.sendRequest(

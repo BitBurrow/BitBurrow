@@ -34,6 +34,9 @@ class WelcomeFormState extends ParentFormState {
   String get restorationId => 'welcome_form';
 
   @override
+  String get lkocc => "coupon code";
+
+  @override
   Future<void> callApi() async {
     loginState.loginKeyVerified = false; // for success or excpetion, invalidate
     final rpc = HubRpc.instance;

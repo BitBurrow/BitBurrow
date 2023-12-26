@@ -52,47 +52,41 @@ class HubRpc {
     } else {
       authAccount = loginState.pureLoginKey;
     }
-    try {
-      // get new _convId when app restarts or fatal error in conversation
-      _convId = newConvId();
-      var logId = _convId!.substring(_convId!.length - 4); // only for logging
-      var uri = Uri(
-          scheme: 'wss',
-          host: loginState.hub,
-          port: 8443,
-          path: '/rpc1/$authAccount/$_convId');
-      _log.info("B28388 connecting to $uri");
-      _hubMessages = PersistentWebSocket(logId, Logger('pws'));
-      // copy messages from PersistentWebSocket (recreated after errors)
-      // to our singleton broadcast stream
-      _hubMessages!.err.listen(
-        (data) {
-          _errController.sink.add(data);
-        },
-        onError: (err) {
-          _errController.sink.addError(err);
-        },
-        cancelOnError: false,
-      );
-      // .connect() future doesn't complete until disconnect
-      Future<void> pws = _hubMessages!.connect(uri);
-      pws.onError((error, stacktrace) {
-        _rpc = null; // force reconnect on next sendRequest()
-        // ignore actual error because it was sent via _hubMessages.err()
-      });
-      var channel = sc.StreamChannel(
-          // in-bound stream, convert bytes to String (JSON)
-          _hubMessages!.stream
-              .asyncMap((data) => convert.utf8.decode(List<int>.from(data))),
-          // out-bound sink
-          _hubMessages!.sink);
-      _rpc = jsonrpc.Client(channel.cast<String>());
-      unawaited(_rpc!.listen()); // tell jsonrpc to subscribe to input
-    } on PWUnrecoverableError catch (err) {
-      // use specific name for what failed
-      throw Exception(err.message.replaceFirst(lkoccString,
-          authAccount == loginState.pureCoupon ? "coupon code" : "login key"));
-    }
+    // get new _convId when app restarts or fatal error in conversation
+    _convId = newConvId();
+    var logId = _convId!.substring(_convId!.length - 4); // only for logging
+    var uri = Uri(
+        scheme: 'wss',
+        host: loginState.hub,
+        port: 8443,
+        path: '/rpc1/$authAccount/$_convId');
+    _log.info("B28388 connecting to $uri");
+    _hubMessages = PersistentWebSocket(logId, Logger('pws'));
+    // copy messages from PersistentWebSocket (recreated after errors)
+    // to our singleton broadcast stream
+    _hubMessages!.err.listen(
+      (data) {
+        _errController.sink.add(data);
+      },
+      onError: (err) {
+        _errController.sink.addError(err);
+      },
+      cancelOnError: false,
+    );
+    // .connect() future doesn't complete until disconnect
+    Future<void> pws = _hubMessages!.connect(uri);
+    pws.onError((error, stacktrace) {
+      _rpc = null; // force reconnect on next sendRequest()
+      // ignore actual error because it was sent via _hubMessages.err()
+    });
+    var channel = sc.StreamChannel(
+        // in-bound stream, convert bytes to String (JSON)
+        _hubMessages!.stream
+            .asyncMap((data) => convert.utf8.decode(List<int>.from(data))),
+        // out-bound sink
+        _hubMessages!.sink);
+    _rpc = jsonrpc.Client(channel.cast<String>());
+    unawaited(_rpc!.listen()); // tell jsonrpc to subscribe to input
   }
 }
 

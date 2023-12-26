@@ -41,6 +41,9 @@ class SignInFormState extends ParentFormState {
   String get restorationId => 'sign_in_form';
 
   @override
+  String get lkocc => "login key";
+
+  @override
   Future<void> callApi() async {
     loginState.loginKeyVerified = false; // in case an exception is thrown
     final rpc = HubRpc.instance;

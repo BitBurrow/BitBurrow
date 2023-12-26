@@ -114,6 +114,9 @@ class PWUnrecoverableError(Exception):
         super().__init__(self.message)
 
 
+lkocc_string = '__login_key_or_coupon_code__'
+
+
 # make binary data more readable for humans
 def printable_hex(chunk):
     out = list()

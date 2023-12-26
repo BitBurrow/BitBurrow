@@ -71,6 +71,9 @@ class NewServerFormState extends ParentFormState {
   String get restorationId => 'new_server_form';
 
   @override
+  String get lkocc => "null";
+
+  @override
   Future<void> callApi() async {}
 
   @override

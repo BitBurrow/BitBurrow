@@ -11,10 +11,15 @@ import socket
 import subprocess
 import sqlalchemy
 from sqlmodel import Field, Session, SQLModel, select, JSON, Column
+import sys
 import tempfile
 from typing import Optional
 import yaml
 import hub.login_key as lk
+
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(base_dir, "libs", "python"))
+import persistent_websocket.persistent_websocket as persistent_websocket
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -269,9 +274,11 @@ class Account(SQLModel, table=True):
     @staticmethod
     def validate_login_key(login_key, allowed_kinds=None):
         if len(login_key) != lk.login_key_len:
-            raise RpcException(f"B64292 login key length must be {lk.login_key_len}")
+            raise RpcException(
+                f"B64292 {persistent_websocket.lkocc_string} length must be {lk.login_key_len}"
+            )
         if not set(lk.base28_digits).issuperset(login_key):
-            raise RpcException("B51850 invalid login key characters")
+            raise RpcException("B51850 invalid {persistent_websocket.lkocc_string} characters")
         with Session(engine) as session:
             statement = select(Account).where(Account.login == Account.login_portion(login_key))
             result = session.exec(statement).one_or_none()
@@ -282,13 +289,16 @@ class Account(SQLModel, table=True):
         try:
             hasher.verify(key_hash_to_test, key)
         except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.InvalidHash):
-            raise RpcException("B54441 login key not found; make sure it was entered correctly")
+            raise RpcException(
+                f"B54441 {persistent_websocket.lkocc_string} not found; "
+                "make sure it was entered correctly"
+            )
         if hasher.check_needs_rehash(key_hash_to_test):
             result.key_hash = hasher.hash(key)  # FIXME: untested
             result.update()
             logger.info("B74657 rehashed {login_key}")
         if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise RpcException("B18952 login key expired")
+            raise RpcException("B18952 {persistent_websocket.lkocc_string} expired")
         if allowed_kinds is not None:
             if result.kind not in allowed_kinds:
                 if result.kind in admin_or_manager and allowed_kinds == coupon:
