@@ -3,7 +3,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert' as convert;
-import 'dart:math';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:io' as io;
 import 'package:logging/logging.dart';
@@ -268,7 +268,7 @@ class PersistentWebSocket {
       }
       var message = await processInbound(chunk);
       if (chaos > 0) {
-        final random = Random();
+        final random = math.Random();
         if (chaos > random.nextInt(1000)) {
           _log.warning(
               "B66741 $logId randomly closing WebSocket to test recovery");
@@ -315,7 +315,7 @@ class PersistentWebSocket {
     _sendRaw(chunk);
     enableJournalTimer();
     if (chaos > 0) {
-      final random = Random();
+      final random = math.Random();
       if (chaos > random.nextInt(1000)) {
         _log.warning(
             "B14264 $logId randomly closing WebSocket to test recovery");

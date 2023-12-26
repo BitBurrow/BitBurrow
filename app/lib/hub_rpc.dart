@@ -1,4 +1,4 @@
-import 'dart:async' as dasync;
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:stream_channel/stream_channel.dart' as sc;
 import 'package:json_rpc_2/json_rpc_2.dart' as jsonrpc;
@@ -71,7 +71,7 @@ class HubRpc {
           // out-bound sink
           _hubMessages.sink);
       _rpc = jsonrpc.Client(channel.cast<String>());
-      dasync.unawaited(_rpc!.listen()); // tell jsonrpc to subscribe to input
+      unawaited(_rpc!.listen()); // tell jsonrpc to subscribe to input
     } on PWUnrecoverableError catch (err) {
       // use specific name for what failed
       throw Exception(err.message.replaceFirst(lkoccString,
