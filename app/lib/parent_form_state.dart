@@ -127,7 +127,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
     var connectingDialog = notificationDialog(
       context: context,
       title: "Connecting to hub ...",
-      messages: rpc.err,
+      messages: rpc.err.map((value) => sentencify(value)),
       buttonText: "CANCEL",
     );
     var dialogState = DialogStates.open;
@@ -442,12 +442,13 @@ String exceptionText(Object err, StackTrace? stacktrace, lkocc) {
 /// Make error message more human-readable.
 String sentencify(String input) {
   // Example: "B32521 incorrect action;  invalidating"
-  // becomes: "Incorrect action. Invalidating. B32521"
+  // becomes: "Incorrect action. Invalidating.   [B32521]"
   String suffix = "";
   var berrorCodeMatch = RegExp(r'^B\d{5}\s+').firstMatch(input);
   if (berrorCodeMatch != null) {
     var berrorCode = berrorCodeMatch.group(0) ?? "";
-    suffix = " ${berrorCode.trim()}";
+    suffix = "   [${berrorCode.trim()}]";
+    // could try superscript: "ᴮ⁸²⁴³⁰" instead of "[B82430]"
     input = input.substring(berrorCode.length);
   }
   if (input.isNotEmpty) {
