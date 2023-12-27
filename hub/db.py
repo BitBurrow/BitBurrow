@@ -302,9 +302,15 @@ class Account(SQLModel, table=True):
         if allowed_kinds is not None:
             if result.kind not in allowed_kinds:
                 if result.kind in admin_or_manager and allowed_kinds == coupon:
-                    raise RpcException("B10052 this is a login key; a coupon code is needed")
+                    raise RpcException(
+                        "B10052 this is a login key; please enter a coupon code "
+                        "or select 'Sign in' from the ⋮ menu"
+                    )
                 elif result.kind in coupon and allowed_kinds == admin_or_manager:
-                    raise RpcException("B20900 this is a coupon code; a login key is needed")
+                    raise RpcException(
+                        "B20900 this is a coupon code; please enter a login key "
+                        " or seelct 'Enter a coupon code' from the ⋮ menu"
+                    )
                 else:
                     raise RpcException("B96593 invalid account kind")
         # FIXME: verify pubkey limit
