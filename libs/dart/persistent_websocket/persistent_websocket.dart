@@ -70,7 +70,7 @@ class PWUnrecoverableError implements Exception {
 
 const lkoccString = '__login_key_or_coupon_code__';
 
-/// concatinate Uint8Lists
+/// Concatinate Uint8Lists.
 Uint8List cat(Uint8List part1, Uint8List part2) {
   var chunk = BytesBuilder();
   chunk.add(part1);
@@ -78,7 +78,7 @@ Uint8List cat(Uint8List part1, Uint8List part2) {
   return (chunk.toBytes());
 }
 
-// make binary data more readable for humans
+// Make binary data more readable for humans.
 String printableHex(Uint8List chunk) {
   StringBuffer out = StringBuffer();
   StringBuffer quote = StringBuffer(); // quoted ascii text
@@ -119,6 +119,123 @@ printableHexTest() {
       "'hello' 0A 0A 0A 'shouldn' 27 't \\ backslash' E2 9C 94 ' done' 0A";
   assert(printableHex(Uint8List.fromList(chunkTest.codeUnits)) == chunkTestOut);
 }
+
+/// Implement a never-resets 'try' count.
+class RetryCounter {
+  static int _count = 0;
+
+  static int next() {
+    _count += 1;
+    return _count;
+  }
+}
+
+/// Check if host has valid DNS. Return an error message or "".
+Future<String> dnsCheck(String host) async {
+  try {
+    List<io.InternetAddress> addresses = await io.InternetAddress.lookup(host);
+    if (addresses.isEmpty) {
+      return "B58730 cannot find a valid address for $host; "
+          "check that it is typed correctly";
+    }
+    return "";
+  } on io.SocketException {
+    return "B51526 $host seems to be an invalid name; "
+        "check that it is typed correctly";
+  }
+}
+
+/// Convert exception into error message. Throw PWUnrecoverableError if fatal.
+Future<String> exceptionText(Object err, StackTrace? stacktrace, host) async {
+  var e = err.toString().replaceAll(RegExp(r'\s+'), ' ');
+  if (err is io.WebSocketException) {
+    if (e.startsWith('WebSocketException: Connection to ') &&
+        e.endsWith(' was not upgraded to websocket')) {
+      // maybe 403 Forbidden
+      throw PWUnrecoverableError("B66703 $lkoccString not found; "
+          "make sure it was entered correctly");
+    }
+  } else if (err is io.SocketException) {
+    e = e.replaceFirst(RegExp(r'^SocketException: '), '');
+    if (e.startsWith('No route to host')) {
+      return "B55714 unable to connect to $host; "
+          "at the moment (try ${RetryCounter.next()}); retrying ...";
+    } else if (e.startsWith('No address associated with hostname') ||
+        e.startsWith('Failed host lookup')) {
+      String exampleOrg = await dnsCheck('example.org');
+      if (exampleOrg.isEmpty) {
+        // DNS for example.org works, so problem is probably with host
+        throw PWUnrecoverableError("B32177 cannot connect to $host; "
+            "check that it is typed correctly or try again later");
+      }
+      return "B89962 your internet connection seems to not be working "
+          "at the moment (try ${RetryCounter.next()}); retrying ...";
+    } else if (e.startsWith('Connection refused')) {
+      throw PWUnrecoverableError("B66702 cannot connect to $host; "
+          "check that it is typed correctly or try again later");
+    } else if (e.startsWith('Connection reset by peer')) {
+      throw PWUnrecoverableError("B66704 there was a problem with "
+          "the connection to $host; check that it is typed correctly "
+          "or try again later");
+    } else if (e.startsWith('HTTP connection timed out')) {
+      throw PWUnrecoverableError("B66705 the connection timed out; "
+          "check your internet connection and try again");
+    }
+  } else if (e.startsWith("HandshakeException: Handshake error in client")) {
+    // TLS not available at the TCP port (e.g. http, ssh)
+    throw PWUnrecoverableError("B76376 there was a problem making a secure "
+        "connection to $host; check that it is typed correctly "
+        "or try again later");
+  }
+  throw PWUnrecoverableError("B19891 unable to connect to "
+      "$host: $e");
+}
+
+/// Test connection via TCP and TLS.
+/// Return an error message or "". Throws PWUnrecoverableError if fatal.
+Future<String> connectivityCheck(String host, int port) async {
+  try {
+    var socket = await io.SecureSocket.connect(host, port); // try TCP over TLS
+    await socket.close();
+    return "";
+  } catch (err, stacktrace) {
+    return await exceptionText(err, stacktrace, host);
+  }
+}
+
+// Future<void> connectivityCheckTest(uri) async {
+//   var toCheck = [
+//     'onfjdaiewtt.com:990',
+//     '${uri.host}:22',
+//     '${uri.host}:990',
+//     '${uri.host}:8000', // run on test hub: python3 -m http.server 8000
+//     '${uri.host}:8443',
+//     '${uri.host}:${uri.port}',
+//     '::1:22',
+//     '::1:990',
+//     '::1:8000',
+//     '::1:8443',
+//     '::1:${uri.port}',
+//     '127.0.0.1:22',
+//     '127.0.0.1:990',
+//     '127.0.0.1:8000',
+//     '127.0.0.1:8443',
+//     '127.0.0.1:${uri.port}',
+//   ];
+//   for (var hostPort in toCheck) {
+//     try {
+//       int lastColon = hostPort.lastIndexOf(':');
+//       String host = hostPort.substring(0, lastColon);
+//       int port = int.parse(hostPort.substring(lastColon + 1));
+//       print("====================== trying $host:$port");
+//       String errorMessage = await connectivityCheck(host, port);
+//       errorMessage = errorMessage.isEmpty ? "okay" : errorMessage;
+//       print("    $errorMessage");
+//     } on PWUnrecoverableError catch (err) {
+//       print("    PWUnrecoverableError: ${err.message}");
+//     }
+//   }
+// }
 
 /// Adds to WebSockets auto-reconnect and auto-resend of lost messages.
 ///
@@ -183,10 +300,10 @@ class PersistentWebSocket {
     }
   }
 
-  // attempt to connect; return WebSocket upon connect, exception for fatal errors
+  /// Attempt to connect. Return WebSocket upon connection.
   Future<wsio.IOWebSocketChannel> _reconnect(Uri uri) async {
+    // loop until we connect or get fatal error
     while (true) {
-      // loop until we connect or get fatal error
       // https://github.com/dart-lang/web_socket_channel/issues/61#issuecomment-1127554042
       final httpClient = io.HttpClient();
       httpClient.connectionTimeout = const Duration(seconds: 20);
@@ -195,35 +312,11 @@ class PersistentWebSocket {
             uri.toString(),
             customClient: httpClient));
         // ¿replace above with this?: return await wsc.IOWebSocketChannel.connect(url, customClient: httpClient);
-      } on PWUnrecoverableError {
-        rethrow;
-      } on io.WebSocketException catch (err) {
-        var e = err.toString();
-        if (e.startsWith('WebSocketException: Connection to ') &&
-            e.endsWith(' was not upgraded to websocket')) {
-          // maybe 403 Forbidden
-          throw PWUnrecoverableError("B66703 $lkoccString not found; "
-              "make sure it was entered correctly");
-        } else {
-          throw PWUnrecoverableError("B44148 WebSocketException $e");
+      } catch (err, stacktrace) {
+        String error = await exceptionText(err, stacktrace, uri.host);
+        if (error.isNotEmpty) {
+          _errController.sink.add(error);
         }
-      } on io.SocketException catch (err) {
-        var e = err.toString();
-        if (e.startsWith('SocketException: Connection refused')) {
-          _log.severe("B66702 connection refused");
-        } else if (e.startsWith('SocketException: Connection reset by peer')) {
-          _log.severe("B66704 connection reset by peer");
-        } else if (e.startsWith('SocketException: HTTP connection timed out')) {
-          _log.severe("B66705 connection timed out");
-        } else if (e.startsWith('SocketException: No route to host')) {
-          _log.severe("B55714 no route to host");
-        } else {
-          _log.severe("B19891 SocketException $e");
-        }
-      } catch (err, stackTrace) {
-        _log.severe("B66701 unknown exception $err; \n"
-            "======= stacktrace:\n$stackTrace");
-        rethrow;
       }
       await Future.delayed(const Duration(seconds: 5));
     }
