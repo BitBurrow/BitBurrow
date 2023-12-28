@@ -41,7 +41,25 @@ class HubRpc {
   /// (Re)establish connection to hub using JSON-RPC over PersistentWebSocket
   Future<void> connect() async {
     if (_rpc != null) {
-      return;
+      if (_hubMessages == null) {
+        throw PWUnrecoverableError("B91165 internal error");
+      }
+      if (loginState.hub == _hubMessages!.host) {
+        return; // already connected to the correct host
+      } else {
+        _hubMessages!.abandonConnection();
+        for (int ms = 0;; ms += 50) {
+          if (_rpc == null) {
+            // via `_rpc = null` in `pws.onError()` below
+            _log.config("B66547 took $ms ms to abandon connection");
+            break;
+          }
+          if (ms > 3000) {
+            throw PWUnrecoverableError("B87836 internal error");
+          }
+          await Future.delayed(const Duration(milliseconds: 50));
+        }
+      }
     }
     var authAccount = ""; // can be any valid login key or coupon
     // FIXME: consider replacing logic below with most recent RCP call to 'create_manager' or 'list_servers'

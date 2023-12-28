@@ -254,7 +254,7 @@ class PersistentWebSocket {
   // convert Python logger: error→severe; warn→warning; info→info; debug→config
   final Logger _log;
   wsio.IOWebSocketChannel? _ws;
-  // String? _url;
+  String host = "";
   int _inIndex = 0;
   int _inLastAck = 0;
   Timer? _inLastAckTimer;
@@ -272,6 +272,7 @@ class PersistentWebSocket {
   StreamSink get sink => _outController.sink; // out-bound (String or Uint8List)
   final _errController = StreamController<String>();
   Stream<String> get err => _errController.stream; // status/error messages
+  var _maintainConnection = true; // flag--set to false in abandonConnection()
   bool _ipi = false;
 
   PersistentWebSocket(this.logId, this._log) {
@@ -286,7 +287,6 @@ class PersistentWebSocket {
     }
     try {
       await connectLock.protect(() async {
-        // _url = null;
         setOnlineMode(ws);
         await listen();
       });
@@ -322,13 +322,14 @@ class PersistentWebSocket {
     }
   }
 
+  /// Initiate connection. Reconnect as needed. Can throw PWUnrecoverableError.
   Future<void> connect(Uri uri) async {
+    host = uri.host;
     if (connectLock.isLocked) {
       _log.warning("B18450 $logId waiting for current WebSocket to close");
     }
     try {
       await connectLock.protect(() async {
-        // _url = url;
         // keep reconnecting
         while (true) {
           setOnlineMode(await _reconnect(uri));
@@ -336,7 +337,9 @@ class PersistentWebSocket {
         }
       });
     } on PWUnrecoverableError catch (err) {
-      _errController.sink.addError(err); // convey message to UI
+      if (_maintainConnection) {
+        _errController.sink.addError(err); // convey message to UI
+      }
       _inController.sink.addError(err); // cause jsonrpc.sendRequest() to abort
       rethrow; // force `_rpc = null;` in HubRpc to force reconnection
     } catch (err, stacktrace) {
@@ -348,7 +351,7 @@ class PersistentWebSocket {
     }
   }
 
-  /// Accept chunks on the WebSocket connection and add messages to _controller
+  /// Accept chunks on the WebSocket connection and add messages to _controller.
   Future listen() async {
     _inLastResendTime = DateTime.utc(1970, 1, 1); // reset for new connection
     _sendResend(); // chunks were probably lost in the reconnect
@@ -376,6 +379,9 @@ class PersistentWebSocket {
       if (message != null) {
         _inController.sink.add(message);
       }
+    }
+    if (!_maintainConnection) {
+      throw PWUnrecoverableError("B47162 abandoning connection");
     }
     _log.info("B39888 $logId WebSocket closed");
     await setOfflineMode();
@@ -568,6 +574,14 @@ class PersistentWebSocket {
 
   Future<void> ping(Uint8List data) async {
     _sendRaw(cat(constOtw(_sigPing), data));
+  }
+
+  void abandonConnection() {
+    if (_ws == null) {
+      return;
+    }
+    _maintainConnection = false;
+    setOfflineMode();
   }
 
   bool isOnline() => _ws != null;
