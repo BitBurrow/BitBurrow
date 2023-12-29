@@ -35,10 +35,11 @@ def check_tls_cert(site, port):
                 else:
                     logger.debug(message)
         return days_remaining
+    except TimeoutError as e:
+        return -1  # 'Connection timed out', e.g. after `sudo iptables -A OUTPUT -j DROP`
     except Exception as e:
         # socket.gaierror, ConnectionRefusedError, ConnectionResetError, ssl.SSLCertVerificationError, etc.
-        logger.error(f"B44182 {str(e)}")
-        logger.error("B99323 cert failed to renew; see logs in /var/log/letsencrypt/")
+        logger.error(f"B44182 {str(e)} ({type(e)}) while checking TLS cert")
         return -1
 
 
