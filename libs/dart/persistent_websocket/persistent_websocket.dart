@@ -63,6 +63,82 @@ int unmod(int xx, int xxxx, {int w = maxLsb}) {
 //   }
 // }
 
+class Timekeeper {
+  late double _timeout;
+  final void Function() _callback;
+  bool _isPeriodic;
+  double _scaling;
+  final double _maxTimeout;
+  Timer? _timer;
+
+  Timekeeper(double timeout, this._callback,
+      {bool isPeriodic = false, double scaling = 1.0, double maxTimeout = 30.0})
+      : _timeout = timeout,
+        _isPeriodic = isPeriodic,
+        _scaling = scaling,
+        _maxTimeout = maxTimeout {
+    _startTimer();
+  }
+
+  factory Timekeeper.periodic(double timeout, void Function() callback) {
+    return Timekeeper(timeout, callback,
+        isPeriodic: true, scaling: 1.0, maxTimeout: double.infinity);
+  }
+
+  factory Timekeeper.exponential(double timeout, void Function() callback,
+      double scaling, double maxTimeout) {
+    return Timekeeper(timeout, callback,
+        isPeriodic: true, scaling: scaling, maxTimeout: maxTimeout);
+  }
+
+  void _startTimer() {
+    _timer = Timer(Duration(milliseconds: (_timeout * 1000).toInt()), _job);
+  }
+
+  Future _job() async {
+    _callback();
+    if (_isPeriodic) {
+      _timeout *= _scaling;
+      if (_timeout > _maxTimeout) {
+        _timeout = _maxTimeout;
+        _scaling = 1.0;
+      }
+      _startTimer();
+    }
+  }
+
+  void cancel() {
+    _isPeriodic = false;
+    _timer?.cancel();
+  }
+}
+
+// /// class Timekeeper usage:
+// void main() async {
+//   var start = DateTime.now();
+//
+//   void log(String s) {
+//     var elapsed = DateTime.now().difference(start).inSeconds;
+//     print('${elapsed.toString().padLeft(3, ' ')}s: $s');
+//   }
+//
+//   void fourSeconds() => log("            four seconds");
+//   void fiveSeconds() => log("                         five seconds");
+//   void twoSeconds() => log("two seconds");
+//
+//   var a = Timekeeper.periodic(4, fourSeconds);
+//   var b = Timekeeper(5, fiveSeconds);
+//   var c = Timekeeper.exponential(2, twoSeconds, 2, 45);
+//   log("zero seconds");
+//   await Future.delayed(const Duration(seconds: 30));
+//   log("            canceling four");
+//   a.cancel();
+//   await Future.delayed(const Duration(seconds: 60));
+//   log("done");
+//   b.cancel();
+//   c.cancel();
+// }
+
 class PWUnrecoverableError implements Exception {
   final String message;
   PWUnrecoverableError(this.message);
@@ -257,12 +333,12 @@ class PersistentWebSocket {
   String host = "";
   int _inIndex = 0;
   int _inLastAck = 0;
-  Timer? _inLastAckTimer;
+  Timekeeper? _inLastAckTimer;
   int _inLastResend = 0;
   var _inLastResendTime = DateTime.utc(1970, 1, 1);
   final Queue<Uint8List> _journal = Queue<Uint8List>();
   int _journalIndex = 0;
-  Timer? _journalTimer;
+  Timekeeper? _journalTimer;
   int connects = 0;
   int chaos = 0;
   final connectLock = Mutex();
@@ -428,7 +504,7 @@ class PersistentWebSocket {
     }
   }
 
-  void _resendOne(var timer) {
+  void _resendOne() {
     var journalLen = _journal.length;
     if (journalLen > 0) {
       var tailIndex = _journalIndex - _journal.length;
@@ -629,7 +705,7 @@ class PersistentWebSocket {
       return;
     }
     if (_journal.isNotEmpty && _journalTimer == null) {
-      _journalTimer = Timer.periodic(const Duration(seconds: 2), _resendOne);
+      _journalTimer = Timekeeper.periodic(2.0, _resendOne);
     }
   }
 
@@ -638,7 +714,7 @@ class PersistentWebSocket {
       return;
     }
     if (_inIndex > _inLastAck && _inLastAckTimer == null) {
-      _inLastAckTimer = Timer(const Duration(seconds: 1), _sendAck);
+      _inLastAckTimer = Timekeeper(1.0, _sendAck);
     }
   }
 }

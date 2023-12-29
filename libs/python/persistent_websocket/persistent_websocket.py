@@ -56,20 +56,32 @@ def unmod(xx, xxxx, w=max_lsb):
 #            #print(f"unmod({short}, {long}, {win}) == {n}")
 
 
-class Timer:  # based on https://stackoverflow.com/a/45430833
-    def __init__(self, timeout, callback, is_periodic=False):
+class Timekeeper:  # based on https://stackoverflow.com/a/45430833
+    def __init__(self, timeout, callback, is_periodic=False, scaling=1.0, max_timeout=30.0):
         self._timeout = timeout
         self._callback = callback
         self._is_periodic = is_periodic
+        self._scaling = scaling
+        self._max_timeout = max_timeout
         self._task = asyncio.create_task(self._job())
 
     @staticmethod
     def periodic(timeout, callback):
-        return Timer(timeout, callback, is_periodic=True)
+        return Timekeeper(timeout, callback, is_periodic=True, scaling=1.0, max_timeout=9999999)
+
+    @staticmethod
+    def exponential(timeout, callback, scaling=2.0, max_timeout=30.0):
+        return Timekeeper(
+            timeout, callback, is_periodic=True, scaling=scaling, max_timeout=max_timeout
+        )
 
     async def _job(self):
         while True:
             await asyncio.sleep(self._timeout)
+            self._timeout *= self._scaling
+            if self._timeout > self._max_timeout:
+                self._timeout = self._max_timeout
+                self._scaling = 1.0
             await self._callback()  # time spent in callback delays next callback
             if not self._is_periodic:
                 break
@@ -79,7 +91,10 @@ class Timer:  # based on https://stackoverflow.com/a/45430833
         self._task.cancel()
 
 
-# # class Timer usage:
+# # class Timekeeper usage:
+#
+# import asyncio
+# import time
 #
 # start = time.time()
 #
@@ -87,20 +102,23 @@ class Timer:  # based on https://stackoverflow.com/a/45430833
 #     print(f"{time.time()-start:3.0f}s: {s}")
 #
 # async def four_seconds():
-#     log("four seconds")
-#     await asyncio.sleep(7)
+#     log("            four seconds")
 #
 # async def five_seconds():
-#     log("five seconds")
+#     log("                         five seconds")
+#
+# async def two_seconds():
+#     log("two seconds")
 #
 # async def main():
-#     a = Timer.periodic(4, four_seconds)
-#     b = Timer(5, five_seconds)
+#     a = Timekeeper.periodic(4, four_seconds)
+#     b = Timekeeper(5, five_seconds)
+#     c = Timekeeper.exponential(2, two_seconds, 2, 45)
 #     log("zero seconds")
 #     await asyncio.sleep(30)
-#     log("thirty seconds")
+#     log("            canceling four")
 #     a.cancel()
-#     await asyncio.sleep(30)
+#     await asyncio.sleep(60)
 #     log("done")
 #
 # loop = asyncio.new_event_loop()
@@ -506,11 +524,11 @@ class PersistentWebsocket:
         if self.is_offline():
             return  # run timers only when online
         if len(self._journal) > 0 and self._journal_timer is None:
-            self._journal_timer = Timer.periodic(2, self._resend_one)
+            self._journal_timer = Timekeeper.periodic(2, self._resend_one)
 
     def enable_in_timer(self):
         """Set a timer to acknowledge receipt of received chunks"""
         if self.is_offline():
             return  # run timers only when online
         if self._in_index > self._in_last_ack and self._in_last_ack_timer is None:
-            self._in_last_ack_timer = Timer(1, self._send_ack)
+            self._in_last_ack_timer = Timekeeper(1, self._send_ack)
