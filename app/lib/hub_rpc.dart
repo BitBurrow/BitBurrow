@@ -25,16 +25,20 @@ class HubRpc {
     return _instance!;
   }
 
-  Future sendRequest(String method, [parameters, int timeOut = 45]) async {
+  Future sendRequest(String method, [parameters, int timeOut = 0]) async {
     await connect(); // make sure we're connected or connecting
     if (_rpc == null) {
       // should never happen
       throw PWUnrecoverableError("B98002 unexpected disconnect");
     }
     // docs: https://pub.dev/packages/json_rpc_2`
-    return _rpc!
-        .sendRequest(method, parameters)
-        .timeout(Duration(seconds: timeOut));
+    if (timeOut == 0) {
+      return _rpc!.sendRequest(method, parameters);
+    } else {
+      return _rpc!
+          .sendRequest(method, parameters)
+          .timeout(Duration(seconds: timeOut));
+    }
     // pass exceptions on to caller
   }
 
