@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -427,13 +428,16 @@ String exceptionText(Object err, StackTrace? stacktrace, lkocc) {
     error = err.message;
     // // -25718 is arbitrary, matches use in hub/db.py
     // error = error.replaceFirst("JSON-RPC error -25718: ", "");
+  } else if (err is TimeoutException &&
+      err.toString().contains(': Future not completed')) {
+    // probably from 'timeOut' option in 'sendRequest()'
+    error = "B99084 the operation took too long; try again later";
   } else {
     _log.severe("B18189 unknown exception $err (type ${err.runtimeType})");
     if (stacktrace != null) {
       _log.severe("======= stacktrace:\n$stacktrace");
     }
-    var error = err.toString();
-    error = error.replaceFirst("Exception: ", "");
+    error = err.toString().replaceFirst("Exception: ", "");
   }
   // FIXME: filter displayError for login codes; see pureAccountRE
   return error.replaceFirst(lkoccString, lkocc);
