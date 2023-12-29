@@ -170,6 +170,9 @@ Future<String> exceptionText(Object err, StackTrace? stacktrace, host) async {
       }
       return "B89962 your internet connection seems to not be working "
           "at the moment (try ${RetryCounter.next()}); retrying ...";
+    } else if (e.startsWith('HTTP connection timed out')) {
+      return "B66705 the connection timed out "
+          "(try ${RetryCounter.next()}); retrying ...";
     } else if (e.startsWith('Connection refused')) {
       throw PWUnrecoverableError("B66702 cannot connect to $host; "
           "check that it is typed correctly or try again later");
@@ -177,9 +180,6 @@ Future<String> exceptionText(Object err, StackTrace? stacktrace, host) async {
       throw PWUnrecoverableError("B66704 there was a problem with "
           "the connection to $host; check that it is typed correctly "
           "or try again later");
-    } else if (e.startsWith('HTTP connection timed out')) {
-      throw PWUnrecoverableError("B66705 the connection timed out; "
-          "check your internet connection and try again");
     }
   } else if (e.startsWith("HandshakeException: Handshake error in client")) {
     // TLS not available at the TCP port (e.g. http, ssh)
