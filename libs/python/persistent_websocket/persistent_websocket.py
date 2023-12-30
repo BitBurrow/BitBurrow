@@ -524,7 +524,7 @@ class PersistentWebsocket:
         if self.is_offline():
             return  # run timers only when online
         if len(self._journal) > 0 and self._journal_timer is None:
-            self._journal_timer = Timekeeper.periodic(2, self._resend_one)
+            self._journal_timer = Timekeeper.exponential(2.0, self._resend_one, 2.0, 30.0)
 
     def enable_in_timer(self):
         """Set a timer to acknowledge receipt of received chunks"""

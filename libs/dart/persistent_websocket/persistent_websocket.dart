@@ -705,7 +705,7 @@ class PersistentWebSocket {
       return;
     }
     if (_journal.isNotEmpty && _journalTimer == null) {
-      _journalTimer = Timekeeper.periodic(2.0, _resendOne);
+      _journalTimer = Timekeeper.exponential(2.0, _resendOne, 2.0, 30.0);
     }
   }
 

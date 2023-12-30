@@ -279,7 +279,8 @@ def monitor_tls_cert_file() -> None:
         monitor_tls_cert_file.call_count = 1
         monitor_tls_cert_file.minutes_waiting = 0
         return  # do nothing on first run (possible race condition)
-    if net.has_file_changed(ssl_keyfile):  # our TLS cert file has changed
+    file_changes = net.has_file_changed(ssl_keyfile, max_items=1)
+    if file_changes:  # our TLS cert file has changed
         connection_count = len(net.connected_inbound_list(8443))
         # if we have no TCP connections (but give up waiting after 24 hours)
         if connection_count == 0 or monitor_tls_cert_file.minutes_waiting > (60 * 24):
@@ -288,7 +289,7 @@ def monitor_tls_cert_file() -> None:
             net.watch_file(ssl_keyfile)
             del check_tls_cert_daily.call_count
             del check_tls_cert_at_startup.call_count
-            logger.info("B50371 Restarting Uvicorn to load new TLS certificate")
+            logger.info(f"B50371 Restarting Uvicorn (TLS cert file has new {file_changes})")
             time.sleep(1)  # help avoid race condition where ssl_cerfile has not yet been updated
             restarts_remaining = 1  # so ctrl-C won't exit the 'while' loop around uvicorn.run()
             us = psutil.Process()
@@ -300,7 +301,7 @@ def monitor_tls_cert_file() -> None:
             os.kill(us.pid, signal.SIGINT)
         else:
             logger.info(
-                f"B57200 need to restart to load new TLS certificate; waiting for "
+                f"B57200 need to restart (TLS cert file has new {file_changes}); waiting for "
                 f"{connection_count} connections to finish"
             )
             monitor_tls_cert_file.minutes_waiting += 1
