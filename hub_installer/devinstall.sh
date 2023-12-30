@@ -34,6 +34,6 @@ fi
 ## install BitBurrow hub from ~/dev/hub/ and local download cache
 
 echo ======= pip-installing BitBurrow hub =======
-python3 -m pip install dev/hub/ --no-index --find-links dev/dependencies/
+python3 -m pip install -qq dev/hub/ --no-index --find-links dev/dependencies/
 
-
+echo ======= finished installing =======
