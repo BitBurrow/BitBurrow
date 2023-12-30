@@ -48,7 +48,7 @@ def watch_file(path):
 
 
 def has_file_changed(path, begin_watching=False, max_items=9):
-    """Check if a file's time, size, etc. is the same as before.
+    """Check if a file's last-modified time and size are the same as before.
 
     The first call for any given file should set begin_watching=True and will return
     None iff there is any error. Subsequent calls will return diffs if any of the file's
@@ -68,24 +68,28 @@ def has_file_changed(path, begin_watching=False, max_items=9):
     if begin_watching:
         has_file_changed.stats[path] = path_stat
         return False
-    if has_file_changed.stats[path] == path_stat:
+    if (
+        has_file_changed.stats[path].st_size == path_stat.st_size
+        and has_file_changed.stats[path].st_mtime == path_stat.st_mtime
+    ):
         return False
     else:
         return stat_diff(has_file_changed.stats[path], path_stat, max_items)
 
 
-def stat_diff(a, b, max_items):
+def stat_diff(a, b, max_items, size_mtime_only=True):
     diff = list()
     if a.st_size != b.st_size:
         diff.append(f"size {a.st_size} → {b.st_size}")
-    if a.st_mode != b.st_mode:
-        diff.append(f"mode {oct(a.st_mode)} → {oct(b.st_mode)}")
     if a.st_mtime != b.st_mtime:
         diff.append(f"mtime {time_string(a.st_mtime)} → {time_string(b.st_mtime)}")
-    if a.st_atime != b.st_atime:
-        diff.append(f"atime {time_string(a.st_atime)} → {time_string(b.st_atime)}")
-    if a.st_ctime != b.st_ctime:
-        diff.append(f"ctime {time_string(a.st_ctime)} → {time_string(b.st_ctime)}")
+    if size_mtime_only == False:
+        if a.st_mode != b.st_mode:
+            diff.append(f"mode {oct(a.st_mode)} → {oct(b.st_mode)}")
+        if a.st_atime != b.st_atime:
+            diff.append(f"atime {time_string(a.st_atime)} → {time_string(b.st_atime)}")
+        if a.st_ctime != b.st_ctime:
+            diff.append(f"ctime {time_string(a.st_ctime)} → {time_string(b.st_ctime)}")
     if len(diff) > max_items:
         return "; ".join(diff[0:max_items])
     else:
