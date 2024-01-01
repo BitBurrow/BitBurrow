@@ -13,7 +13,9 @@ if ! poetry run black --check --quiet --line-length 100 --skip-string-normalizat
 fi
 
 # make sure there are no duplicate Berror codes (Bxxxxx codes to help ID points in the code)
-export DUP_BERROR_CODES=$(git ls-files '*.py' '*.dart' |while read -r F; do if [ ! -L "$F" ]; then grep -o --no-filename 'B[0-9][0-9][0-9][0-9][0-9] ' "$F"; fi; done |sort |uniq --repeated)
+## $TO_SCAN is: source-code files in repo plus staged; remove duplicates; remove non-existant files
+TO_SCAN=$((git ls-files  '*.py' '*.dart'; git diff --name-only --cached) |sort |uniq |while read -r FILE; do [ -f "$FILE" ] && echo "$FILE"; done)
+export DUP_BERROR_CODES=$(echo $TO_SCAN |tr ' ' '\n' |while read -r F; do if [ ! -L "$F" ]; then grep -o --no-filename 'B[0-9][0-9][0-9][0-9][0-9] ' "$F"; fi; done |sort |uniq --repeated)
 if [ -n "$DUP_BERROR_CODES" ]; then echo "Please remove duplicate Berror code(s): $DUP_BERROR_CODES" |tr -d '\n'; echo; sleep 2; exit 1; fi
 
 # return to former directory
