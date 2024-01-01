@@ -11,9 +11,11 @@ import 'package:bitburrow/main.dart' as app;
 //
 
 void main() {
-  String validCouponCode = io.Platform.environment['VALID_COUPON_CODE'] ?? ''; // with dashes
+  String validCouponCode =
+      io.Platform.environment['VALID_COUPON_CODE'] ?? ''; // with dashes
   assert(validCouponCode.length == 21);
-  String validPureCouponCode = validCouponCode.replaceAll('-', ''); // "pure" means no dashes
+  String validPureCouponCode =
+      validCouponCode.replaceAll('-', ''); // "pure" means no dashes
   assert(validPureCouponCode.length == 18);
   String validLoginKey = io.Platform.environment['VALID_LOGIN_KEY'] ?? '';
   assert(validLoginKey.length == 21);
@@ -37,7 +39,7 @@ void main() {
     await signIn(t, validPureLoginKey);
     await ellipsisMenuItem(t, "Enter a coupon code");
     expect(find.text("Welcome to BitBurrow"), findsOneWidget);
-    await ellipsisMenuItem(t, "Servers");
+    await ellipsisMenuItem(t, "Bases");
     await waitForConnectingDialog(t);
     await ellipsisMenuItem(t, "Enter a coupon code");
     expect(find.text("Welcome to BitBurrow"), findsOneWidget);

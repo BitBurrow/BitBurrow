@@ -10,8 +10,8 @@ import 'welcome_screen.dart';
 import 'logger_manager.dart';
 import 'new_login_key_screen.dart';
 import 'sign_in_screen.dart';
-import 'servers_screen.dart';
-import 'new_server_screen.dart';
+import 'bases_screen.dart';
+import 'new_base_screen.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 
 final _log = Logger('main');
@@ -34,7 +34,7 @@ class LoginState {
   bool loginKeyVerified = false; // saved in secure storage
   bool saveLoginKey = false; // user choice to keep login key in secure storage
   bool skipWelcomeScreen = true; // forward past welcome screen if signed in
-  List<dynamic> servers = [];
+  List<dynamic> bases = [];
 
   bool isSignedIn() => loginKeyVerified;
   bool isNotSignedIn() => !loginKeyVerified;
@@ -158,12 +158,12 @@ class App extends StatelessWidget {
         pageBuilder: (c, s) => ourPageBuilder(c, s, const SignInScreen()),
       ),
       GoRoute(
-        path: '/servers',
-        pageBuilder: (c, s) => ourPageBuilder(c, s, const ServersScreen()),
+        path: '/bases',
+        pageBuilder: (c, s) => ourPageBuilder(c, s, const BasesScreen()),
       ),
       GoRoute(
-        path: '/new-server',
-        pageBuilder: (c, s) => ourPageBuilder(c, s, const NewServerScreen()),
+        path: '/new-base',
+        pageBuilder: (c, s) => ourPageBuilder(c, s, const NewBaseScreen()),
       ),
     ],
     redirect: (context, state) {
@@ -228,7 +228,7 @@ Widget ourScreenLayout(BuildContext context, Widget body,
                     loginState.loginKeyVerified = false;
                     context.go('/sign-in');
                     break;
-                  case "Servers":
+                  case "Bases":
                     // don't call clearNavigatorRoutes() to erase history
                     context.push('/sign-in'); // will auto-sign-in if possible
                     break;
@@ -242,7 +242,7 @@ Widget ourScreenLayout(BuildContext context, Widget body,
                 return {
                   "Enter a coupon code": 'images/ticket.svg',
                   "Sign in": 'images/key.svg',
-                  "Servers": 'images/server.svg',
+                  "Bases": 'images/server.svg',
                   "Forget login key": 'images/x.svg',
                 }
                     .entries

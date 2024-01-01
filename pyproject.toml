@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "bitburrow"
 version = "0.6.0"
-description = "BitBurrow is a set of tools to help you set up and use a VPN server anywhere."
+description = "BitBurrow is a set of tools to help you set up and use a VPN base anywhere."
 authors = ["bitinerant <bitinerant@users.noreply.github.com>"]
 license = "AGPL-3.0-or-later"
 readme = "README.md"

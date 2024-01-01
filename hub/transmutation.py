@@ -19,23 +19,23 @@ logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, 
 
 
 ###
-### Server transmutation (configure router to be a VPN server)
+### Base transmutation (configure router to be a VPN base)
 ###
 
 
-class ServerSetup:
+class BaseSetup:
     def __init__(self, ws: WebSocket, pws: persistent_websocket.PersistentWebsocket):
         self._ws = ws
         self._pws = pws
 
     async def transmute_steps(self):
         # user connects router
-        f_path = f'{os.path.dirname(__file__)}/server_setup_steps.yaml'
+        f_path = f'{os.path.dirname(__file__)}/base_setup_steps.yaml'
         with open(f_path, "r") as f:
-            server_setup_steps = yaml.safe_load(f)
+            base_setup_steps = yaml.safe_load(f)
         priorId = 0
         listening = asyncio.create_task(self.listener())
-        for step in server_setup_steps:
+        for step in base_setup_steps:
             assert step['id'] > priorId
             priorId = step['id']
             await self.send_command_to_client(json.dumps({step['key']: step['value']}))
@@ -99,7 +99,7 @@ class TcpWebSocket:
         print(f'{peer} closed')
 
     async def start(self):
-        server = await asyncio.start_server(self.handle_client, self._addr, self._port)
+        service = await asyncio.start_server(self.handle_client, self._addr, self._port)
         logger.debug(f'listening on {self._addr} port {self._port}')
-        async with server:
-            await server.serve_forever()
+        async with service:
+            await service.serve_forever()

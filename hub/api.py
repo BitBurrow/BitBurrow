@@ -32,12 +32,12 @@ router = APIRouter()
 #                                              read          create      update†       delete
 # -------------------------------------------- GET --------- POST ------ PATCH ------- DELETE ------
 # ⍉ /v1/managers/🗝                            view self     --          update self   delete self
-# ⍉ /v1/managers/🗝/servers                    list servers  new server  --            --
-# ⍉ /v1/managers/🗝/servers/18                 view server   --          update server delete server
-# ⍉ /v1/managers/🗝/servers/18/clients         list clients  new client  --            --
-# ⍉ /v1/managers/🗝/servers/18/clients/4       view client   --          update client delete client
-# ⍉ /v1/managers/🗝/servers/18/users           list users    new user    --            --
-# ⍉ /v1/managers/🗝/servers/18/v1/users/🗝     view user     --          update user   delete user
+# ⍉ /v1/managers/🗝/bases                      list bases    new base    --            --
+# ⍉ /v1/managers/🗝/bases/18                   view base     --          update base   delete base
+# ⍉ /v1/managers/🗝/bases/18/clients           list clients  new client  --            --
+# ⍉ /v1/managers/🗝/bases/18/clients/4         view client   --          update client delete client
+# ⍉ /v1/managers/🗝/bases/18/users             list users    new user    --            --
+# ⍉ /v1/managers/🗝/bases/18/v1/users/🗝       view user     --          update user   delete user
 #   /v1/coupons/🧩/managers                    --            new mngr    --            --
 # ⍉ /v1/admins/🔑/managers                     list mngrs    --          --            --
 # ⍉ /v1/admins/🔑/managers/🗝                  view mngr     --          update mngr   delete mngr
@@ -117,35 +117,35 @@ def create_manager(coupon: str):
 
 
 @jsonrpc.dispatcher.add_method
-def list_servers(login_key: str):
+def list_bases(login_key: str):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     with Session(db.engine) as session:
-        statement = select(db.Server).where(db.Server.account_id == account.id)
+        statement = select(db.Base).where(db.Base.account_id == account.id)
         return list(session.exec(statement))
 
 
 @jsonrpc.dispatcher.add_method
-def create_server(login_key: str):
+def create_base(login_key: str):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    return db.Server.new(account.id)
+    return db.Base.new(account.id)
 
 
-@router.websocket('/v1/managers/{login_key}/servers/{server_id}/setup')
-async def websocket_setup(websocket: WebSocket, login_key: str, server_id: int):
+@router.websocket('/v1/managers/{login_key}/bases/{base_id}/setup')
+async def websocket_setup(websocket: WebSocket, login_key: str, base_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     await websocket.accept()
     pws_log = logging.getLogger('persistent_websocket')
     pws_log.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
-    messages = persistent_websocket.PersistentWebsocket(server_id, pws_log)
-    runTasks = transmutation.ServerSetup(websocket, messages)
+    messages = persistent_websocket.PersistentWebsocket(base_id, pws_log)
+    runTasks = transmutation.BaseSetup(websocket, messages)
     try:
         await runTasks.transmute_steps()
     except asyncio.exceptions.CancelledError:
         logger.info(f"B15058 transmute canceled")
 
 
-@router.websocket('/v1/managers/{login_key}/servers/{server_id}/proxy')
-async def websocket_proxy(websocket: WebSocket, login_key: str, server_id: int):
+@router.websocket('/v1/managers/{login_key}/bases/{base_id}/proxy')
+async def websocket_proxy(websocket: WebSocket, login_key: str, base_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     await websocket.accept()
     tcp_websocket = transmutation.TcpWebSocket(

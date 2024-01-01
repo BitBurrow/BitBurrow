@@ -73,7 +73,7 @@ integrity_tests_yaml = '''
 - id: bind_recursive_off
   cmd: dig @{public_ip} A google.com +short
   expected: ''
-# ensure zone transfer is disabled (list of VPN servers should not be public)
+# ensure zone transfer is disabled (list of VPN bases should not be public)
 - id: bind_axfr_off
   cmd: dig @{public_ip} {domain} AXFR +short
   expected: '; Transfer failed.'
@@ -170,8 +170,8 @@ class Hub(SQLModel, table=True):
 class Account_kind(enum.Enum):
     ADMIN = 900  # can create, edit, and delete coupon codes; can edit and delete managers and users
     COUPON = 700  # can create managers (that's all)
-    MANAGER = 400  # can set up, edit, and delete servers and clients
-    USER = 200  # can set up, edit, and delete clients for a specific netif_id on 1 server
+    MANAGER = 400  # can set up, edit, and delete bases and clients
+    USER = 200  # can set up, edit, and delete clients for a specific netif_id on 1 base
     NONE = 0  # not signed in
 
     def __str__(self):
@@ -318,21 +318,21 @@ class Account(SQLModel, table=True):
 
 
 ###
-### DB table 'server' - VPN server device
+### DB table 'base' - VPN base device
 ###
 
 
-class Server(SQLModel, table=True):
+class Base(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager
     comment: str = ""
 
     @staticmethod
-    def new(account_id):  # create a new server and return its id
-        server = Server()
-        server.account_id = account_id
-        id = server.update()
-        logger.info(f"Created new server {id}")
+    def new(account_id):  # create a new base and return its id
+        base = Base()
+        base.account_id = account_id
+        id = base.update()
+        logger.info(f"Created new base {id}")
         return id
 
     def update(self):
@@ -352,18 +352,18 @@ reserved_ips = 38
 
 class Netif(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
-    server_id: Optional[int] = Field(index=True, foreign_key='server.id')  # server this netif is on
+    base_id: Optional[int] = Field(index=True, foreign_key='base.id')  # base this netif is on
     ipv4_base: str
     ipv6_base: str
     privkey: str
     pubkey: str
     listening_port: int  # on LAN
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
-    public_ports: list[int] = Field(sa_column=Column(JSON))  # on server's public IP
+    public_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
     comment: str = ""
 
     def __init__(self):
-        self.server_id = None
+        self.base_id = None
         # IPv4 base is 10. + random xx.xx. + 0
         self.ipv4_base = str(ipaddress.ip_address('10.0.0.0') + secrets.randbelow(2**16) * 2**8)
         # IPv6 base is prefix + 2 random groups + 5 0000 groups
@@ -383,7 +383,7 @@ class Netif(SQLModel, table=True):
     def ipv4(self):
         # ending in '/32' feels cleaner but client can't ping, even if client uses
         # `ip address add dev wg0 10.110.169.40 peer 10.110.169.1`
-        # fix seems to be `ip -4 route add .../18 dev wg0` on server or use '/18' below
+        # fix seems to be `ip -4 route add .../18 dev wg0` on base or use '/18' below
         return str(ipaddress.ip_address(self.ipv4_base) + 1) + '/18'  # max 16000 clients
 
     def ipv6(self):
@@ -452,7 +452,7 @@ class Netif(SQLModel, table=True):
 class Client(SQLModel, table=True):
     __table_args__ = (sqlalchemy.UniqueConstraint('pubkey'),)  # no 2 clients may share a key
     id: Optional[int] = Field(primary_key=True, default=None)
-    netif_id: int = Field(foreign_key='netif.id')  # the server interface this client connects to
+    netif_id: int = Field(foreign_key='netif.id')  # the base interface this client connects to
     pubkey: str
     preshared_key: str
     keepalive: int = 23  # 0==disabled

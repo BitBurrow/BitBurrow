@@ -9,26 +9,26 @@ import 'main.dart';
 import 'parent_form_state.dart';
 import 'hub_rpc.dart';
 
-final _log = Logger('servers_screen');
+final _log = Logger('bases_screen');
 var loginState = LoginState.instance;
 
-class ServersScreen extends StatelessWidget {
-  const ServersScreen({Key? key}) : super(key: key);
+class BasesScreen extends StatelessWidget {
+  const BasesScreen({Key? key}) : super(key: key);
 
   @override
-  Widget build(BuildContext context) => const ServersForm();
+  Widget build(BuildContext context) => const BasesForm();
 }
 
-class ServersForm extends ParentForm {
-  const ServersForm({Key? key}) : super(key: key);
+class BasesForm extends ParentForm {
+  const BasesForm({Key? key}) : super(key: key);
 
   @override
-  ServersFormState createState() => ServersFormState();
+  BasesFormState createState() => BasesFormState();
 }
 
-class ServersFormState extends ParentFormState {
+class BasesFormState extends ParentFormState {
   @override
-  String get restorationId => 'servers_form';
+  String get restorationId => 'bases_form';
 
   @override
   String get lkocc => "null";
@@ -37,7 +37,7 @@ class ServersFormState extends ParentFormState {
   Future<void> callApi() async {
     final rpc = HubRpc.instance;
     var response = await rpc.sendRequest(
-      'create_server',
+      'create_base',
       {'login_key': loginState.pureLoginKey},
     );
     if (response is! int) {
@@ -46,7 +46,7 @@ class ServersFormState extends ParentFormState {
   }
 
   @override
-  nextScreen() => context.push('/new-server');
+  nextScreen() => context.push('/new-base');
 
   @override
   String getHubValue() => loginState.hub;
@@ -85,8 +85,8 @@ class ServersFormState extends ParentFormState {
                         fontStyle: FontStyle.italic,
                         color: Theme.of(context).colorScheme.background,
                       ))
-                  : loginState.servers.isEmpty
-                      ? Text("You have no VPN servers set up.",
+                  : loginState.bases.isEmpty
+                      ? Text("You have no VPN bases set up.",
                           textAlign: TextAlign.center,
                           textScaleFactor: 1.8,
                           style: TextStyle(
@@ -94,7 +94,7 @@ class ServersFormState extends ParentFormState {
                             color: Theme.of(context).colorScheme.background,
                           ))
                       : Text(
-                          "Your VPN servers",
+                          "Your VPN bases",
                           textAlign: TextAlign.center,
                           textScaleFactor: 1.8,
                           style: TextStyle(fontWeight: FontWeight.bold),
@@ -106,10 +106,10 @@ class ServersFormState extends ParentFormState {
                 child: SizedBox(
                   width: min(MediaQuery.of(context).size.width, 700),
                   child: ListView.builder(
-                    itemCount: loginState.servers.length,
+                    itemCount: loginState.bases.length,
                     padding: const EdgeInsets.symmetric(horizontal: 18),
                     itemBuilder: (context, index) =>
-                        vpnServerCard(context, index),
+                        vpnBaseCard(context, index),
                   ),
                 ),
               ),
@@ -122,14 +122,14 @@ class ServersFormState extends ParentFormState {
           _log.fine("floatingActionButton onPressed()");
           return handleSubmitted();
         },
-        tooltip: 'Set up a new server',
+        tooltip: 'Set up a new base',
         backgroundColor: Theme.of(context).colorScheme.primary,
         child: const Icon(Icons.add),
       ),
     );
   }
 
-  Card vpnServerCard(BuildContext context, int index) {
+  Card vpnBaseCard(BuildContext context, int index) {
     return Card(
         elevation: 7,
         margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
@@ -146,7 +146,7 @@ class ServersFormState extends ParentFormState {
                       width: 42,
                     ),
                     title: Text(
-                      "VPN server ${loginState.servers[index]['id']}",
+                      "VPN base ${loginState.bases[index]['id']}",
                       style: const TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.bold,

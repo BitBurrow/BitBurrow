@@ -66,7 +66,7 @@ class HubRpc {
       }
     }
     var authAccount = ""; // can be any valid login key or coupon
-    // FIXME: consider replacing logic below with most recent RCP call to 'create_manager' or 'list_servers'
+    // FIXME: consider replacing logic below with most recent RCP call to 'create_manager' or 'list_bases'
     if (loginState.loginKeyVerified && loginState.loginKey.isNotEmpty) {
       authAccount = loginState.pureLoginKey;
     } else if (loginState.coupon.isNotEmpty) {

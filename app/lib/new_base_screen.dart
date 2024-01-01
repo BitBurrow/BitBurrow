@@ -11,27 +11,27 @@ import 'parent_form_state.dart';
 import 'step_box.dart';
 import 'persistent_websocket.dart';
 
-final _log = Logger('new_server_screen');
+final _log = Logger('new_base_screen');
 var loginState = LoginState.instance;
 
-class NewServerScreen extends StatelessWidget {
-  const NewServerScreen({Key? key}) : super(key: key);
+class NewBaseScreen extends StatelessWidget {
+  const NewBaseScreen({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) => ourScreenLayout(
         context,
-        const NewServerForm(),
+        const NewBaseForm(),
       );
 }
 
-class NewServerForm extends ParentForm {
-  const NewServerForm({Key? key}) : super(key: key);
+class NewBaseForm extends ParentForm {
+  const NewBaseForm({Key? key}) : super(key: key);
 
   @override
-  NewServerFormState createState() => NewServerFormState();
+  NewBaseFormState createState() => NewBaseFormState();
 }
 
-class NewServerFormState extends ParentFormState {
+class NewBaseFormState extends ParentFormState {
   final _hubMessages = PersistentWebSocket('', Logger('pws'));
   final hub = loginState.hub;
   final lk = loginState.pureLoginKey;
@@ -41,12 +41,12 @@ class NewServerFormState extends ParentFormState {
   int _stepsComplete = 0;
   bool _needToScrollToBottom = false;
 
-  NewServerFormState() : super() {
+  NewBaseFormState() : super() {
     var uri = Uri(
         scheme: 'wss',
         host: hub,
         port: 8443,
-        path: '/v1/managers/$lk/servers/18/setup');
+        path: '/v1/managers/$lk/bases/18/setup');
     try {
       _hubMessages.connect(uri).onError((err, stackTrace) {
         _log.warning("B47455 pws: $err");
@@ -68,7 +68,7 @@ class NewServerFormState extends ParentFormState {
   }
 
   @override
-  String get restorationId => 'new_server_form';
+  String get restorationId => 'new_base_form';
 
   @override
   String get lkocc => "null";
@@ -145,7 +145,7 @@ class NewServerFormState extends ParentFormState {
             int ms = value['ms'] ?? 0 + seconds * 1000;
             await Future.delayed(Duration(milliseconds: ms), () {});
           } else if (key == 'proxy') {
-            // WebSocket to hub to allow tcp connections to server
+            // WebSocket to hub to allow tcp connections to base
             result = await bbProxy(
               toAddress: value['to_address'],
               toPort: value['to_port'],
@@ -200,7 +200,7 @@ class NewServerFormState extends ParentFormState {
   static Future<String> bbProxy({toAddress, toPort}) async {
     final hub = loginState.hub;
     final lk = loginState.pureLoginKey;
-    final url = 'wss://$hub:8443/v1/managers/$lk/servers/18/proxy';
+    final url = 'wss://$hub:8443/v1/managers/$lk/bases/18/proxy';
     io.WebSocket.connect(url).then((io.WebSocket ws) async {
       try {
         // new connection to target for each connection from hub
@@ -249,7 +249,7 @@ class NewServerFormState extends ParentFormState {
         key: formKey,
         autovalidateMode: AutovalidateMode.values[autoValidateModeIndex.value],
         child: SingleChildScrollView(
-          restorationId: 'new_server_screen_scroll_view',
+          restorationId: 'new_base_screen_scroll_view',
           padding: const EdgeInsets.symmetric(horizontal: 34),
           controller: scrollController,
           child: Column(
@@ -258,7 +258,7 @@ class NewServerFormState extends ParentFormState {
               const FractionallySizedBox(
                 widthFactor: 0.8,
                 child: Text(
-                  "Set up a BitBurrow VPN server",
+                  "Set up a BitBurrow VPN base",
                   textAlign: TextAlign.center,
                   textScaleFactor: 1.8,
                   style: TextStyle(fontWeight: FontWeight.bold),

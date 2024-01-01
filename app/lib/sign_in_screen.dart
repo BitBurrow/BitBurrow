@@ -48,7 +48,7 @@ class SignInFormState extends ParentFormState {
     loginState.loginKeyVerified = false; // in case an exception is thrown
     final rpc = HubRpc.instance;
     var response = await rpc.sendRequest(
-      'list_servers',
+      'list_bases',
       {'login_key': loginState.pureLoginKey},
     );
     loginState.loginKeyVerified = true; // no exceptions ∴ hub said it's valid
@@ -64,11 +64,11 @@ class SignInFormState extends ParentFormState {
       _log.info("Save to secure storage: verification state 'true'");
       keyStore.write(key: 'login_key_verified', value: 'true');
     }
-    loginState.servers = response as List<dynamic>;
+    loginState.bases = response as List<dynamic>;
   }
 
   @override
-  nextScreen() => context.push('/servers');
+  nextScreen() => context.push('/bases');
 
   @override
   String getHubValue() => loginState.hub;
@@ -192,7 +192,7 @@ class SignInFormState extends ParentFormState {
 
   void signIn() {
     if (loginState.saveLoginKey == false) {
-      // if box not checked, clear stored login key even before trying server
+      // if box not checked, clear stored login key even before trying hub
       clearStoredLoginKey();
     }
     var err = "";

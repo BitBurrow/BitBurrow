@@ -81,7 +81,7 @@ def cli(return_help_text=False):
         "--set-wg-port",
         type=int,
         default=0,
-        help="UDP port used by VPN servers; default: random [2000,65535]",
+        help="UDP port used by VPN bases; default: random [2000,65535]",
     )
     parser.add_argument(
         "--get-wg-port",
@@ -178,9 +178,9 @@ ssl_keyfile = ""
 def mkdir_r(path):  # like Linux `mkdir --parents`
     if path == '':
         return
-    base = os.path.dirname(path)
-    if not os.path.exists(base):
-        mkdir_r(base)
+    base_dir = os.path.dirname(path)
+    if not os.path.exists(base_dir):
+        mkdir_r(base_dir)
     os.makedirs(path, exist_ok=True)
     # except (PermissionError, FileNotFoundError, NotADirectoryError):
     #     one of these will be raised if the directory cannot be created
