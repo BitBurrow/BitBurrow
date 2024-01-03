@@ -132,6 +132,8 @@ class App extends StatelessWidget {
           secondary: const Color(0xffd3a492),
           background: const Color(0xffff0000), // seems unused
         ),
+        // https://docs.flutter.dev/release/breaking-changes/material-3-default
+        useMaterial3: false,
       ),
       routeInformationProvider: _router.routeInformationProvider,
       routeInformationParser: _router.routeInformationParser,
