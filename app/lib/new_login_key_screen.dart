@@ -9,7 +9,7 @@ final _log = Logger('new_login_key_screen');
 var loginState = LoginState.instance;
 
 class NewLoginKeyScreen extends StatelessWidget {
-  const NewLoginKeyScreen({Key? key}) : super(key: key);
+  const NewLoginKeyScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -31,7 +31,7 @@ class NewLoginKeyScreen extends StatelessWidget {
               child: Text(
                 "Here is your new login key:",
                 textAlign: TextAlign.center,
-                textScaleFactor: 1.8,
+                textScaler: TextScaler.linear(1.8),
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
@@ -46,7 +46,7 @@ class NewLoginKeyScreen extends StatelessWidget {
               child: Text(
                 loginState.newLoginKey,
                 textAlign: TextAlign.center,
-                textScaleFactor: 1.8,
+                textScaler: const TextScaler.linear(1.8),
                 style: const TextStyle(fontWeight: FontWeight.normal),
               ),
             ),

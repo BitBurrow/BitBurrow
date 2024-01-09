@@ -99,7 +99,7 @@ Page<void> ourPageBuilder(
 }
 
 class App extends StatelessWidget {
-  App({Key? key}) : super(key: key);
+  App({super.key});
 
   static const String title = 'BitBurrow';
 

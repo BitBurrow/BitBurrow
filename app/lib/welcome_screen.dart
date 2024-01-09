@@ -11,7 +11,7 @@ final _log = Logger('welcome_screen');
 var loginState = LoginState.instance;
 
 class WelcomeScreen extends StatelessWidget {
-  const WelcomeScreen({Key? key}) : super(key: key);
+  const WelcomeScreen({super.key});
 
   @override
   Widget build(BuildContext context) => ourScreenLayout(
@@ -21,7 +21,7 @@ class WelcomeScreen extends StatelessWidget {
 }
 
 class WelcomeForm extends ParentForm {
-  const WelcomeForm({Key? key}) : super(key: key);
+  const WelcomeForm({super.key});
 
   @override
   WelcomeFormState createState() => WelcomeFormState();
@@ -95,7 +95,7 @@ class WelcomeFormState extends ParentFormState {
                 child: Text(
                   "Welcome to BitBurrow",
                   textAlign: TextAlign.center,
-                  textScaleFactor: 1.8,
+                  textScaler: TextScaler.linear(1.8),
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),

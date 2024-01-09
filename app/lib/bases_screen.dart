@@ -12,14 +12,14 @@ final _log = Logger('bases_screen');
 var loginState = LoginState.instance;
 
 class BasesScreen extends StatelessWidget {
-  const BasesScreen({Key? key}) : super(key: key);
+  const BasesScreen({super.key});
 
   @override
   Widget build(BuildContext context) => const BasesForm();
 }
 
 class BasesForm extends ParentForm {
-  const BasesForm({Key? key}) : super(key: key);
+  const BasesForm({super.key});
 
   @override
   BasesFormState createState() => BasesFormState();
@@ -70,7 +70,7 @@ class BasesFormState extends ParentFormState {
               child: loginState.isNotSignedIn()
                   ? Text("You need to sign in.",
                       textAlign: TextAlign.center,
-                      textScaleFactor: 1.8,
+                      textScaler: TextScaler.linear(1.8),
                       style: TextStyle(
                         fontStyle: FontStyle.italic,
                         color: Theme.of(context).colorScheme.background,
@@ -78,7 +78,7 @@ class BasesFormState extends ParentFormState {
                   : loginState.bases.isEmpty
                       ? Text("You have no VPN bases set up.",
                           textAlign: TextAlign.center,
-                          textScaleFactor: 1.8,
+                          textScaler: TextScaler.linear(1.8),
                           style: TextStyle(
                             fontStyle: FontStyle.italic,
                             color: Theme.of(context).colorScheme.background,
@@ -86,7 +86,7 @@ class BasesFormState extends ParentFormState {
                       : Text(
                           "Your VPN bases",
                           textAlign: TextAlign.center,
-                          textScaleFactor: 1.8,
+                          textScaler: TextScaler.linear(1.8),
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
             ),

@@ -12,7 +12,7 @@ final _log = Logger('sign_in_screen');
 var loginState = LoginState.instance;
 
 class SignInScreen extends StatelessWidget {
-  const SignInScreen({Key? key}) : super(key: key);
+  const SignInScreen({super.key});
 
   @override
   Widget build(BuildContext context) => ourScreenLayout(
@@ -22,7 +22,7 @@ class SignInScreen extends StatelessWidget {
 }
 
 class SignInForm extends ParentForm {
-  const SignInForm({Key? key}) : super(key: key);
+  const SignInForm({super.key});
 
   @override
   SignInFormState createState() => SignInFormState();
@@ -111,7 +111,7 @@ class SignInFormState extends ParentFormState {
                 child: Text(
                   "Sign in",
                   textAlign: TextAlign.center,
-                  textScaleFactor: 1.8,
+                  textScaler: TextScaler.linear(1.8),
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),

@@ -72,7 +72,7 @@ enum DialogStates {
 }
 
 abstract class ParentForm extends StatefulWidget {
-  const ParentForm({Key? key}) : super(key: key);
+  const ParentForm({super.key});
 }
 
 abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
@@ -422,7 +422,7 @@ abstract class ParentFormState extends State<ParentForm> with RestorationMixin {
 String exceptionText(Object err, StackTrace? stacktrace, lkocc) {
   String error = "";
   if (err is PWUnrecoverableError) {
-    PWUnrecoverableError pwException = err as PWUnrecoverableError;
+    PWUnrecoverableError pwException = err;
     error = pwException.message;
   } else if (err is jsonrpc.RpcException) {
     error = err.message;

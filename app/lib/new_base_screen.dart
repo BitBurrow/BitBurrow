@@ -12,7 +12,7 @@ final _log = Logger('new_base_screen');
 var loginState = LoginState.instance;
 
 class NewBaseScreen extends StatelessWidget {
-  const NewBaseScreen({Key? key}) : super(key: key);
+  const NewBaseScreen({super.key});
 
   @override
   Widget build(BuildContext context) => ourScreenLayout(
@@ -22,7 +22,7 @@ class NewBaseScreen extends StatelessWidget {
 }
 
 class NewBaseForm extends ParentForm {
-  const NewBaseForm({Key? key}) : super(key: key);
+  const NewBaseForm({super.key});
 
   @override
   NewBaseFormState createState() => NewBaseFormState();
@@ -239,7 +239,7 @@ class NewBaseFormState extends ParentFormState {
                 child: Text(
                   "Set up a BitBurrow VPN base",
                   textAlign: TextAlign.center,
-                  textScaleFactor: 1.8,
+                  textScaler: TextScaler.linear(1.8),
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),
