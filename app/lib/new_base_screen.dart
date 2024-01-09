@@ -1,15 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:logging/logging.dart';
-import 'logger_manager.dart' as logm;
 import 'dart:io' as io;
 import 'dart:async' as async;
-import 'dart:convert' as convert;
-import 'dart:typed_data';
 import 'main.dart';
 import 'parent_form_state.dart';
 import 'step_box.dart';
-import 'persistent_websocket.dart';
+import 'hub_rpc.dart';
 
 final _log = Logger('new_base_screen');
 var loginState = LoginState.instance;
@@ -32,38 +29,20 @@ class NewBaseForm extends ParentForm {
 }
 
 class NewBaseFormState extends ParentFormState {
-  final _hubMessages = PersistentWebSocket('', Logger('pws'));
-  final hub = loginState.hub;
-  final lk = loginState.pureLoginKey;
+  final rpc = HubRpc.instance;
   async.Completer _buttonPressed = async.Completer();
-  final async.Completer _hubCommanderFinished = async.Completer();
   final List<StepData> _stepsList = [];
-  int _stepsComplete = 0;
+  int _stepsComplete = 0; // local steps, always sequential
   bool _needToScrollToBottom = false;
-
-  NewBaseFormState() : super() {
-    var uri = Uri(
-        scheme: 'wss',
-        host: hub,
-        port: 8443,
-        path: '/v1/managers/$lk/bases/18/setup');
-    try {
-      _hubMessages.connect(uri).onError((err, stackTrace) {
-        _log.warning("B47455 pws: $err");
-      });
-    } catch (err) {
-      _log.warning("B13209 pws: $err");
-    }
-  }
+  int _nextTask = 0; // task number from hub
+  int _baseId = -1; // database record id
 
   @override
   void initState() {
     super.initState();
-    // add initial user steps, sent from hub
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      _hubMessages.stream.listen(
-        (data) => hubCommander(convert.utf8.decode(data)),
-      );
+      // begin processing tasks after screen is drawn
+      taskTurner();
     });
   }
 
@@ -97,91 +76,91 @@ class NewBaseFormState extends ParentFormState {
     loginState.loginKey = value;
   }
 
-  Future<void> hubCommander(String json) async {
-    // process one command from the hub
-    _log.info("hubCommand ${json.trim().characters.take(90)}"); // max 2 lines
-    var result = "okay";
-    try {
-      var command = convert.jsonDecode(json);
-      // breaks ordering, esp. 'sleep': command.forEach((key, value) async {...}
-      var itemCount = 0;
-      for (final e in command.entries) {
-        itemCount += 1;
-        assert(itemCount == 1);
-        var key = e.key;
-        var value = e.value;
-        try {
-          if (key == 'print') {
-            // print text to logging system
-            _log.info("hub: ${value['text']}");
-          } else if (key == 'add_checkbox_step') {
-            // add a checkbox step to the list of steps displayed for the user
-            addStep(StepData(text: value['text'], type: StepTypes.checkbox));
-          } else if (key == 'add_process_step') {
-            // ... or a process step
-            addStep(StepData(text: value['text'], type: StepTypes.process));
-          } else if (key == 'add_button_step') {
-            // ... or a button
-            _buttonPressed = async.Completer(); // reset to unpressed state
-            addStep(StepData(text: value['text'], type: StepTypes.button));
-            await _buttonPressed.future;
-          } else if (key == 'get_user_input') {
-            // prompt user, return response; all args optional
-            result = await promptDialog(
-                  context: context,
-                  title: value['title'],
-                  text: value['text'],
-                  labelText: value['label_text'],
-                  buttonText: value['button_text'],
-                  cancelButtonText: value['cancel_button_text'],
-                ) ??
-                "cancel_button_53526168";
-          } else if (key == 'echo') {
-            // echo text back to hub
-            result = value['text'];
-          } else if (key == 'sleep') {
-            // delay processing of subsequent commands
-            int seconds = value['seconds'] ?? 0;
-            int ms = value['ms'] ?? 0 + seconds * 1000;
-            await Future.delayed(Duration(milliseconds: ms), () {});
-          } else if (key == 'proxy') {
-            // WebSocket to hub to allow tcp connections to base
-            result = await bbProxy(
-              toAddress: value['to_address'],
-              toPort: value['to_port'],
-            );
-            if (result == "") result = "okay";
-          } else if (key == 'get_if_list') {
-            // return list of network interfaces and IP addresses
-            hubWrite(await ifList());
-            return;
-          } else if (key == 'dump_and_clear_log') {
-            // return log entries, empty the buffer
-            var manager = logm.LoggerManager();
-            hubWrite({'log': manager.buffer.toString()});
-            manager.buffer.clear();
-            return;
-          } else if (key == 'exit') {
-            // done with commands--close TCP connection
-            _hubCommanderFinished.complete("");
-          } else {
-            result = "B19842 unknown command: $key";
-          }
-        } catch (err) {
-          result = "B18332 illegal arguments: $err";
-        }
+  /// Tell hub to do a task; process a task from hub; repeat.
+  Future taskTurner() async {
+    while (true) {
+      var response = await rpc.sendRequest(
+        'create_base',
+        {
+          'login_key': loginState.pureLoginKey,
+          'task_id': _nextTask,
+          'base_id': _baseId,
+        },
+      );
+      String method;
+      Map params;
+      int newBaseId;
+      try {
+        method = response['method'];
+        params = response['params'];
+        _nextTask = response['next_task'];
+        newBaseId = response['base_id'];
+      } catch (err) {
+        throw "B91194 invalid response $response";
       }
-    } catch (err) {
-      result = "B50129 illegal command: "
-          "${err.toString().replaceAll(RegExp(r'[\r\n]+'), ' ¶ ')}";
+      if (_baseId != -1 && _baseId != newBaseId) {
+        throw "B81752 base_id changed ($_baseId != $newBaseId}";
+      }
+      _baseId = newBaseId;
+      if (method == 'finished') {
+        break;
+      }
+      await hubCommander(method, params);
     }
-    _log.info("hubCommand result: $result");
-    hubWrite({'result': result});
   }
 
-  void hubWrite(Map<String, dynamic> data) {
-    var json = convert.jsonEncode(data);
-    _hubMessages.send(Uint8List.fromList(convert.utf8.encode(json)));
+  /// Process one command from the hub.
+  Future hubCommander(String method, Map params) async {
+    if (method == 'print') {
+      // print text to logging system
+      _log.info("hub: ${params['text']}");
+    } else if (method == 'add_checkbox_step') {
+      // add a checkbox step to the list of steps displayed for the user
+      addStep(StepData(text: params['text'], type: StepTypes.checkbox));
+    } else if (method == 'add_process_step') {
+      // ... or a process step
+      addStep(StepData(text: params['text'], type: StepTypes.process));
+    } else if (method == 'add_button_step') {
+      // ... or a button
+      _buttonPressed = async.Completer(); // reset to unpressed state
+      addStep(StepData(text: params['text'], type: StepTypes.button));
+      await _buttonPressed.future;
+      // } else if (method == 'get_user_input') {
+      //   // prompt user, return response; all args optional
+      //   String result = await promptDialog(
+      //         context: context,
+      //         title: params['title'],
+      //         text: params['text'],
+      //         labelText: params['label_text'],
+      //         buttonText: params['button_text'],
+      //         cancelButtonText: params['cancel_button_text'],
+      //       ) ??
+      //       "cancel_button_53526168";
+    } else if (method == 'sleep') {
+      // delay processing of subsequent commands
+      int seconds = params['seconds'] ?? 0;
+      int ms = params['ms'] ?? 0 + seconds * 1000;
+      await Future.delayed(Duration(milliseconds: ms), () {});
+      // } else if (method == 'proxy') {
+      //   // WebSocket to hub to allow tcp connections to base
+      //   result = await bbProxy(
+      //     toAddress: params['to_address'],
+      //     toPort: params['to_port'],
+      //   );
+      //   if (result == "") result = "okay";
+      // } else if (method == 'get_if_list') {
+      //   // return list of network interfaces and IP addresses
+      //   hubWrite(await ifList());
+      //   return;
+      // } else if (method == 'dump_and_clear_log') {
+      //   // return log entries, empty the buffer
+      //   var manager = logm.LoggerManager();
+      //   hubWrite({'log': manager.buffer.toString()});
+      //   manager.buffer.clear();
+      //   return;
+    } else {
+      throw "B19842 unknown command: $method";
+    }
   }
 
   static Future<Map<String, dynamic>> ifList() async {

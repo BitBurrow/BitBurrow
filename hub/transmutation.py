@@ -23,37 +23,34 @@ logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, 
 ###
 
 
-class BaseSetup:
-    def __init__(self, ws: WebSocket, pws: persistent_websocket.PersistentWebsocket):
-        self._ws = ws
-        self._pws = pws
+def transmute_task(task_id):
+    if not hasattr(transmute_init, 'tasks'):  # on first call
+        transmute_init()
+    return transmute_init.id_index.get(task_id, None)
 
-    async def transmute_steps(self):
-        # user connects router
-        f_path = f'{os.path.dirname(__file__)}/base_setup_steps.yaml'
-        with open(f_path, "r") as f:
-            base_setup_steps = yaml.safe_load(f)
-        priorId = 0
-        listening = asyncio.create_task(self.listener())
-        for step in base_setup_steps:
-            assert step['id'] > priorId
-            priorId = step['id']
-            await self.send_command_to_client(json.dumps({step['key']: step['value']}))
-        await listening
 
-    async def listener(self):
-        try:
-            async for m in self._pws.connected(self._ws):
-                logger.debug(f"app WebSocket reply: {m.decode()}")
-        except Exception as err:
-            print(f"B99924 error: {err}")
-            sys.exit(1)
+def transmute_next_task(task_id):
+    if not hasattr(transmute_init, 'tasks'):  # on first call
+        transmute_init()
+    return transmute_init.next_id.get(task_id, 0)  # returns 0 for nonexistant or last task
 
-    async def send_command_to_client(self, json_string):
-        try:
-            await self._pws.send(json_string)
-        except Exception as e:
-            logger.error(f"B38260 pws error: {e}")
+
+def transmute_init():
+    f_path = f'{os.path.dirname(__file__)}/base_setup_tasks.yaml'
+    with open(f_path, "r") as f:
+        transmute_init.tasks = yaml.safe_load(f)
+    transmute_init.id_index = dict()  # index to look up task by id
+    transmute_init.next_id = dict()  # to compute next id
+    priorId = 0
+    for task in transmute_init.tasks:
+        id = task['id']
+        assert isinstance(id, int)
+        assert id > priorId
+        assert 'method' in task
+        assert 'params' in task
+        transmute_init.id_index[id] = task
+        transmute_init.next_id[priorId] = id
+        priorId = id
 
 
 class TcpWebSocket:

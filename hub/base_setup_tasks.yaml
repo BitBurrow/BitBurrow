@@ -1,6 +1,6 @@
 - id: 23
-  key: add_checkbox_step
-  value:
+  method: add_checkbox_step
+  params:
     text: |
       ## Connect your new router to the internet.
       * Make a note of the existing configuration in case there is a problem setting 
@@ -24,15 +24,15 @@
         In", "Internet", with a globe symbol, or is unlabeled but uniquely 
         colored. [More details.](/one-router-details)
 - id: 46
-  key: add_checkbox_step
-  value:
+  method: add_checkbox_step
+  params:
     text: |
       ## Plug your new router into a wall socket.
       * Make sure at least one light turns on.
       * It may take a few minutes for the WiFi to begin working.
 - id: 69
-  key: add_checkbox_step
-  value:
+  method: add_checkbox_step
+  params:
     text: |
       ## Connect to the new router via WiFi.
       * Enable WiFi if needed and scan for available WiFi networks.
@@ -42,37 +42,37 @@
       * It is sometimes necessary to turn off mobile data (internet via 
         your cellular provider).
 - id: 92
-  key: add_button_step
-  value:
+  method: add_button_step
+  params:
     text: CONFIGURE ROUTER
 - id: 115
-  key: add_process_step
-  value:
+  method: add_process_step
+  params:
     text: "## Open channel to hub."
 - id: 207
-  key: add_process_step
-  value:
+  method: add_process_step
+  params:
     text: "## Wait two seconds."
 - id: 208
-  key: sleep
-  value:
+  method: sleep
+  params:
     ms: 2000
 - id: 230
-  key: proxy
-  value:
+  method: proxy
+  params:
     to_address: 127.0.0.1
     to_port: 22
 - id: 276
-  key: add_process_step
-  value:
+  method: add_process_step
+  params:
     text: "## Wait 5 seconds."
 - id: 277
-  key: sleep
-  value:
+  method: sleep
+  params:
     seconds: 5
 - id: 299
-  key: get_user_input
-  value:
+  method: get_user_input
+  params:
     title: Information needed
     text: |
       Enter the router admin password. This is usually
@@ -82,17 +82,17 @@
     button_text: OK
     cancel_button_text: "I DON'T KNOW IT"
 - id: 322
-  key: add_process_step
-  value:
+  method: add_process_step
+  params:
     text: "## Wait 5 seconds."
 - id: 323
-  key: sleep
-  value:
+  method: sleep
+  params:
     seconds: 5
 - id: 345
-  key: add_button_step
-  value:
+  method: add_button_step
+  params:
     text: CONTINUE
 - id: 368
-  key: dump_and_clear_log
-  value: none
+  method: dump_and_clear_log
+  params: none

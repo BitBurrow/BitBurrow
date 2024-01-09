@@ -125,37 +125,46 @@ def list_bases(login_key: str):
 
 
 @jsonrpc.dispatcher.add_method
-def create_base(login_key: str):
+def create_base(login_key: str, task_id: int, base_id: int):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    return db.Base.new(account.id)
+    if task_id == 0:
+        base_id = db.Base.new(account.id)
+        task_id = transmutation.transmute_next_task(task_id)
+    task = transmutation.transmute_task(task_id)
+    return {
+        'method': task['method'],
+        'params': task['params'],
+        'next_task': transmutation.transmute_next_task(task['id']),
+        'base_id': base_id,
+    }
 
 
-@router.websocket('/v1/managers/{login_key}/bases/{base_id}/setup')
-async def websocket_setup(websocket: WebSocket, login_key: str, base_id: int):
-    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    await websocket.accept()
-    pws_log = logging.getLogger('persistent_websocket')
-    pws_log.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
-    messages = persistent_websocket.PersistentWebsocket(base_id, pws_log)
-    runTasks = transmutation.BaseSetup(websocket, messages)
-    try:
-        await runTasks.transmute_steps()
-    except asyncio.exceptions.CancelledError:
-        logger.info(f"B15058 transmute canceled")
+# @router.websocket('/v1/managers/{login_key}/bases/{base_id}/setup')
+# async def websocket_setup(websocket: WebSocket, login_key: str, base_id: int):
+#     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
+#     await websocket.accept()
+#     pws_log = logging.getLogger('persistent_websocket')
+#     pws_log.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
+#     messages = persistent_websocket.PersistentWebsocket(base_id, pws_log)
+#     runTasks = transmutation.BaseSetup(websocket, messages)
+#     try:
+#         await runTasks.transmute_steps()
+#     except asyncio.exceptions.CancelledError:
+#         logger.info(f"B15058 transmute canceled")
 
 
-@router.websocket('/v1/managers/{login_key}/bases/{base_id}/proxy')
-async def websocket_proxy(websocket: WebSocket, login_key: str, base_id: int):
-    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    await websocket.accept()
-    tcp_websocket = transmutation.TcpWebSocket(
-        tcp_port=30915, tcp_address='127.0.0.1', ws=websocket
-    )
-    await tcp_websocket.start()
-    try:
-        await websocket.close()
-    except Exception as e:
-        logger.error(f"B38264 WebSocket error: {e}")  # e.g. websocket already closed
+# @router.websocket('/v1/managers/{login_key}/bases/{base_id}/proxy')
+# async def websocket_proxy(websocket: WebSocket, login_key: str, base_id: int):
+#     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
+#     await websocket.accept()
+#     tcp_websocket = transmutation.TcpWebSocket(
+#         tcp_port=30915, tcp_address='127.0.0.1', ws=websocket
+#     )
+#     await tcp_websocket.start()
+#     try:
+#         await websocket.close()
+#     except Exception as e:
+#         logger.error(f"B38264 WebSocket error: {e}")  # e.g. websocket already closed
 
 
 # messages: Dict[str, persistent_websocket.PersistentWebsocket] = dict()  # one entry for each client

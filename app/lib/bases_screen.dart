@@ -7,7 +7,6 @@ import 'package:logging/logging.dart';
 import 'dart:math';
 import 'main.dart';
 import 'parent_form_state.dart';
-import 'hub_rpc.dart';
 
 final _log = Logger('bases_screen');
 var loginState = LoginState.instance;
@@ -34,16 +33,7 @@ class BasesFormState extends ParentFormState {
   String get lkocc => "null";
 
   @override
-  Future<void> callApi() async {
-    final rpc = HubRpc.instance;
-    var response = await rpc.sendRequest(
-      'create_base',
-      {'login_key': loginState.pureLoginKey},
-    );
-    if (response is! int) {
-      throw Exception("B91194 invalid response: $response");
-    }
-  }
+  Future<void> callApi() async {}
 
   @override
   nextScreen() => context.push('/new-base');
