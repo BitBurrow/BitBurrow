@@ -1,18 +1,49 @@
-// ignore_for_file: prefer_conditional_assignment
+/// Class PersistentWebsocket adds to WebSockets auto-reconnect and auto-resend of lost messages.
+///
+/// This class adds to WebSockets (client and server) the ability to automatically reconnect,
+/// including for IP address changes, as well as resending any messages which may have been
+/// lost. To accomplish this, it uses a custom protocol which adds 2 bytes to the beginning
+/// of each WebSocket message and uses signals for acknowledgement and resend requests.
+
 
 import 'dart:async';
 import 'dart:collection';
+import 'package:logging/logging.dart';
 import 'dart:convert' as convert;
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:io' as io;
-import 'package:logging/logging.dart';
 import 'package:mutex/mutex.dart';
+import 'dart:typed_data';
 import 'package:web_socket_channel/io.dart' as wsio;
+
+//// notes:
+//   * important: mirror changes in corresponding Dart code--search "bMjZmLdFv"
+//   * messages always arrive and in order; signals can be lost if WebSocket disconnects
+//   * all bytes are in big-endian byte order; use: int.from_bytes(chunk[0:2], 'big')
+//   * 'chunk' refers to a full WebSocket item, including the first 2 bytes
+//   * 'message' refers to chunk[2:] of a chunk that is not a signal (details below)
+//   * index → chunk number; first chunk sent is chunk 0
+//   * i_lsb → index mod max_lsb, i.e. the 15 least-significant bits
+//   * ping and pong (below) are barely implemented because we rely on WebSocket keep-alives
+//// on-the-wire format:
+//   * chunk containing a message (when chunk[0:2] < 32768):
+//       * chunk[0:2]  i_lsb
+//       * chunk[2:]   message
+//   * a signaling chunk (when chunk[0:2] >= 32768):
+_sigAck = 0x8010; // "I have received n total chunks"
+//       * chunk[2:4]  i_lsb of next expected chunk
+_sigResend = 0x8011; // "Please resend chunk n and everything after it"
+//       * chunk[2:4]  i_lsb of first chunk to resend
+_sigResendError = 0x8012; // "I cannot resend the requested chunks"
+//       * chunk[2:]   (optional, ignored)
+_sigPing = 0x8020; // "Are you alive?"
+//       * chunk[2:]   (optional)
+_sigPong = 0x8021; // "Yes, I am alive."
+//       * chunk[2:]   chunk[2:] from corresponding ping
 
 const maxLsb = 32768; // always 32768 (2**15) except for testing (tested 64, 32)
 const maxSendBuffer = 100; // not sure what a reasonable number here would be
-//assert(maxLsb > maxSendBuffer * 3); // avoid wrap-around
+assert(maxLsb > maxSendBuffer * 3); // avoid wrap-around
 
 /// Convert index to on-the-wire format; see i_lsb description.
 Uint8List lsb(int index) {
@@ -38,9 +69,10 @@ int bytesToInt(Uint8List data, offset) {
 /// Put another way: find n where n%w is xx and abs(xxxx-n) <= w/2. For
 /// example, unmod(yy, yyyy_today, 100) will convert a 2-digit year yy to
 /// a 4-digit year by assuming yy is within 50 years of the current year.
+/// The input w is the window size (must be even), i.e. the number of
+/// possible values for xx.
 int unmod(int xx, int xxxx, {int w = maxLsb}) {
-  assert(xx <
-      w); // w is the window size (must be even), i.e. the number of possible values for xx
+  assert(xx < w);
   final splitp = (xxxx + w ~/ 2) % w; // split point
   return xx + xxxx + w ~/ 2 - splitp - (xx > splitp ? w : 0);
 }
@@ -64,6 +96,7 @@ int unmod(int xx, int xxxx, {int w = maxLsb}) {
 // }
 
 class Timekeeper {
+  // based on https://stackoverflow.com/a/45430833
   late double _timeout;
   final void Function() _callback;
   bool _isPeriodic;
@@ -154,7 +187,7 @@ Uint8List cat(Uint8List part1, Uint8List part2) {
   return (chunk.toBytes());
 }
 
-// Make binary data more readable for humans.
+/// Make binary data more readable for humans.
 String printableHex(Uint8List chunk) {
   StringBuffer out = StringBuffer();
   StringBuffer quote = StringBuffer(); // quoted ascii text
@@ -315,12 +348,8 @@ Future<String> connectivityCheck(String host, int port) async {
 
 /// Adds to WebSockets auto-reconnect and auto-resend of lost messages.
 ///
-/// This class adds to WebSockets (client and server) the ability to automatically reconnect,
-/// including for IP address changes, as well as resending any messages which may have been
-/// lost. To accomplish this, it uses a custom protocol which adds 2 bytes to the beginning
-/// of each WebSocket message and uses signals for acknowledgement and resend requests.
+/// See the top of this file for details.
 class PersistentWebSocket {
-  // important: mirror changes in corresponding Python code--search "bMjZmLdFv"
   static const _sigAck = 0x8010;
   static const _sigResend = 0x8011;
   static const _sigResendError = 0x8012;
@@ -357,6 +386,11 @@ class PersistentWebSocket {
     });
   }
 
+  /// Handle a new inbound WebSocket connection, yield inbound messages.
+  ///
+  /// This is the primary API entry point for a WebSocket SERVER. Signals from
+  /// the client will be appropriately handled and inbound messages will be
+  /// returned to the caller via `yield`.
   Future<void> connected(wsio.IOWebSocketChannel ws) async {
     if (connectLock.isLocked) {
       _log.warning("B30103 $logId waiting for current WebSocket to close");
@@ -398,13 +432,19 @@ class PersistentWebSocket {
     }
   }
 
-  /// Initiate connection. Reconnect as needed. Can throw PWUnrecoverableError.
+  /// Begin a new outbound WebSocket connection.
+  ///
+  /// This is the primary API entry point for a WebSocket CLIENT. Signals from
+  /// the server will be appropriately handled and inbound messages will be
+  /// returned to the caller via _inController.sink.
   Future<void> connect(Uri uri) async {
     host = uri.host;
     if (connectLock.isLocked) {
       _log.warning("B18450 $logId waiting for current WebSocket to close");
     }
     try {
+      // PersistentWebsocket is not reentrant; if we don't lock here, messages
+      // can arrive out-of-order
       await connectLock.protect(() async {
         // keep reconnecting
         while (true) {
@@ -463,6 +503,7 @@ class PersistentWebSocket {
     await setOfflineMode();
   }
 
+  /// Send a message to the remote when possible, resending if necessary.
   Future<void> send(message) async {
     var flowControlDelay = 1;
     while (_journal.length > maxSendBuffer) {
@@ -504,19 +545,20 @@ class PersistentWebSocket {
     }
   }
 
+  /// Resend the oldest chunk.
   void _resendOne() {
     var journalLen = _journal.length;
     if (journalLen > 0) {
+      // sending all chunks now may cause congestion, and we should get a
+      // _sig_resend upon reconnect anyhow
       var tailIndex = _journalIndex - _journal.length;
       _resend(tailIndex, endIndex: tailIndex + 1);
     }
   }
 
-  /// Resend queed chunks.
+  /// Resend queued chunks.
   Future<void> _resend(int startIndex, {endIndex}) async {
-    if (endIndex == null) {
-      endIndex = _journalIndex;
-    }
+    endIndex ??= _journalIndex;
     if (startIndex == endIndex) {
       return;
     }
@@ -700,6 +742,7 @@ class PersistentWebSocket {
     enableInTimer();
   }
 
+  /// Set a timer to resend any unacknowledged outbound chunks
   void enableJournalTimer() {
     if (isOffline()) {
       return;
@@ -709,9 +752,10 @@ class PersistentWebSocket {
     }
   }
 
+  /// Set a timer to acknowledge receipt of received chunks
   void enableInTimer() {
     if (isOffline()) {
-      return;
+      return; // run timers only when online
     }
     if (_inIndex > _inLastAck && _inLastAckTimer == null) {
       _inLastAckTimer = Timekeeper(1.0, _sendAck);
