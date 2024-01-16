@@ -12,7 +12,7 @@ import hub.logs as logs
 import random
 from timeit import default_timer as timer
 import traceback
-from typing import AsyncGenerator
+import typing
 import websockets
 
 try:
@@ -54,19 +54,19 @@ max_send_buffer = 100  # not sure what a reasonable number here would be
 assert max_lsb > max_send_buffer * 3  # avoid wrap-around
 
 
-def lsb(index):
+def lsb(index) -> bytes:
     """Convert index to on-the-wire format; see i_lsb description."""
     return (index % max_lsb).to_bytes(2, 'big')
 
 
-def const_otw(c):
+def const_otw(c) -> bytes:
     """Convert _sig constant to on-the-wire format."""
     assert c >= 32768  # 0x8000
     assert c <= 65535  # 0xFFFF
     return c.to_bytes(2, 'big')
 
 
-def unmod(xx, xxxx, w=max_lsb):
+def unmod(xx, xxxx, w=max_lsb) -> int:
     """Undelete upper bits of xx by assuming it's near xxxx.
 
     Put another way: find n where n%w is xx and abs(xxxx-n) <= w/2. For
@@ -91,8 +91,9 @@ def unmod(xx, xxxx, w=max_lsb):
 #            #print(f"unmod({short}, {long}, {win}) == {n}")
 
 
-class Timekeeper:  # based on https://stackoverflow.com/a/45430833
-    def __init__(self, timeout, callback, is_periodic=False, scaling=1.0, max_timeout=30.0):
+class Timekeeper:
+    # based on https://stackoverflow.com/a/45430833
+    def __init__(self, timeout, callback, is_periodic=False, scaling=1.0, max_timeout=30.0) -> None:
         self._timeout = timeout
         self._callback = callback
         self._is_periodic = is_periodic
@@ -101,16 +102,16 @@ class Timekeeper:  # based on https://stackoverflow.com/a/45430833
         self._task = asyncio.create_task(self._job())
 
     @staticmethod
-    def periodic(timeout, callback):
+    def periodic(timeout, callback) -> 'Timekeeper':
         return Timekeeper(timeout, callback, is_periodic=True, scaling=1.0, max_timeout=9999999)
 
     @staticmethod
-    def exponential(timeout, callback, scaling=2.0, max_timeout=30.0):
+    def exponential(timeout, callback, scaling=2.0, max_timeout=30.0) -> 'Timekeeper':
         return Timekeeper(
             timeout, callback, is_periodic=True, scaling=scaling, max_timeout=max_timeout
         )
 
-    async def _job(self):
+    async def _job(self) -> None:
         while True:
             await asyncio.sleep(self._timeout)
             self._timeout *= self._scaling
@@ -121,7 +122,7 @@ class Timekeeper:  # based on https://stackoverflow.com/a/45430833
             if not self._is_periodic:
                 break
 
-    def cancel(self):
+    def cancel(self) -> None:
         self._is_periodic = False
         self._task.cancel()
 
@@ -162,7 +163,7 @@ class Timekeeper:  # based on https://stackoverflow.com/a/45430833
 
 
 class PWUnrecoverableError(Exception):
-    def __init__(self, message=""):
+    def __init__(self, message="") -> None:
         self.message = message
         super().__init__(self.message)
 
@@ -170,7 +171,7 @@ class PWUnrecoverableError(Exception):
 lkocc_string = '__login_key_or_coupon_code__'
 
 
-def printable_hex(chunk):
+def printable_hex(chunk) -> str:
     """Make binary data more readable for humans."""
     out = list()
     quote = list()  # quoted ascii text
@@ -190,7 +191,7 @@ def printable_hex(chunk):
     return ''.join(out).strip()
 
 
-def printable_hex_test():
+def printable_hex_test() -> None:
     chunk_test = (
         "1234\x0056789\x01\x02abcd\nefg\nhi\nhello\n\n"
         "hello\n\n\nshouldn't \\ backslash\xe2\x9c\x94 done\n"
@@ -208,7 +209,7 @@ class PersistentWebsocket:
     See the top of this file for details.
     """
 
-    def __init__(self, log_id: str, log):
+    def __init__(self, log_id: str, log) -> None:
         self.log_id = log_id  # uniquely identify this connection in log file
         self.log = log
         self._ws = None
@@ -227,7 +228,7 @@ class PersistentWebsocket:
         self.chaos = 0  # level of chaos to intentionaly introduce for testing, 50 recommended
         self.connect_lock = asyncio.Lock()
 
-    async def connected(self, ws) -> AsyncGenerator[bytes, None]:
+    async def connected(self, ws) -> typing.AsyncGenerator[bytes, None]:
         """Handle a new inbound WebSocket connection, yield inbound messages.
 
         This is the primary API entry point for a WebSocket SERVER. Signals from
@@ -249,7 +250,7 @@ class PersistentWebsocket:
         finally:
             await self.set_offline_mode()
 
-    async def connect(self, url: str) -> AsyncGenerator[bytes, None]:
+    async def connect(self, url: str) -> typing.AsyncGenerator[bytes, None]:
         """Begin a new outbound WebSocket connection, yield inbound messages.
 
         This is the primary API entry point for a WebSocket CLIENT. Signals from
@@ -280,7 +281,7 @@ class PersistentWebsocket:
             finally:
                 await self.set_offline_mode()
 
-    async def listen(self) -> AsyncGenerator[bytes, None]:
+    async def listen(self) -> typing.AsyncGenerator[bytes, None]:
         """Accept chunks on the WebSocket connection and yield messages."""
         self._in_last_resend_time = 0  # reset for new connection
         await self._send_resend()  # chunks were probably lost in the reconnect
@@ -325,7 +326,7 @@ class PersistentWebsocket:
         finally:
             await self.set_offline_mode()
 
-    async def send(self, message: str | bytes):
+    async def send(self, message: str | bytes) -> None:
         """Send a message to the remote when possible, resending if necessary."""
         flow_control_delay = 1
         while len(self._journal) > max_send_buffer:
@@ -350,7 +351,7 @@ class PersistentWebsocket:
             await self.set_offline_mode()
             await asyncio.sleep(random.randint(0, 3))
 
-    async def _resend_one(self):
+    async def _resend_one(self) -> None:
         """Resend the oldest chunk."""
         journal_len = len(self._journal)
         if journal_len > 0:
@@ -359,7 +360,7 @@ class PersistentWebsocket:
             tail_index = self._journal_index - journal_len
             await self._resend(tail_index, tail_index + 1)
 
-    async def _resend(self, start_index, end_index=None):
+    async def _resend(self, start_index, end_index=None) -> None:
         """Resend queued chunks."""
         if end_index is None:
             end_index = self._journal_index
@@ -378,7 +379,7 @@ class PersistentWebsocket:
         for i in range(start_index - self._journal_index, end_index - self._journal_index):
             await self._send_raw(self._journal[i])
 
-    async def _send_raw(self, chunk):
+    async def _send_raw(self, chunk) -> None:
         """Send chunk of bytes if we can."""
         if self.is_offline():
             return
@@ -471,14 +472,14 @@ class PersistentWebsocket:
             del self._ipi
             self.log.error(f"B88756 {self.log_id} wsexception, {traceback.format_exc().rstrip()}")
 
-    async def _send_ack(self):
+    async def _send_ack(self) -> None:
         self._in_last_ack = self._in_index
         if self._in_last_ack_timer is not None:  # kill the count-down timer if running
             self._in_last_ack_timer.cancel()
             self._in_last_ack_timer = None
         await self._send_raw(const_otw(self._sig_ack) + lsb(self._in_index))
 
-    async def _send_resend(self):
+    async def _send_resend(self) -> None:
         now_time = round(timer() * 1000)
         # wait a bit before sending a duplicate resend requets again
         if self._in_index == self._in_last_resend:
@@ -488,16 +489,16 @@ class PersistentWebsocket:
         self._in_last_resend_time = now_time
         await self._send_raw(const_otw(self._sig_resend) + lsb(self._in_index))
 
-    async def ping(self, data):
+    async def ping(self, data) -> None:
         await self._send_raw(const_otw(self._sig_ping) + data)
 
-    def is_online(self):
+    def is_online(self) -> bool:
         return self._ws is not None
 
-    def is_offline(self):
+    def is_offline(self) -> bool:
         return self._ws is None
 
-    async def set_offline_mode(self):
+    async def set_offline_mode(self) -> None:
         """Close the WebSocket connection; can be called multiple times."""
         if self.is_offline():
             return
@@ -518,7 +519,7 @@ class PersistentWebsocket:
                 self._in_last_ack_timer.cancel()
                 self._in_last_ack_timer = None
 
-    def set_online_mode(self, ws):
+    def set_online_mode(self, ws) -> None:
         assert self.is_offline(), f"B39653 {self.log_id} cannot go online twice"
         self._ws = ws
         self.log.info(f"B17183 {self.log_id} WebSocket reconnect {self.connects}")
@@ -526,14 +527,14 @@ class PersistentWebsocket:
         self.enable_journal_timer()
         self.enable_in_timer()
 
-    def enable_journal_timer(self):
+    def enable_journal_timer(self) -> None:
         """Set a timer to resend any unacknowledged outbound chunks"""
         if self.is_offline():
             return  # run timers only when online
         if len(self._journal) > 0 and self._journal_timer is None:
             self._journal_timer = Timekeeper.exponential(2.0, self._resend_one, 2.0, 30.0)
 
-    def enable_in_timer(self):
+    def enable_in_timer(self) -> None:
         """Set a timer to acknowledge receipt of received chunks"""
         if self.is_offline():
             return  # run timers only when online
