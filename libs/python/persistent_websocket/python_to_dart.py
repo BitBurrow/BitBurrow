@@ -68,7 +68,6 @@ def split_comment(line):
 
 def to_dart1(code):
     code = re.sub(r'[a-zA-Z_]+', camel_case, code)  # camelCase each Python name
-    code = re.sub(r'[a-zA-Z_]+', p_to_d_names, code)  # e.g. True → true
     code = re.sub(r'(if|for|while) (.*):', r'\1 (\2)', code)  # add ( ) and remove :
     code = re.sub(r'(assert) (.*)', r'\1(\2)', code)  # add ( )
     code = re.sub(r'(\W)self\.', r'\1', code)  # remove `self.`
@@ -88,6 +87,8 @@ def to_dart1(code):
     code = re.sub(
         r'^import websockets', r"import 'package:web_socket_channel/io.dart' as wsio", code
     )
+    # parallel names in the 2 languagews, e.g. True → true
+    code = re.sub(r'[a-zA-Z_]+', p_to_d_names, code)
     return code
 
 
