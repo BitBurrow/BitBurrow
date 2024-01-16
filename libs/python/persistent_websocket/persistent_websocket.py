@@ -1,3 +1,11 @@
+"""Class PersistentWebsocket adds to WebSockets auto-reconnect and auto-resend of lost messages.
+
+This class adds to WebSockets (client and server) the ability to automatically reconnect,
+including for IP address changes, as well as resending any messages which may have been
+lost. To accomplish this, it uses a custom protocol which adds 2 bytes to the beginning
+of each WebSocket message and uses signals for acknowledgement and resend requests.
+"""
+
 import asyncio
 import collections
 import hub.logs as logs
@@ -15,6 +23,31 @@ except ImportError:
     from websockets.exceptions import ConnectionClosed as WebSocketDisconnect
 
     using_starlette = False
+
+### notes:
+#   * important: mirror changes in corresponding Dart code--search "bMjZmLdFv"
+#   * messages always arrive and in order; signals can be lost if WebSocket disconnects
+#   * all bytes are in big-endian byte order; use: int.from_bytes(chunk[0:2], 'big')
+#   * 'chunk' refers to a full WebSocket item, including the first 2 bytes
+#   * 'message' refers to chunk[2:] of a chunk that is not a signal (details below)
+#   * index → chunk number; first chunk sent is chunk 0
+#   * i_lsb → index mod max_lsb, i.e. the 15 least-significant bits
+#   * ping and pong (below) are barely implemented because we rely on WebSocket keep-alives
+### on-the-wire format:
+#   * chunk containing a message (when chunk[0:2] < 32768):
+#       * chunk[0:2]  i_lsb
+#       * chunk[2:]   message
+#   * a signaling chunk (when chunk[0:2] >= 32768):
+_sig_ack = 0x8010  # "I have received n total chunks"
+#       * chunk[2:4]  i_lsb of next expected chunk
+_sig_resend = 0x8011  # "Please resend chunk n and everything after it"
+#       * chunk[2:4]  i_lsb of first chunk to resend
+_sig_resend_error = 0x8012  # "I cannot resend the requested chunks"
+#       * chunk[2:]   (optional, ignored)
+_sig_ping = 0x8020  # "Are you alive?"
+#       * chunk[2:]   (optional)
+_sig_pong = 0x8021  # "Yes, I am alive."
+#       * chunk[2:]   chunk[2:] from corresponding ping
 
 max_lsb = 32768  # always 32768 (2**15) except for testing (tested 64, 32)
 max_send_buffer = 100  # not sure what a reasonable number here would be
@@ -39,8 +72,10 @@ def unmod(xx, xxxx, w=max_lsb):
     Put another way: find n where n%w is xx and abs(xxxx-n) <= w/2. For
     example, unmod(yy, yyyy_today, 100) will convert a 2-digit year yy to
     a 4-digit year by assuming yy is within 50 years of the current year.
+    The input w is the window size (must be even), i.e. the number of
+    possible values for xx.
     """
-    assert xx < w  # w is the window size (must be even), i.e. the number of possible values for xx
+    assert xx < w
     splitp = (xxxx + w // 2) % w  # split point
     return xx + xxxx + w // 2 - splitp - (w if xx > splitp else 0)
 
@@ -135,8 +170,8 @@ class PWUnrecoverableError(Exception):
 lkocc_string = '__login_key_or_coupon_code__'
 
 
-# make binary data more readable for humans
 def printable_hex(chunk):
+    """Make binary data more readable for humans."""
     out = list()
     quote = list()  # quoted ascii text
     for item in chunk:
@@ -170,36 +205,8 @@ def printable_hex_test():
 class PersistentWebsocket:
     """Adds to WebSockets auto-reconnect and auto-resend of lost messages.
 
-    This class adds to WebSockets (client and server) the ability to automatically reconnect,
-    including for IP address changes, as well as resending any messages which may have been
-    lost. To accomplish this, it uses a custom protocol which adds 2 bytes to the beginning
-    of each WebSocket message and uses signals for acknowledgement and resend requests.
+    See the top of this file for details.
     """
-
-    ### notes:
-    #   * important: mirror changes in corresponding Dart code--search "bMjZmLdFv"
-    #   * messages always arrive and in order; signals can be lost if WebSocket disconnects
-    #   * all bytes are in big-endian byte order; use: int.from_bytes(chunk[0:2], 'big')
-    #   * 'chunk' refers to a full WebSocket item, including the first 2 bytes
-    #   * 'message' refers to chunk[2:] of a chunk that is not a signal (details below)
-    #   * index → chunk number; first chunk sent is chunk 0
-    #   * i_lsb → index mod max_lsb, i.e. the 15 least-significant bits
-    #   * ping and pong (below) are barely implemented because we rely on WebSocket keep-alives
-    ### on-the-wire format:
-    #   * chunk containing a message (when chunk[0:2] < 32768):
-    #       * chunk[0:2]  i_lsb
-    #       * chunk[2:]   message
-    #   * a signaling chunk (when chunk[0:2] >= 32768):
-    _sig_ack = 0x8010  # "I have received n total chunks"
-    #       * chunk[2:4]  i_lsb of next expected chunk
-    _sig_resend = 0x8011  # "Please resend chunk n and everything after it"
-    #       * chunk[2:4]  i_lsb of first chunk to resend
-    _sig_resend_error = 0x8012  # "I cannot resend the requested chunks"
-    #       * chunk[2:]   (optional, ignored)
-    _sig_ping = 0x8020  # "Are you alive?"
-    #       * chunk[2:]   (optional)
-    _sig_pong = 0x8021  # "Yes, I am alive."
-    #       * chunk[2:]   chunk[2:] from corresponding ping
 
     def __init__(self, log_id: str, log):
         self.log_id = log_id  # uniquely identify this connection in log file
