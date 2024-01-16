@@ -1,6 +1,3 @@
-import re
-import sys
-
 """This module performs a surface-level "literal" translation from Python to Dart.
 
 Usage: python3 python_to_dart.py [input_file.py] > [output_file.dart]
@@ -20,6 +17,9 @@ In the translated Dart file, this will become:
 Likewise, Dart-only code blocks begin with a line like:
 ## the following 2 lines are only in the Dart version of this file
 """
+
+import re
+import sys
 
 
 def camel_case(match):
@@ -98,11 +98,13 @@ def to_dart2(code):
 
 
 def commentout(match):
-    method_line = match.group(1).strip('\n')  # e.g. `    async def _resend_one(self) -> None:`
-    indent = " " * (len(method_line) - len(method_line.lstrip()))
-    comment_lines = match.group(2).strip().split('\n')  # group(2) is part in tripple quotes
+    method_line = match.group(1)  # e.g. "    async def _resend_one(self) -> None:"
+    method = method_line.strip('\n') if method_line != None else ""
+    indent = " " * (len(method) - len(method.lstrip()))
+    in_tripple_quotes = match.group(3) if match.group(3) != None else match.group(4)
+    comment_lines = in_tripple_quotes.strip().split('\n')
     new_comment = '\n'.join((indent + "## " + line.lstrip()).rstrip() for line in comment_lines)
-    return new_comment + '\n' + method_line
+    return new_comment + '\n' + method
 
 
 def process_python_file(file_path):
@@ -111,7 +113,10 @@ def process_python_file(file_path):
         content = file.read()
     # move tripple-quote docs after the method def line to comments before the def line
     content = re.sub(
-        r'^([^\n]+)\n *"""(.*?)"""', commentout, content, flags=re.MULTILINE | re.DOTALL
+        r'^( *(def |async def |class )[^\n]+)\n *"""(.*?)"""|^ *"""(.*?)"""',
+        commentout,
+        content,
+        flags=re.MULTILINE | re.DOTALL,
     )
     indent_stack = list()
     indent_stack.append(0)
