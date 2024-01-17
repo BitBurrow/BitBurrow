@@ -18,16 +18,20 @@ import 'package:web_socket_channel/io.dart' as wsio;
 
 //// notes:
 //   * important: mirror changes in corresponding Dart code--search "bMjZmLdFv"
+//   * important: for breaking changes, increment rpc_ver
 //   * messages always arrive and in order; signals can be lost if WebSocket disconnects
 //   * all bytes are in big-endian byte order; use: int.from_bytes(chunk[0:2], 'big')
 //   * 'chunk' refers to a full WebSocket item, including the first 2 bytes
 //   * 'message' refers to chunk[2:] of a chunk that is not a signal (details below)
 //   * index → chunk number; first chunk sent is chunk 0
-//   * i_lsb → index mod max_lsb, i.e. the 15 least-significant bits
+//   * i_lsb → index mod max_lsb, i.e. the 14 least-significant bits
+//   * jet_bit → specify channel; 0=RPC channel; 1=jet channel for TCP and other streams
 //   * ping and pong (below) are barely implemented because we rely on WebSocket keep-alives
 //// on-the-wire format:
 //   * chunk containing a message (when chunk[0:2] < 32768):
-//       * chunk[0:2]  i_lsb
+//       * chunk[0:2] bits 0..13 i_lsb
+//       * chunk[0:2] bit 14     jet_bit
+//       * chunk[0:2] bit 15     0
 //       * chunk[2:]   message
 //   * a signaling chunk (when chunk[0:2] >= 32768):
 const _sigAck = 0x8010; // "I have received n total chunks"
@@ -41,19 +45,27 @@ const _sigPing = 0x8020; // "Are you alive?"
 const _sigPong = 0x8021; // "Yes, I am alive."
 //       * chunk[2:]   chunk[2:] from corresponding ping
 
-const maxLsb = 32768; // always 32768 (2**15) except for testing (tested 64, 32)
+const maxLsb = 16384; // always 16384 (2**14) except for testing (tested 64, 32)
+const lsbMask = 16383; // 0x3FFF
+const jetBit = 16384; // bit 14, 0x4000
+const signalBit = 32768; // bit 15, 0x8000
 const maxSendBuffer = 100; // not sure what a reasonable number here would be
 // assert(maxLsb > maxSendBuffer * 3); // avoid wrap-around
 
 /// Convert index to on-the-wire format; see i_lsb description.
-Uint8List lsb(int index) {
-  return Uint8List(2)
-    ..buffer.asByteData().setUint16(0, index % maxLsb, Endian.big);
+Uint8List lsb(int index, bool isJet) {
+  if (isJet) {
+    return Uint8List(2)
+      ..buffer.asByteData().setUint16(0, (index % maxLsb) | jetBit, Endian.big);
+  } else {
+    return Uint8List(2)
+      ..buffer.asByteData().setUint16(0, index % maxLsb, Endian.big);
+  }
 }
 
 /// Convert _sig constant to on-the-wire format.
 Uint8List constOtw(int c) {
-  assert(c >= 32768); // 0x8000
+  assert(c >= signalBit);
   assert(c <= 65535); // 0xFFFF
   return Uint8List(2)..buffer.asByteData().setUint16(0, c, Endian.big);
 }
@@ -79,7 +91,7 @@ int unmod(int xx, int xxxx, {int w = maxLsb}) {
 
 // void unmodTest() {
 //   final random = Random();
-//   final windowSizes = [10, 100, 1000, 10000, 32768, 8322];
+//   final windowSizes = [10, 100, 1000, 10000, 16384, 32768, 8322];
 //   for (final win in windowSizes) {
 //     for (var i = 0; i < 1000000; i++) {
 //       final short = random.nextInt(win);
@@ -431,7 +443,8 @@ class PersistentWebSocket {
   ///
   /// This is the primary API entry point for a WebSocket CLIENT. Signals from
   /// the server will be appropriately handled and inbound messages will be
-  /// returned to the caller via _inController.sink.
+  /// returned to the caller via _inController.sink. The WebSocket will
+  /// reconnect as needed. Can throw PWUnrecoverableError.
   Future<void> connect(Uri uri) async {
     host = uri.host;
     if (connectLock.isLocked) {
@@ -499,7 +512,7 @@ class PersistentWebSocket {
   }
 
   /// Send a message to the remote when possible, resending if necessary.
-  Future<void> send(message) async {
+  Future<void> send(message, {isJet = false}) async {
     var flowControlDelay = 1;
     while (_journal.length > maxSendBuffer) {
       if (flowControlDelay == 1) {
@@ -516,10 +529,10 @@ class PersistentWebSocket {
     Uint8List chunk;
     if (message is String) {
       // convert String to Uint8List
-      chunk = cat(
-          lsb(_journalIndex), Uint8List.fromList(convert.utf8.encode(message)));
+      chunk = cat(lsb(_journalIndex, isJet),
+          Uint8List.fromList(convert.utf8.encode(message)));
     } else if (message is Uint8List) {
-      chunk = cat(lsb(_journalIndex), message);
+      chunk = cat(lsb(_journalIndex, isJet), message);
     } else {
       _log.info("B64474 unsupported type");
       chunk = Uint8List(0);
@@ -599,9 +612,13 @@ class PersistentWebSocket {
     }
     _ipi = true;
     var iLsb = bytesToInt(chunk, 0); // first 2 bytes of chunk
-    if (iLsb < maxLsb) {
+    bool isJet = iLsb & jetBit != 0;
+    if (iLsb < signalBit) {
       // message chunk
-      var index = unmod(iLsb, _inIndex); // expand 15 bits to full index
+      var index = unmod(
+        iLsb & lsbMask, // iLsb with jet bit cleared
+        _inIndex,
+      ); // expand 14 bits to full index
       if (index == _inIndex) {
         // valid
         _inIndex++; // have unacknowledged message(s)
@@ -615,7 +632,12 @@ class PersistentWebSocket {
           // (TESTING)     utf8.encode("We've received $_inIndex messages"))); // TESTING
         }
         _ipi = false;
-        return chunk.sublist(2); // message
+        if (isJet) {
+          // FIXME: send chunksublist(2) to jet connection
+          _log.info("B81186 ${chunk.sublist(2)} jet channel bytes received");
+        } else {
+          return chunk.sublist(2); // message
+        }
       } else if (index > _inIndex) {
         _sendResend(); // request the other end resend what we're missing
       } else {
@@ -624,6 +646,7 @@ class PersistentWebSocket {
       }
     } else {
       // signal
+      assert(isJet == false); // for signals, jetBit should be 0
       if (iLsb == _sigAck || iLsb == _sigResend) {
         var ackIndex = unmod(bytesToInt(chunk, 2), _journalIndex);
         var tailIndex = _journalIndex - _journal.length;
@@ -668,7 +691,7 @@ class PersistentWebSocket {
       _inLastAckTimer!.cancel();
       _inLastAckTimer = null;
     }
-    _sendRaw(cat(constOtw(_sigAck), lsb(_inIndex)));
+    _sendRaw(cat(constOtw(_sigAck), lsb(_inIndex, false)));
   }
 
   void _sendResend() {
@@ -682,7 +705,7 @@ class PersistentWebSocket {
     }
     _inLastResend = _inIndex;
     _inLastResendTime = nowTime;
-    _sendRaw(cat(constOtw(_sigResend), lsb(_inIndex)));
+    _sendRaw(cat(constOtw(_sigResend), lsb(_inIndex, false)));
   }
 
   Future<void> ping(Uint8List data) async {

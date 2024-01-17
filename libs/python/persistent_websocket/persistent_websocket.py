@@ -26,16 +26,20 @@ except ImportError:
 
 ### notes:
 #   * important: mirror changes in corresponding Dart code--search "bMjZmLdFv"
+#   * important: for breaking changes, increment rpc_ver
 #   * messages always arrive and in order; signals can be lost if WebSocket disconnects
 #   * all bytes are in big-endian byte order; use: int.from_bytes(chunk[0:2], 'big')
 #   * 'chunk' refers to a full WebSocket item, including the first 2 bytes
 #   * 'message' refers to chunk[2:] of a chunk that is not a signal (details below)
 #   * index → chunk number; first chunk sent is chunk 0
-#   * i_lsb → index mod max_lsb, i.e. the 15 least-significant bits
+#   * i_lsb → index mod max_lsb, i.e. the 14 least-significant bits
+#   * jet_bit → specify channel; 0=RPC channel; 1=jet channel for TCP and other streams
 #   * ping and pong (below) are barely implemented because we rely on WebSocket keep-alives
 ### on-the-wire format:
 #   * chunk containing a message (when chunk[0:2] < 32768):
-#       * chunk[0:2]  i_lsb
+#       * chunk[0:2] bits 0..13 i_lsb
+#       * chunk[0:2] bit 14     jet_bit
+#       * chunk[0:2] bit 15     0
 #       * chunk[2:]   message
 #   * a signaling chunk (when chunk[0:2] >= 32768):
 _sig_ack = 0x8010  # "I have received n total chunks"
@@ -49,19 +53,25 @@ _sig_ping = 0x8020  # "Are you alive?"
 _sig_pong = 0x8021  # "Yes, I am alive."
 #       * chunk[2:]   chunk[2:] from corresponding ping
 
-max_lsb = 32768  # always 32768 (2**15) except for testing (tested 64, 32)
+max_lsb = 16384  # always 16384 (2**14) except for testing (tested 64, 32)
+lsb_mask = 16383  # 0x3FFF
+jet_bit = 16384  # bit 14, 0x4000
+signal_bit = 32768  # bit 15, 0x8000
 max_send_buffer = 100  # not sure what a reasonable number here would be
 assert max_lsb > max_send_buffer * 3  # avoid wrap-around
 
 
-def lsb(index) -> bytes:
+def lsb(index, is_jet) -> bytes:
     """Convert index to on-the-wire format; see i_lsb description."""
-    return (index % max_lsb).to_bytes(2, 'big')
+    if is_jet:
+        return (index % max_lsb | jet_bit).to_bytes(2, 'big')
+    else:
+        return (index % max_lsb).to_bytes(2, 'big')
 
 
 def const_otw(c) -> bytes:
     """Convert _sig constant to on-the-wire format."""
-    assert c >= 32768  # 0x8000
+    assert c >= signal_bit
     assert c <= 65535  # 0xFFFF
     return c.to_bytes(2, 'big')
 
@@ -80,15 +90,15 @@ def unmod(xx, xxxx, w=max_lsb) -> int:
     return xx + xxxx + w // 2 - splitp - (w if xx > splitp else 0)
 
 
-# def unmod_test():
-#    for win in [10, 100, 1000, 10_000, 32768, 8322]:
+# def unmod_test() -> None:
+#    for win in [10, 100, 1000, 10_000, 16384, 32768, 8322]:
 #        for _ in range(0, 1_000_000):
 #            short = random.randint(0, win - 1)
 #            long = random.randint(0, 0xFFFFFF)
 #            n = unmod(short, long, win)
 #            assert n % win == short
 #            assert abs(long - n) <= win // 2
-#            #print(f"unmod({short}, {long}, {win}) == {n}")
+#            # print(f"unmod({short}, {long}, {win}) == {n}")
 
 
 class Timekeeper:
@@ -326,7 +336,7 @@ class PersistentWebsocket:
         finally:
             await self.set_offline_mode()
 
-    async def send(self, message: str | bytes) -> None:
+    async def send(self, message: str | bytes, is_jet=False) -> None:
         """Send a message to the remote when possible, resending if necessary."""
         flow_control_delay = 1
         while len(self._journal) > max_send_buffer:
@@ -338,9 +348,9 @@ class PersistentWebsocket:
         if flow_control_delay > 1:
             self.log.debug(f"B64414 {self.log_id} resuming send")
         if isinstance(message, str):
-            chunk = lsb(self._journal_index) + message.encode()  # convert message to bytes
+            chunk = lsb(self._journal_index, is_jet) + message.encode()  # convert message to bytes
         else:
-            chunk = lsb(self._journal_index) + message  # message is already in bytes
+            chunk = lsb(self._journal_index, is_jet) + message  # message is already in bytes
         self._journal_index += 1
         self._journal.append(chunk)
         await self._send_raw(chunk)
@@ -417,8 +427,12 @@ class PersistentWebsocket:
                 return
             self._ipi = True  # see above
             i_lsb = int.from_bytes(chunk[0:2], 'big')  # first 2 bytes of chunk
-            if i_lsb < max_lsb:  # message chunk
-                index = unmod(i_lsb, self._in_index)  # expand 15 bits to full index
+            is_jet = i_lsb & jet_bit != 0
+            if i_lsb < signal_bit:  # message chunk
+                index = unmod(
+                    i_lsb & lsb_mask,  # i_lsb with jet bit cleared
+                    self._in_index,
+                )  # expand 14 bits to full index
                 if index == self._in_index:  # valid
                     self._in_index += 1  # have unacknowledged message(s)
                     # occasionally call _send_ack() so remote can clear _journal
@@ -428,12 +442,17 @@ class PersistentWebsocket:
                         await self._send_ack()
                         # (TESTING) await self.send(f"We've received {self._in_index} messages")  # TESTING
                     del self._ipi
-                    return chunk[2:]  # message
+                    if is_jet:
+                        # FIXME: send chunk[2:] to jet connection
+                        self.log.info(f"B81185 {len(chunk[2:])} jet channel bytes received)")
+                    else:
+                        return chunk[2:]  # message
                 elif index > self._in_index:
                     await self._send_resend()  # request the other end resend what we're missing
                 else:  # index < self._in_index
                     self.log.info(f"B73822 {self.log_id} ignoring duplicate chunk {index}")
             else:  # signal
+                assert is_jet == False  # for signals, jet_bit should be 0
                 if i_lsb == _sig_ack or i_lsb == _sig_resend:
                     ack_index = unmod(int.from_bytes(chunk[2:4], 'big'), self._journal_index)
                     tail_index = self._journal_index - len(self._journal)
@@ -477,7 +496,7 @@ class PersistentWebsocket:
         if self._in_last_ack_timer is not None:  # kill the count-down timer if running
             self._in_last_ack_timer.cancel()
             self._in_last_ack_timer = None
-        await self._send_raw(const_otw(_sig_ack) + lsb(self._in_index))
+        await self._send_raw(const_otw(_sig_ack) + lsb(self._in_index, False))
 
     async def _send_resend(self) -> None:
         now_time = round(timer() * 1000)
@@ -487,7 +506,7 @@ class PersistentWebsocket:
                 return
         self._in_last_resend = self._in_index
         self._in_last_resend_time = now_time
-        await self._send_raw(const_otw(_sig_resend) + lsb(self._in_index))
+        await self._send_raw(const_otw(_sig_resend) + lsb(self._in_index, False))
 
     async def ping(self, data) -> None:
         await self._send_raw(const_otw(_sig_ping) + data)
