@@ -4,7 +4,7 @@
 /// including for IP address changes, as well as resending any messages which may have been
 /// lost. To accomplish this, it uses a custom protocol which adds 2 bytes to the beginning
 /// of each WebSocket message and uses signals for acknowledgement and resend requests.
-
+library;
 
 import 'dart:async';
 import 'dart:collection';
@@ -30,20 +30,20 @@ import 'package:web_socket_channel/io.dart' as wsio;
 //       * chunk[0:2]  i_lsb
 //       * chunk[2:]   message
 //   * a signaling chunk (when chunk[0:2] >= 32768):
-_sigAck = 0x8010; // "I have received n total chunks"
+const _sigAck = 0x8010; // "I have received n total chunks"
 //       * chunk[2:4]  i_lsb of next expected chunk
-_sigResend = 0x8011; // "Please resend chunk n and everything after it"
+const _sigResend = 0x8011; // "Please resend chunk n and everything after it"
 //       * chunk[2:4]  i_lsb of first chunk to resend
-_sigResendError = 0x8012; // "I cannot resend the requested chunks"
+const _sigResendError = 0x8012; // "I cannot resend the requested chunks"
 //       * chunk[2:]   (optional, ignored)
-_sigPing = 0x8020; // "Are you alive?"
+const _sigPing = 0x8020; // "Are you alive?"
 //       * chunk[2:]   (optional)
-_sigPong = 0x8021; // "Yes, I am alive."
+const _sigPong = 0x8021; // "Yes, I am alive."
 //       * chunk[2:]   chunk[2:] from corresponding ping
 
 const maxLsb = 32768; // always 32768 (2**15) except for testing (tested 64, 32)
 const maxSendBuffer = 100; // not sure what a reasonable number here would be
-assert(maxLsb > maxSendBuffer * 3); // avoid wrap-around
+// assert(maxLsb > maxSendBuffer * 3); // avoid wrap-around
 
 /// Convert index to on-the-wire format; see i_lsb description.
 Uint8List lsb(int index) {
@@ -350,11 +350,6 @@ Future<String> connectivityCheck(String host, int port) async {
 ///
 /// See the top of this file for details.
 class PersistentWebSocket {
-  static const _sigAck = 0x8010;
-  static const _sigResend = 0x8011;
-  static const _sigResendError = 0x8012;
-  static const _sigPing = 0x8020;
-  static const _sigPong = 0x8021;
   String logId;
   // convert Python logger: error→severe; warn→warning; info→info; debug→config
   final Logger _log;
