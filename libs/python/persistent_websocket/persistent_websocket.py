@@ -372,7 +372,7 @@ class PersistentWebsocket:
                 f"B38394 {self.log_id} remote wants journal[{start_index}:{end_index}] "
                 + f"but we only have journal[{tail_index}:{self._journal_index}]"
             )
-            await self._send_raw(const_otw(self._sig_resend_error))
+            await self._send_raw(const_otw(_sig_resend_error))
             raise PWUnrecoverableError(f"B34922 {self.log_id} impossible resend request")
         self.log.info(f"B57684 {self.log_id} resending journal[{start_index}:{end_index}]")
         # send requested chunks from oldest to newest, e.g. range(-2, 0) for most recent 2 chunks
@@ -434,7 +434,7 @@ class PersistentWebsocket:
                 else:  # index < self._in_index
                     self.log.info(f"B73822 {self.log_id} ignoring duplicate chunk {index}")
             else:  # signal
-                if i_lsb == self._sig_ack or i_lsb == self._sig_resend:
+                if i_lsb == _sig_ack or i_lsb == _sig_resend:
                     ack_index = unmod(int.from_bytes(chunk[2:4], 'big'), self._journal_index)
                     tail_index = self._journal_index - len(self._journal)
                     if tail_index < ack_index:
@@ -453,14 +453,14 @@ class PersistentWebsocket:
                     for i in range(tail_index, ack_index):
                         self._journal.popleft()
                     self.enable_journal_timer()  # set a new timer for remainder of _journal
-                    if i_lsb == self._sig_resend:
+                    if i_lsb == _sig_resend:
                         await self._resend(ack_index)
-                elif i_lsb == self._sig_resend_error:
+                elif i_lsb == _sig_resend_error:
                     self.log.error(f"B75561 {self.log_id} received resend error signal")
                     raise PWUnrecoverableError(f"B91221 {self.log_id} received resend error signal")
-                elif i_lsb == self._sig_ping:
-                    await self._send_raw(const_otw(self._sig_pong) + chunk[2:])
-                elif i_lsb == self._sig_pong:
+                elif i_lsb == _sig_ping:
+                    await self._send_raw(const_otw(_sig_pong) + chunk[2:])
+                elif i_lsb == _sig_pong:
                     pass
                 else:
                     self.log.error(f"B32405 {self.log_id} unknown signal {i_lsb}")
@@ -477,7 +477,7 @@ class PersistentWebsocket:
         if self._in_last_ack_timer is not None:  # kill the count-down timer if running
             self._in_last_ack_timer.cancel()
             self._in_last_ack_timer = None
-        await self._send_raw(const_otw(self._sig_ack) + lsb(self._in_index))
+        await self._send_raw(const_otw(_sig_ack) + lsb(self._in_index))
 
     async def _send_resend(self) -> None:
         now_time = round(timer() * 1000)
@@ -487,10 +487,10 @@ class PersistentWebsocket:
                 return
         self._in_last_resend = self._in_index
         self._in_last_resend_time = now_time
-        await self._send_raw(const_otw(self._sig_resend) + lsb(self._in_index))
+        await self._send_raw(const_otw(_sig_resend) + lsb(self._in_index))
 
     async def ping(self, data) -> None:
-        await self._send_raw(const_otw(self._sig_ping) + data)
+        await self._send_raw(const_otw(_sig_ping) + data)
 
     def is_online(self) -> bool:
         return self._ws is not None
