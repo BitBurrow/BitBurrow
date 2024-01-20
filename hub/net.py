@@ -4,9 +4,129 @@ from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as T
 import logging
 import os
 import psutil
+import re
+import secrets
+import socket
+import subprocess
+import tempfile
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
+
+
+def random_free_port(use_udp, avoid=None):
+    # for TCP, set use_udp to False
+    min = 2000
+    max = 65536  # min <= port < max
+    attempts = 0
+    default_route_ip = default_route_local_ip()
+    while True:  # try ports until we find one that's available
+        port = secrets.randbelow(max - min) + min
+        attempts += 1
+        assert attempts <= 99
+        if avoid is not None and port in avoid:
+            continue
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM if use_udp else socket.SOCK_STREAM)
+        try:
+            sock.bind((default_route_ip, port))
+            sock.close()
+            break
+        except Exception:  # probably errno.EADDRINUSE (port in use)
+            pass
+    return port
+
+
+def default_route_interface():  # network interface of default route
+    return ip_route_get('dev')
+
+
+def default_route_local_ip():  # local IP address of default route
+    return ip_route_get('src')
+
+
+def default_route_gateway():  # default gateway IP adddress
+    return ip_route_get('via')
+
+
+def ip_route_get(item: str):  # get default route
+    droute = ip(['route', 'get', '1.0.0.0'])
+    # example output: 1.0.0.0 via 192.168.8.1 dev wlp58s0 src 192.168.8.101 uid 1000
+    value_portion = re.search(r'\s' + item + r'\s(\S+)', droute)
+    assert value_portion is not None, f"ip route returned: {droute}"
+    return value_portion[1]
+
+
+def sudo_sysctl(args):
+    arg_list = args if type(args) is list else [args]
+    return run_external(['sudo', 'sysctl'] + arg_list)
+
+
+def sudo_iptables(args):
+    if not hasattr(sudo_iptables, 'log'):
+        sudo_iptables.log = list()
+    sudo_iptables.log.append(args)
+    return run_external(['sudo', 'iptables'] + args)
+
+
+def sudo_undo_iptables():
+    if not hasattr(sudo_iptables, 'log'):
+        return
+    for args in sudo_iptables.log:
+        exec = ['sudo', 'iptables'] + args
+        for i, a in enumerate(exec):  # invert '--append'
+            if a == '--append' or a == '--insert' or a == '-A' or a == '-I':
+                exec[i] = '--delete'
+        run_external(exec)
+    del sudo_iptables.log
+
+
+def ip(args):  # without `sudo`
+    return run_external(['ip'] + args)
+
+
+def sudo_ip(args):
+    return run_external(['sudo', 'ip'] + args)
+
+
+def sudo_wg(args=[], input=None):
+    exec = ['sudo', 'wg'] + args
+    to_delete = list()
+    for i, a in enumerate(exec):  # replace '!FILE!...' args with a temp file
+        if a.startswith('!FILE!'):
+            h = tempfile.NamedTemporaryFile(delete=False)
+            h.write(a[6:].encode())
+            h.close()
+            to_delete.append(h.name)
+            exec[i] = h.name
+    try:
+        r = run_external(exec, input=input)
+    except Exception as e:
+        raise e
+    finally:
+        for f in to_delete:  # remove temp file(s)
+            os.unlink(f)
+    return r
+
+
+def run_external(args, input=None):
+    log_detail = f"running: {'␣'.join(args)}"  # alternatives: ␣⋄∘•⁕⁔⁃–
+    logger.debug(log_detail if len(log_detail) < 170 else log_detail[:168] + "…")
+    exec_count = 2 if args[0] == 'sudo' else 1
+    for i, a in enumerate(args[:exec_count]):  # e.g. expand 'wg' to '/usr/bin/wg'
+        for p in '/usr/sbin:/usr/bin:/sbin:/bin'.split(':'):
+            joined = os.path.join(p, a)
+            if os.path.isfile(joined):
+                args[i] = joined
+                break
+    proc = subprocess.run(
+        args,
+        input=None if input is None else input.encode(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"`{' '.join(args)}` returned error: {proc.stderr.decode().rstrip()}")
+    return proc.stdout.decode().rstrip()
 
 
 def check_tls_cert(site, port):

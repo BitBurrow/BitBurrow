@@ -7,15 +7,13 @@ import logging
 import os
 import re
 import secrets
-import socket
-import subprocess
 import sqlalchemy
 from sqlmodel import Field, Session, SQLModel, select, JSON, Column
 import sys
-import tempfile
 from typing import Optional
 import yaml
 import hub.login_key as lk
+import hub.net as net
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(base_dir, "libs", "python"))
@@ -98,7 +96,7 @@ class Hub(SQLModel, table=True):
         if hub_count == 0:
             with Session(engine) as session:
                 hub = Hub()
-                hub.wg_port = random_free_port(use_udp=True, avoid=[5353])
+                hub.wg_port = net.random_free_port(use_udp=True, avoid=[5353])
                 session.add(hub)
                 session.commit()
                 logger.debug(f"hub row created; wg_port {hub.wg_port}")
@@ -126,7 +124,7 @@ class Hub(SQLModel, table=True):
             keep_only = keep_only_search.group(2)
         expected = test['expected'].format(domain=self.domain, public_ip=self.public_ip)
         try:
-            result = run_external(cmd.split(' '))
+            result = net.run_external(cmd.split(' '))
         except RuntimeError:
             result = 'command exited with non-zero return code'
             keep_only = None
@@ -369,8 +367,8 @@ class Netif(SQLModel, table=True):
         # IPv6 base is prefix + 2 random groups + 5 0000 groups
         seven_groups = secrets.randbelow(2**32) * 2**80
         self.ipv6_base = str(ipaddress.ip_address(f'{wgif_prefix}::') + seven_groups)
-        self.privkey = sudo_wg(['genkey'])
-        self.pubkey = sudo_wg(['pubkey'], input=self.privkey)
+        self.privkey = net.sudo_wg(['genkey'])
+        self.pubkey = net.sudo_wg(['pubkey'], input=self.privkey)
         self.listening_port = 123
         self.public_ports = [123]
 
@@ -391,8 +389,8 @@ class Netif(SQLModel, table=True):
 
     @staticmethod
     def startup():
-        sudo_sysctl('net.ipv4.ip_forward=1')
-        sudo_sysctl('net.ipv6.conf.all.forwarding=1')
+        net.sudo_sysctl('net.ipv4.ip_forward=1')
+        net.sudo_sysctl('net.ipv6.conf.all.forwarding=1')
         with Session(engine) as session:
             netif_count = session.query(Netif).count()
         if netif_count == 0:  # first run--need to define a WireGuard interface
@@ -406,28 +404,28 @@ class Netif(SQLModel, table=True):
         Netif.delete_our_wgif(isShutdown=False)
         wgif = i.iface()
         # configure wgif; see `systemctl status wg-quick@wg0.service`
-        sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
-        sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wgif])
-        sudo_ip(['-4', 'address', 'add', 'dev', wgif, i.ipv4()])
-        sudo_ip(['-6', 'address', 'add', 'dev', wgif, i.ipv6()])
-        sudo_wg(['set', wgif, 'private-key', f'!FILE!{i.privkey}'])
-        sudo_wg(['set', wgif, 'listen-port', str(i.listening_port)])
-        sudo_iptables(
+        net.sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
+        net.sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wgif])
+        net.sudo_ip(['-4', 'address', 'add', 'dev', wgif, i.ipv4()])
+        net.sudo_ip(['-6', 'address', 'add', 'dev', wgif, i.ipv6()])
+        net.sudo_wg(['set', wgif, 'private-key', f'!FILE!{i.privkey}'])
+        net.sudo_wg(['set', wgif, 'listen-port', str(i.listening_port)])
+        net.sudo_iptables(
             '--append FORWARD'.split(' ')
             + f'--in-interface {wgif}'.split(' ')
             + '--jump ACCEPT'.split(' ')
         )
-        sudo_iptables(
+        net.sudo_iptables(
             '--table nat'.split(' ')
             + '--append POSTROUTING'.split(' ')
-            + ['--out-interface', default_route_interface()]
+            + ['--out-interface', net.default_route_interface()]
             + '--jump MASQUERADE'.split(' ')
         )
         return i
 
     @staticmethod
     def delete_our_wgif(isShutdown):  # clean up wg network interfaces
-        for s in re.split(r'(?:^|\n)interface:\s*', sudo_wg()):
+        for s in re.split(r'(?:^|\n)interface:\s*', net.sudo_wg()):
             if s == '' or s == '\n':
                 continue
             if_name = re.match(r'\S+', s).group(0)
@@ -436,11 +434,11 @@ class Netif(SQLModel, table=True):
                     logger.debug(f"Removing wg interface {if_name}")
                 else:
                     logger.warning(f"Removing abandoned wg interface {if_name}")
-                sudo_ip(['link', 'del', 'dev', if_name])
+                net.sudo_ip(['link', 'del', 'dev', if_name])
 
     @staticmethod
     def shutdown():
-        sudo_undo_iptables()
+        net.sudo_undo_iptables()
         Netif.delete_our_wgif(isShutdown=True)
 
 
@@ -469,7 +467,7 @@ class Client(SQLModel, table=True):
         return f'{ipv4}/32,{ipv6}/128'
 
     def set_peer(self, wgif: Netif = None):
-        sudo_wg(  # see https://www.man7.org/linux/man-pages/man8/wg.8.html
+        net.sudo_wg(  # see https://www.man7.org/linux/man-pages/man8/wg.8.html
             f'set {self.iface()}'.split(' ')
             + f'peer {self.pubkey}'.split(' ')
             # consider: + f'preshared-key !FILE!(self.preshared_key)}'  # see man page
@@ -499,121 +497,6 @@ class Client(SQLModel, table=True):
 ###
 ### helper methods
 ###
-
-
-def random_free_port(use_udp, avoid=None):
-    # for TCP, set use_udp to False
-    min = 2000
-    max = 65536  # min <= port < max
-    attempts = 0
-    default_route_ip = default_route_local_ip()
-    while True:  # try ports until we find one that's available
-        port = secrets.randbelow(max - min) + min
-        attempts += 1
-        assert attempts <= 99
-        if avoid is not None and port in avoid:
-            continue
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM if use_udp else socket.SOCK_STREAM)
-        try:
-            sock.bind((default_route_ip, port))
-            sock.close()
-            break
-        except Exception:  # probably errno.EADDRINUSE (port in use)
-            pass
-    return port
-
-
-def default_route_interface():  # network interface of default route
-    return ip_route_get('dev')
-
-
-def default_route_local_ip():  # local IP address of default route
-    return ip_route_get('src')
-
-
-def default_route_gateway():  # default gateway IP adddress
-    return ip_route_get('via')
-
-
-def ip_route_get(item: str):  # get default route
-    droute = ip(['route', 'get', '1.0.0.0'])
-    # example output: 1.0.0.0 via 192.168.8.1 dev wlp58s0 src 192.168.8.101 uid 1000
-    value_portion = re.search(r'\s' + item + r'\s(\S+)', droute)
-    assert value_portion is not None, f"ip route returned: {droute}"
-    return value_portion[1]
-
-
-def sudo_sysctl(args):
-    arg_list = args if type(args) is list else [args]
-    return run_external(['sudo', 'sysctl'] + arg_list)
-
-
-def sudo_iptables(args):
-    if not hasattr(sudo_iptables, 'log'):
-        sudo_iptables.log = list()
-    sudo_iptables.log.append(args)
-    return run_external(['sudo', 'iptables'] + args)
-
-
-def sudo_undo_iptables():
-    if not hasattr(sudo_iptables, 'log'):
-        return
-    for args in sudo_iptables.log:
-        exec = ['sudo', 'iptables'] + args
-        for i, a in enumerate(exec):  # invert '--append'
-            if a == '--append' or a == '--insert' or a == '-A' or a == '-I':
-                exec[i] = '--delete'
-        run_external(exec)
-    del sudo_iptables.log
-
-
-def ip(args):  # without `sudo`
-    return run_external(['ip'] + args)
-
-
-def sudo_ip(args):
-    return run_external(['sudo', 'ip'] + args)
-
-
-def sudo_wg(args=[], input=None):
-    exec = ['sudo', 'wg'] + args
-    to_delete = list()
-    for i, a in enumerate(exec):  # replace '!FILE!...' args with a temp file
-        if a.startswith('!FILE!'):
-            h = tempfile.NamedTemporaryFile(delete=False)
-            h.write(a[6:].encode())
-            h.close()
-            to_delete.append(h.name)
-            exec[i] = h.name
-    try:
-        r = run_external(exec, input=input)
-    except Exception as e:
-        raise e
-    finally:
-        for f in to_delete:  # remove temp file(s)
-            os.unlink(f)
-    return r
-
-
-def run_external(args, input=None):
-    log_detail = f"running: {'␣'.join(args)}"  # alternatives: ␣⋄∘•⁕⁔⁃–
-    logger.debug(log_detail if len(log_detail) < 170 else log_detail[:168] + "…")
-    exec_count = 2 if args[0] == 'sudo' else 1
-    for i, a in enumerate(args[:exec_count]):  # e.g. expand 'wg' to '/usr/bin/wg'
-        for p in '/usr/sbin:/usr/bin:/sbin:/bin'.split(':'):
-            joined = os.path.join(p, a)
-            if os.path.isfile(joined):
-                args[i] = joined
-                break
-    proc = subprocess.run(
-        args,
-        input=None if input is None else input.encode(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"`{' '.join(args)}` returned error: {proc.stderr.decode().rstrip()}")
-    return proc.stdout.decode().rstrip()
 
 
 def simplify(obj):
