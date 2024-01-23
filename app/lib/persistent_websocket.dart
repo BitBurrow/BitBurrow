@@ -1,1 +1,1 @@
-../../libs/dart/persistent_websocket/persistent_websocket.dart
+../../libs/persistent_websocket/dart/persistent_websocket.dart
