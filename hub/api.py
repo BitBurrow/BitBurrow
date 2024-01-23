@@ -12,14 +12,9 @@ from typing import Dict, List
 import json
 import jsonrpc
 import logging
-import os
-import sys
 import hub.db as db
 import hub.transmutation as transmutation
-
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.join(base_dir, "libs", "persistent_websocket"))
-import python.persistent_websocket as persistent_websocket
+import libs.persistent_websocket.python.persistent_websocket as persistent_websocket
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)

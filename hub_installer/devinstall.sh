@@ -22,18 +22,19 @@ set -e # exit script if anything fails
 ## download BitBurrow hub dependencies
 
 cd ~/
+TO_INSTALL="dev/hub/"
 # if last updated 47+ hours ago or never, or dependencies have changed
 if ! [ -f dev/dependencies/pyproject.toml.md5sum ] \
         || find dev/dependencies/pyproject.toml.md5sum -mmin +2820 |grep -q last_updated \
         || ! md5sum --check --status dev/dependencies/pyproject.toml.md5sum; then
     echo ======= downloading BitBurrow hub dependencies =======
-    python3 -m pip download dev/hub/ poetry-core --dest dev/dependencies/
+    python3 -m pip download $TO_INSTALL poetry-core --dest dev/dependencies/
     md5sum dev/hub/pyproject.toml >dev/dependencies/pyproject.toml.md5sum
 fi
 
 ## install BitBurrow hub from ~/dev/hub/ and local download cache
 
 echo ======= pip-installing BitBurrow hub =======
-python3 -m pip install -qq dev/hub/ --no-index --find-links dev/dependencies/
+python3 -m pip install -qq $TO_INSTALL --no-index --find-links dev/dependencies/
 
 echo ======= finished installing =======

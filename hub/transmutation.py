@@ -6,12 +6,7 @@ from fastapi import (
 import json
 import logging
 import os
-import sys
 import yaml
-
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.join(base_dir, "libs", "persistent_websocket"))
-import python.persistent_websocket as persistent_websocket
 
 
 logger = logging.getLogger(__name__)

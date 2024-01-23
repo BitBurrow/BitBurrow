@@ -4,20 +4,15 @@ import enum
 import ipaddress
 import jsonrpc
 import logging
-import os
 import re
 import secrets
 import sqlalchemy
 from sqlmodel import Field, Session, SQLModel, select, JSON, Column
-import sys
 from typing import Optional
 import yaml
 import hub.login_key as lk
 import hub.net as net
-
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.join(base_dir, "libs", "persistent_websocket"))
-import python.persistent_websocket as persistent_websocket
+import libs.persistent_websocket.python.persistent_websocket as persistent_websocket
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
