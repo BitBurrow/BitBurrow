@@ -397,7 +397,7 @@ def entry_point():
         restarts_remaining -= 1
         try:
             uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
-                f'{app_name()}:app',
+                f'{app_name()}.hub:app',
                 host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
                 port=8443,
                 # FIXME: when using `workers=3`, additional workers' messages aren't ...
