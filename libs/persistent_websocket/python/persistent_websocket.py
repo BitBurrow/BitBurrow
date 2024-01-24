@@ -91,6 +91,11 @@ def unmod(xx, xxxx, w=max_lsb) -> int:
 
 
 class Timekeeper:
+    """Call a method after a specified number of seconds.
+
+    Seconds can be fractional. Repeating timers are possible using periodic() or
+    exponential(). For example usage, see test_timekeeper() in "tests/" directory."""
+
     # based on https://stackoverflow.com/a/45430833
     def __init__(self, timeout, callback, is_periodic=False, scaling=1.0, max_timeout=30.0) -> None:
         self._timeout = timeout
@@ -126,41 +131,6 @@ class Timekeeper:
         self._task.cancel()
 
 
-# # class Timekeeper usage:
-#
-# import asyncio
-# import time
-#
-# start = time.time()
-#
-# def log(s):
-#     print(f"{time.time()-start:3.0f}s: {s}")
-#
-# async def four_seconds():
-#     log("            four seconds")
-#
-# async def five_seconds():
-#     log("                         five seconds")
-#
-# async def two_seconds():
-#     log("two seconds")
-#
-# async def main():
-#     a = Timekeeper.periodic(4, four_seconds)
-#     b = Timekeeper(5, five_seconds)
-#     c = Timekeeper.exponential(2, two_seconds, 2, 45)
-#     log("zero seconds")
-#     await asyncio.sleep(30)
-#     log("            canceling four")
-#     a.cancel()
-#     await asyncio.sleep(60)
-#     log("done")
-#
-# loop = asyncio.new_event_loop()
-# asyncio.set_event_loop(loop)
-# loop.run_until_complete(main())
-
-
 class PWUnrecoverableError(Exception):
     def __init__(self, message="") -> None:
         self.message = message
@@ -188,18 +158,6 @@ def printable_hex(chunk) -> str:
     if quote:
         out.append(f"'{''.join(quote)}'")
     return ''.join(out).strip()
-
-
-def printable_hex_test() -> None:
-    chunk_test = (
-        "1234\x0056789\x01\x02abcd\nefg\nhi\nhello\n\n"
-        "hello\n\n\nshouldn't \\ backslash\xe2\x9c\x94 done\n"
-    )
-    chunk_test_out = (
-        "'1234' 00 '56789' 01 02 'abcd' 0A 65 66 67 0A 68 69 0A 'hello' 0A 0A "
-        "'hello' 0A 0A 0A 'shouldn' 27 't \\ backslash' E2 9C 94 ' done' 0A"
-    )
-    assert printable_hex([ord(c) for c in chunk_test]) == chunk_test_out
 
 
 class PersistentWebsocket:
