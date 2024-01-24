@@ -70,6 +70,10 @@ integrity_tests_yaml = '''
 - id: bind_axfr_off
   cmd: dig @{public_ip} {domain} AXFR +short
   expected: '; Transfer failed.'
+## Pytest code tests--must be done with full source because 'tests/' doesn't get installed
+#- id: pytest
+#  cmd: pytest
+#  expected: '=====================...'
 
 '''
 integrity_tests = yaml.safe_load(integrity_tests_yaml)
@@ -111,7 +115,10 @@ class Hub(SQLModel, table=True):
             return self.id
 
     def integrity_test(self, test):
-        cmd = test['cmd'].format(domain=self.domain, public_ip=self.public_ip)
+        cmd = test['cmd'].format(  # substitute {domain} for the actual domain, etc.
+            domain=self.domain,
+            public_ip=self.public_ip,
+        )
         keep_only = None  # support syntax at end of cmd similar to `grep -o`
         keep_only_search = re.search(r'^(.*?)\s*\|\s*keep_only\s+["\']([^"\']+)["\']$', cmd)
         if keep_only_search != None:
@@ -120,8 +127,9 @@ class Hub(SQLModel, table=True):
         expected = test['expected'].format(domain=self.domain, public_ip=self.public_ip)
         try:
             result = net.run_external(cmd.split(' '))
-        except RuntimeError:
-            result = 'command exited with non-zero return code'
+        except RuntimeError as e:
+            # result = str(e).replace('\n', ' ¶ ')
+            result = str(e)
             keep_only = None
         if keep_only != None:
             first_match = re.search(keep_only, result)
@@ -150,8 +158,8 @@ class Hub(SQLModel, table=True):
                     pass_count += 1
                 else:
                     failed_count += 1
-        if pass_count == 0:
-            logger.warning(f"nonexistent test ID {test_id}")
+        if pass_count + failed_count == 0:
+            logger.warning(f"B37855 nonexistent test ID {test_id}")
         return failed_count == 0
 
 

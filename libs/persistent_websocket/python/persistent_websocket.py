@@ -90,17 +90,6 @@ def unmod(xx, xxxx, w=max_lsb) -> int:
     return xx + xxxx + w // 2 - splitp - (w if xx > splitp else 0)
 
 
-# def unmod_test() -> None:
-#    for win in [10, 100, 1000, 10_000, 16384, 32768, 8322]:
-#        for _ in range(0, 1_000_000):
-#            short = random.randint(0, win - 1)
-#            long = random.randint(0, 0xFFFFFF)
-#            n = unmod(short, long, win)
-#            assert n % win == short
-#            assert abs(long - n) <= win // 2
-#            # print(f"unmod({short}, {long}, {win}) == {n}")
-
-
 class Timekeeper:
     # based on https://stackoverflow.com/a/45430833
     def __init__(self, timeout, callback, is_periodic=False, scaling=1.0, max_timeout=30.0) -> None:

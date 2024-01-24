@@ -108,13 +108,16 @@ def sudo_wg(args=[], input=None):
     return r
 
 
-def run_external(args, input=None):
+def run_external(args: list[str], input: str | None = None):
+    """Run an external executable, capturing output. Searches standard system directories.
+
+    Return stdout or raises RuntimeError, depending on the return code."""
     log_detail = f"running: {'␣'.join(args)}"  # alternatives: ␣⋄∘•⁕⁔⁃–
     logger.debug(log_detail if len(log_detail) < 170 else log_detail[:168] + "…")
     exec_count = 2 if args[0] == 'sudo' else 1
     for i, a in enumerate(args[:exec_count]):  # e.g. expand 'wg' to '/usr/bin/wg'
-        for p in '/usr/sbin:/usr/bin:/sbin:/bin'.split(':'):
-            joined = os.path.join(p, a)
+        for p in '/usr/sbin:/usr/bin:/sbin:/bin:~/.local/bin'.split(':'):
+            joined = os.path.join(p.replace('~', os.path.expanduser('~')), a)
             if os.path.isfile(joined):
                 args[i] = joined
                 break
@@ -125,7 +128,8 @@ def run_external(args, input=None):
         stderr=subprocess.PIPE,
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"`{' '.join(args)}` returned error: {proc.stderr.decode().rstrip()}")
+        error = proc.stderr.decode().rstrip()
+        raise RuntimeError(error if error else f"{proc.stdout.decode().rstrip()}")
     return proc.stdout.decode().rstrip()
 
 
