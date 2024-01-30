@@ -17,12 +17,8 @@ import websockets
 
 try:
     from starlette.websockets import WebSocketDisconnect
-
-    using_starlette = True
 except ImportError:
     from websockets.exceptions import ConnectionClosed as WebSocketDisconnect
-
-    using_starlette = False
 
 ### notes:
 #   * important: mirror changes in corresponding Dart code--search "bMjZmLdFv"
@@ -170,6 +166,7 @@ class PersistentWebsocket:
         self.log_id = log_id  # uniquely identify this connection in log file
         self.log = log
         self._ws = None
+        self.starlette = False  # True meand using starlette.websockets
         self._url = None
         self._in_index = 0  # index of next inbound chunk, aka number of chunks received
         self._in_last_ack = 0  # index of most recently-sent _sig_ack
@@ -199,6 +196,7 @@ class PersistentWebsocket:
                 # can arrive out-of-order
             async with self.connect_lock:
                 self._url = None  # make it clear we are now a server
+                self.starlette = hasattr(ws, 'send_bytes')
                 self.set_online_mode(ws)
                 async for m in self.listen():
                     yield m
@@ -223,6 +221,7 @@ class PersistentWebsocket:
             try:
                 # https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html
                 self.log.debug(f"B35536 {self.log_id} waiting for WebSocket to connect")
+                self.starlette = False
                 async for ws in websockets.connect(self._url):  # keep reconnecting
                     self.set_online_mode(ws)
                     async for m in self.listen():
@@ -243,7 +242,7 @@ class PersistentWebsocket:
         self._in_last_resend_time = 0  # reset for new connection
         await self._send_resend()  # chunks were probably lost in the reconnect
         try:
-            async for chunk in (self._ws.iter_bytes() if using_starlette else self._ws):
+            async for chunk in (self._ws.iter_bytes() if self.starlette else self._ws):
                 self.log.debug("B18042 %s received: %r", self.log_id, logs.r(printable_hex, chunk))
                 message = await self.process_inbound(chunk)
                 if self.chaos > 0 and self.chaos > random.randint(0, 999):
@@ -341,7 +340,7 @@ class PersistentWebsocket:
         if self.is_offline():
             return
         try:
-            if using_starlette:
+            if self.starlette:
                 # https://www.starlette.io/websockets/#sending-data
                 await self._ws.send_bytes(chunk)
             else:
