@@ -31,6 +31,7 @@ json-rpc = "^1.15.0"
 [tool.poetry.dev-dependencies]
 black = "^23.1.0"
 pytest = "^7.4.4"
+pytest-asyncio = "^0.23.4"
 
 [tool.poetry.scripts]
 bbhub = "hub.hub:entry_point"
@@ -41,3 +42,5 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 norecursedirs = "desktop"
+asyncio_mode = "auto"
+

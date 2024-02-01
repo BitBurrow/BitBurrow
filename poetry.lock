@@ -322,6 +322,21 @@ tomli = {version = ">=1.0.0", markers = "python_version < \"3.11\""}
 testing = ["argcomplete", "attrs (>=19.2.0)", "hypothesis (>=3.56)", "mock", "nose", "pygments (>=2.7.2)", "requests", "setuptools", "xmlschema"]
 
 [[package]]
+name = "pytest-asyncio"
+version = "0.23.4"
+description = "Pytest support for asyncio"
+category = "dev"
+optional = false
+python-versions = ">=3.8"
+
+[package.dependencies]
+pytest = ">=7.0.0,<8"
+
+[package.extras]
+docs = ["sphinx (>=5.3)", "sphinx-rtd-theme (>=1.0)"]
+testing = ["coverage (>=6.2)", "hypothesis (>=5.7.1)"]
+
+[[package]]
 name = "python-dateutil"
 version = "2.8.2"
 description = "Extensions to the standard Python datetime module"
@@ -503,7 +518,7 @@ python-versions = ">=3.8"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.9"
-content-hash = "baef4161796ec993d621cf5d52906b895f5ef9471813609116336bbda9bd8ad2"
+content-hash = "b73caffeb2b5f53a05dfb062f95ee679982f7548504100a3900b75fda2fb8b16"
 
 [metadata.files]
 annotated-types = []
@@ -533,6 +548,7 @@ pycparser = []
 pydantic = []
 pydantic-core = []
 pytest = []
+pytest-asyncio = []
 python-dateutil = []
 python-dotenv = []
 pyyaml = []
