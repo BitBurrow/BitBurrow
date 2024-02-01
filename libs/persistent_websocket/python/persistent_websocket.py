@@ -191,7 +191,7 @@ class PersistentWebsocket:
         """
         try:
             if self.connect_lock.locked():
-                self.log.warn(f"B30102 {self.log_id} waiting for current WebSocket to close")
+                self.log.warning(f"B30102 {self.log_id} waiting for current WebSocket to close")
                 # PersistentWebsocket is not reentrant; if we don't lock here, messages
                 # can arrive out-of-order
             async with self.connect_lock:
@@ -213,7 +213,7 @@ class PersistentWebsocket:
         returned to the caller via `yield`.
         """
         if self.connect_lock.locked():
-            self.log.warn(f"B18449 {self.log_id} waiting for current WebSocket to close")
+            self.log.warning(f"B18449 {self.log_id} waiting for current WebSocket to close")
             # PersistentWebsocket is not reentrant; if we don't lock here, messages
             # can arrive out-of-order
         async with self.connect_lock:
@@ -227,7 +227,7 @@ class PersistentWebsocket:
                     async for m in self.listen():
                         yield m
             except asyncio.exceptions.CancelledError:  # ctrl-C
-                self.log.warn(f"B32045 {self.log_id} WebSocket canceled")
+                self.log.warning(f"B32045 {self.log_id} WebSocket canceled")
             except PWUnrecoverableError:
                 raise  # needs to be handled
             except Exception:
@@ -246,7 +246,7 @@ class PersistentWebsocket:
                 self.log.debug("B18042 %s received: %r", self.log_id, logs.r(printable_hex, chunk))
                 message = await self.process_inbound(chunk)
                 if self.chaos > 0 and self.chaos > random.randint(0, 999):
-                    self.log.warn(
+                    self.log.warning(
                         f"B66740 {self.log_id} randomly closing WebSocket to test recovery"
                     )
                     await asyncio.sleep(random.randint(0, 2))
@@ -256,7 +256,7 @@ class PersistentWebsocket:
                     yield message
             self.log.info(f"B99953 {self.log_id} WebSocket closed")
         except websockets.ConnectionClosed:
-            self.log.warn(f"B60441 {self.log_id} WebSocket closed")
+            self.log.warning(f"B60441 {self.log_id} WebSocket closed")
         except asyncio.exceptions.CancelledError:  # ctrl-C
             raise asyncio.exceptions.CancelledError
         except WebSocketDisconnect as e:
@@ -274,7 +274,7 @@ class PersistentWebsocket:
             raise  # propagate out
         except AttributeError:
             if self.is_online():  # ignore if it is because WebSocket closed
-                self.log.warn(
+                self.log.warning(
                     f"B26471 {self.log_id} wsexception, {traceback.format_exc().rstrip()}"
                 )
         except Exception:
@@ -302,7 +302,7 @@ class PersistentWebsocket:
         await self._send_raw(chunk)
         self.enable_journal_timer()
         if self.chaos > 0 and self.chaos > random.randint(0, 999):
-            self.log.warn(f"B14263 {self.log_id} randomly closing WebSocket to test recovery")
+            self.log.warning(f"B14263 {self.log_id} randomly closing WebSocket to test recovery")
             await asyncio.sleep(random.randint(0, 3))
             await self.set_offline_mode()
             await asyncio.sleep(random.randint(0, 3))
