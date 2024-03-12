@@ -27,6 +27,7 @@ PyYAML = "^6.0"
 python-dateutil = "^2.8.2"
 fastapi-restful = "^0.5.0"
 json-rpc = "^1.15.0"
+typing-inspect = "^0.9.0"
 
 [tool.poetry.dev-dependencies]
 black = "^23.1.0"
