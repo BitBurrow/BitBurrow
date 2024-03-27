@@ -17,7 +17,7 @@ packages = [
 "Bug Tracker" = "https://github.com/BitBurrow/BitBurrow/issues"
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.10"
 fastapi = "^0.109"
 platformdirs = "^3.0.0"
 sqlmodel = "^0.0.14"
