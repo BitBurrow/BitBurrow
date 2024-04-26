@@ -18,7 +18,7 @@ formatter = logging.Formatter(
 )
 console_handler.setFormatter(formatter)
 pws_log.addHandler(console_handler)
-pws_log.debug("err message")
+pws_log.debug("B20465 test debug message")
 
 item_count = 250  # directly affects time required for test
 
@@ -38,19 +38,18 @@ async def test_messaging():
     data.listener_tasks.append(asyncio.create_task(data.node_x_listener(3, None, messages3, url)))
     #
     ### waiting
-    print("waiting for speaker tasks to begin")
+    pws_log.debug("B23095 waiting for speaker tasks to begin")
     while len(data.speaker_tasks) < 2:
         # await asyncio.sleep(0.1)  # wait for tasks to start
         await asyncio.sleep(3.1)  # wait for tasks to start
-        print(f"still waiting (have {len(data.speaker_tasks)} tasks)")
-    print("waiting for speaker tasks to finish")
+    pws_log.debug("B95870 waiting for speaker tasks to finish")
     await asyncio.gather(*data.speaker_tasks, return_exceptions=True)  # let speakers finish
-    print("waiting up to 15 seconds for success from listener tasks")
+    pws_log.debug("B87240 waiting up to 15 seconds for success from listener tasks")
     wait_time = 0.0
     while len(data.successes) < 2 and wait_time < 15.0:
         await asyncio.sleep(0.1)
         wait_time += 0.1
-    print("canceling listeners")
+    pws_log.debug("B98788 canceling listeners")
     for t in data.listener_tasks:
         t.cancel()
     await asyncio.gather(*data.listener_tasks, return_exceptions=True)  # wait for them to die
@@ -58,7 +57,7 @@ async def test_messaging():
         assert False, data.errors[0]
     if len(data.successes) < 2:
         assert False, "a listener task didn't didn't receive all of its items"
-    print("done waiting on tasks")
+    pws_log.debug("B91688 done waiting on tasks")
 
 
 async def test_nodes_1_and_4():
@@ -199,7 +198,7 @@ class nodes:
 
     async def node_2_websocket_server(self):
         messages = persistent_websocket.PersistentWebsocket('nd_2', pws_log)  # outlives WebSocket
-        print("node_2 is listening (WebSocket)")
+        pws_log.debug("B95789 node_2 is listening (WebSocket)")
         async with websockets.serve(
             lambda ws, path: self.node_x_listener(2, ws, messages, ''), '127.0.0.1', 18732
         ):
@@ -207,7 +206,7 @@ class nodes:
 
     async def node_x_listener(self, node, ws, messages, url):
         self.speaker_tasks.append(asyncio.create_task(self.node_x_speaker(node, messages)))
-        print(f"started node_{node}_speaker (now have {len(self.speaker_tasks)} tasks)")
+        pws_log.debug(f"B70251 started node_{node}_speaker (have {len(self.speaker_tasks)} tasks)")
         items_received = 0
         async for m in messages.connected(ws) if ws else messages.connect(url):
             n = int(m.decode())
@@ -219,7 +218,7 @@ class nodes:
             self.next_n[node] = n + 1
             if display_messages:
                 column = " " * 29 * (node - 2)
-                print(f"            {column}{n}")
+                pws_log.debug(f"B00057             {column}{n}")
             items_received += 1
             if items_received == item_count:
                 self.successes.append(f'node_{node}')  # successfully received all items
@@ -235,7 +234,7 @@ class nodes:
                 await messages.send(str(n))
                 if display_messages:
                     column = " " * 29 * (3 - node)
-                    print(f"{column}{n} → ")
+                    pws_log.debug("B20340 {column}{n} → ")
 
     async def node_4(self, listen_port, ready):
         loop = asyncio.get_running_loop()
@@ -334,6 +333,6 @@ if __name__ == '__main__':
         if len(sys.argv) == 1:  # run directly (similar to running `pytest`)
             asyncio.run(test_messaging())
         else:
-            print("invalid command-line arguments")
+            pws_log.debug("B98803 invalid command-line arguments; run via pytest")
     except KeyboardInterrupt:
-        print("keyboard interrupt")
+        pws_log.debug("B22858 keyboard interrupt")
