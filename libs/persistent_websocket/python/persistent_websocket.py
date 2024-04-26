@@ -242,7 +242,7 @@ class PersistentWebsocket:
         self._in_last_resend_time = 0  # reset for new connection
         await self._send_resend()  # chunks were probably lost in the reconnect
         try:
-            async for chunk in (self._ws.iter_bytes() if self.starlette else self._ws):
+            async for chunk in self._ws.iter_bytes() if self.starlette else self._ws:
                 self.log.debug("B18042 %s received: %r", self.log_id, logs.r(printable_hex, chunk))
                 message = await self.process_inbound(chunk)
                 if self.chaos > 0 and self.chaos > random.randint(0, 999):
