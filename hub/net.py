@@ -1,3 +1,4 @@
+import asyncio
 import urllib.request
 from dateutil import parser
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
@@ -133,10 +134,36 @@ def run_external(args: list[str], input: str | None = None):
     return proc.stdout.decode().rstrip()
 
 
-def check_tls_cert(site, port):
-    """Checks the TLS certificate for the given website; logs warnings as needed.
+async def run_external_async(args: list[str]):
+    """Run an external executable, capturing output. Searches standard system directories.
 
-    Returns the number of days validity remaining, or -1 for errors.
+    Return stdout or raises RuntimeError, depending on the return code."""
+    log_detail = f"running: {'␣'.join(args)}"  # alternatives: ␣⋄∘•⁕⁔⁃–
+    logger.debug(log_detail if len(log_detail) < 170 else log_detail[:168] + "…")
+    exec_count = 2 if args[0] == 'sudo' else 1
+    for i, a in enumerate(args[:exec_count]):  # e.g. expand 'wg' to '/usr/bin/wg'
+        for p in '/usr/sbin:/usr/bin:/sbin:/bin:~/.local/bin'.split(':'):
+            joined = os.path.join(p.replace('~', os.path.expanduser('~')), a)
+            if os.path.isfile(joined):
+                args[i] = joined
+                break
+    # docs: https://docs.python.org/3/library/asyncio-subprocess.html#creating-subprocesses
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        error = stderr.decode().rstrip()
+        raise RuntimeError(error if error else f"{stdout.decode().rstrip()}")
+    return stdout.decode().rstrip()
+
+
+def check_tls_cert(site, port):
+    """Check the TLS certificate for the given website; log warnings as needed.
+
+    Return the number of days validity remaining, or -1 for errors.
     """
     # based on https://stackoverflow.com/a/52575489
     context = urllib.request.ssl.create_default_context()
@@ -171,7 +198,7 @@ def watch_file(path):
     return has_file_changed(path, begin_watching=True)
 
 
-def has_file_changed(path, begin_watching=False, max_items=9):
+def has_file_changed(path, begin_watching=False, max_items=9) -> bool | None:
     """Check if a file's last-modified time and size are the same as before.
 
     The first call for any given file should set begin_watching=True and will return
@@ -232,3 +259,19 @@ def connected_inbound_list(local_port):
         for c in conn_list
         if c.status == psutil.CONN_ESTABLISHED and c.laddr.port == local_port
     ]
+
+
+def parse_ip_port(host_port_string: str) -> tuple[str, int]:
+    """Parse host:port string into host and port."""
+    try:
+        splits = re.split(r'(.+):', host_port_string, maxsplit=1)  # split at right-most colon
+        if len(splits) == 3:
+            return splits[1].strip('[]'), int(splits[2])
+    except:
+        pass  # generally discouraged, but here we ignore all errors
+    return host_port_string, 0
+
+
+def format_ip_port(host: str, port: int) -> str:
+    """Return host:port string version with [] around IPv6 addresses."""
+    return f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
