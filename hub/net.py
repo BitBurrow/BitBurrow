@@ -113,8 +113,7 @@ def run_external(args: list[str], input: str | None = None):
     """Run an external executable, capturing output. Searches standard system directories.
 
     Return stdout or raises RuntimeError, depending on the return code."""
-    log_detail = f"running: {'␣'.join(args)}"  # alternatives: ␣⋄∘•⁕⁔⁃–
-    logger.debug(log_detail if len(log_detail) < 170 else log_detail[:168] + "…")
+    logger.debug(f"running: {arg_string(args)}")
     exec_count = 2 if args[0] == 'sudo' else 1
     for i, a in enumerate(args[:exec_count]):  # e.g. expand 'wg' to '/usr/bin/wg'
         for p in '/usr/sbin:/usr/bin:/sbin:/bin:~/.local/bin'.split(':'):
@@ -138,8 +137,6 @@ async def run_external_async(args: list[str]):
     """Run an external executable, capturing output. Searches standard system directories.
 
     Return stdout or raises RuntimeError, depending on the return code."""
-    log_detail = f"running: {'␣'.join(args)}"  # alternatives: ␣⋄∘•⁕⁔⁃–
-    logger.debug(log_detail if len(log_detail) < 170 else log_detail[:168] + "…")
     exec_count = 2 if args[0] == 'sudo' else 1
     for i, a in enumerate(args[:exec_count]):  # e.g. expand 'wg' to '/usr/bin/wg'
         for p in '/usr/sbin:/usr/bin:/sbin:/bin:~/.local/bin'.split(':'):
@@ -154,10 +151,17 @@ async def run_external_async(args: list[str]):
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await proc.communicate()
+    output = f"{arg_string(args)}\n"
+    output += ''.join([f"    1: {line}\n" for line in stdout.decode().splitlines()])
+    output += ''.join([f"    2: {line}\n" for line in stderr.decode().splitlines()])
     if proc.returncode != 0:
-        error = stderr.decode().rstrip()
-        raise RuntimeError(error if error else f"{stdout.decode().rstrip()}")
-    return stdout.decode().rstrip()
+        raise RuntimeError(output).rstrip()
+    return output.rstrip()
+
+
+def arg_string(args):
+    joined = '␣'.join(args)  # alternatives: ␣⋄∘•⁕⁔⁃–
+    return joined if len(joined) < 170 else joined[:168] + "…"
 
 
 def check_tls_cert(site, port):
