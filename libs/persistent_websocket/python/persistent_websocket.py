@@ -9,6 +9,7 @@ of each WebSocket message and uses signals for acknowledgement and resend reques
 import asyncio
 import collections
 import hub.logs as logs
+import hub.net as net
 import random
 from timeit import default_timer as timer
 import traceback
@@ -32,12 +33,17 @@ except ImportError:
 #   * jet_bit → specify channel; 0=RPC channel; 1=jet channel for TCP and other streams
 #   * ping and pong (below) are barely implemented because we rely on WebSocket keep-alives
 ### on-the-wire format:
-#   * chunk containing a message (when chunk[0:2] < 32768):
+#   * chunk containing a message (chunk[0:2] in range 0..32767):
 #       * chunk[0:2] bits 0..13 i_lsb
 #       * chunk[0:2] bit 14     jet_bit
 #       * chunk[0:2] bit 15     0
 #       * chunk[2:]   message
-#   * a signaling chunk (when chunk[0:2] >= 32768):
+#   * chunk containing a jet channel command (chunk[0:2] in range 49152..65535):
+#       * chunk[0:2] bits 0..13 i_lsb
+#       * chunk[0:2] bit 14     1
+#       * chunk[0:2] bit 15     1
+#       * chunk[2:]  command, e.g. 'forward_to 192.168.8.1:80' or 'disconnect'
+#   * a signaling chunk (chunk[0:2] in range 32768..49151):
 _sig_ack = 0x8010  # "I have received n total chunks"
 #       * chunk[2:4]  i_lsb of next expected chunk
 _sig_resend = 0x8011  # "Please resend chunk n and everything after it"
@@ -50,19 +56,17 @@ _sig_pong = 0x8021  # "Yes, I am alive."
 #       * chunk[2:]   chunk[2:] from corresponding ping
 
 max_lsb = 16384  # always 16384 (2**14) except for testing (tested 64, 32)
-lsb_mask = 16383  # 0x3FFF
-jet_bit = 16384  # bit 14, 0x4000
-signal_bit = 32768  # bit 15, 0x8000
+lsb_mask = 16383  # aka         0b0011111111111111
+jet_bit = 16384  # bit 14,      0b0100000000000000
+signal_bit = 32768  # bit 15,   0b1000000000000000
+jet_cmd = 49152  # bits 14, 15, 0b1100000000000000
 max_send_buffer = 100  # not sure what a reasonable number here would be
 assert max_lsb > max_send_buffer * 3  # avoid wrap-around
 
 
-def lsb(index, is_jet) -> bytes:
+def lsb(index, set_bit_mask: int = 0b0000000000000000) -> bytes:
     """Convert index to on-the-wire format; see i_lsb description."""
-    if is_jet:
-        return (index % max_lsb | jet_bit).to_bytes(2, 'big')
-    else:
-        return (index % max_lsb).to_bytes(2, 'big')
+    return (index % max_lsb | set_bit_mask).to_bytes(2, 'big')
 
 
 def const_otw(c) -> bytes:
@@ -181,6 +185,7 @@ class PersistentWebsocket:
         self.connects = 0
         self.chaos = 0  # level of chaos to intentionaly introduce for testing, 50 recommended
         self.connect_lock = asyncio.Lock()
+        self._tcp_connect = TcpConnector(self)
 
     async def connected(self, ws) -> typing.AsyncGenerator[bytes, None]:
         """Handle a new inbound WebSocket connection, yield inbound messages.
@@ -282,8 +287,10 @@ class PersistentWebsocket:
         finally:
             await self.set_offline_mode()
 
-    async def send(self, message: str | bytes, is_jet=False) -> None:
-        """Send a message to the remote when possible, resending if necessary."""
+    async def send(self, message: str | bytes, set_bit_mask: int = 0b0000000000000000) -> None:
+        """Send a message to the remote when possible, resending if necessary.
+
+        To send on jet channel, use a set_bit_mask of jet_bit."""
         flow_control_delay = 1
         while len(self._journal) > max_send_buffer:
             if flow_control_delay == 1:
@@ -293,10 +300,10 @@ class PersistentWebsocket:
                 flow_control_delay += 1
         if flow_control_delay > 1:
             self.log.debug(f"B64414 {self.log_id} resuming send")
-        if isinstance(message, str):
-            chunk = lsb(self._journal_index, is_jet) + message.encode()  # convert message to bytes
-        else:
-            chunk = lsb(self._journal_index, is_jet) + message  # message is already in bytes
+        if isinstance(message, str):  # convert message to bytes
+            chunk = lsb(self._journal_index, set_bit_mask) + message.encode()
+        else:  # message is already in bytes
+            chunk = lsb(self._journal_index, set_bit_mask) + message
         self._journal_index += 1
         self._journal.append(chunk)
         await self._send_raw(chunk)
@@ -306,6 +313,14 @@ class PersistentWebsocket:
             await asyncio.sleep(random.randint(0, 3))
             await self.set_offline_mode()
             await asyncio.sleep(random.randint(0, 3))
+
+    async def jet_send(self, message: str | bytes) -> None:
+        """Same as 'send()', but sends on the jet channel."""
+        # if len(message) > 90:
+        if False:
+            await self.send(message[0:-1] + b'b', jet_bit)
+        else:
+            await self.send(message, jet_bit)
 
     async def _resend_one(self) -> None:
         """Resend the oldest chunk."""
@@ -335,7 +350,7 @@ class PersistentWebsocket:
         for i in range(start_index - self._journal_index, end_index - self._journal_index):
             await self._send_raw(self._journal[i])
 
-    async def _send_raw(self, chunk) -> None:
+    async def _send_raw(self, chunk: bytes) -> None:
         """Send chunk of bytes if we can."""
         if self.is_offline():
             return
@@ -374,7 +389,7 @@ class PersistentWebsocket:
         try:
             i_lsb = int.from_bytes(chunk[0:2], 'big')  # first 2 bytes of chunk
             is_jet = i_lsb & jet_bit != 0
-            if i_lsb < signal_bit:  # message chunk
+            if i_lsb < signal_bit or i_lsb >= jet_cmd:  # message chunk or jet command
                 index = unmod(
                     i_lsb & lsb_mask,  # i_lsb with jet bit cleared
                     self._in_index,
@@ -388,8 +403,10 @@ class PersistentWebsocket:
                         await self._send_ack()
                         # (TESTING) await self.send(f"We've received {self._in_index} messages")  # TESTING
                     if is_jet:
-                        # FIXME: send chunk[2:] to jet connection
-                        self.log.info(f"B81185 {len(chunk[2:])} jet channel bytes received)")
+                        if i_lsb >= jet_cmd:  # jet channel command
+                            await self._process_jet_command(chunk[2:].decode())
+                        else:  # jet channel data
+                            self._tcp_connect.write(chunk[2:])
                     else:
                         return chunk[2:]  # message
                 elif index > self._in_index:
@@ -397,12 +414,11 @@ class PersistentWebsocket:
                 else:  # index < self._in_index
                     self.log.info(f"B73822 {self.log_id} ignoring duplicate chunk {index}")
             else:  # signal
-                assert is_jet == False  # for signals, jet_bit should be 0
                 if i_lsb == _sig_ack or i_lsb == _sig_resend:
                     ack_index = unmod(int.from_bytes(chunk[2:4], 'big'), self._journal_index)
                     tail_index = self._journal_index - len(self._journal)
                     if tail_index < ack_index:
-                        self.log.info(
+                        self.log.debug(
                             f"B60966 {self.log_id} clearing journal[{tail_index}:{ack_index}]"
                         )
                     if self._journal_timer is not None:
@@ -441,7 +457,7 @@ class PersistentWebsocket:
         if self._in_last_ack_timer is not None:  # kill the count-down timer if running
             self._in_last_ack_timer.cancel()
             self._in_last_ack_timer = None
-        await self._send_raw(const_otw(_sig_ack) + lsb(self._in_index, False))
+        await self._send_raw(const_otw(_sig_ack) + lsb(self._in_index))
 
     async def _send_resend(self) -> None:
         now_time = round(timer() * 1000)
@@ -451,10 +467,36 @@ class PersistentWebsocket:
                 return
         self._in_last_resend = self._in_index
         self._in_last_resend_time = now_time
-        await self._send_raw(const_otw(_sig_resend) + lsb(self._in_index, False))
+        await self._send_raw(const_otw(_sig_resend) + lsb(self._in_index))
 
     async def ping(self, data) -> None:
         await self._send_raw(const_otw(_sig_ping) + data)
+
+    async def _process_jet_command(self, cmd: str) -> None:
+        try:
+            word, parms = cmd.split(' ', maxsplit=1)
+        except ValueError:
+            word = cmd
+            parms = ''
+        if word == 'forward_to':
+            ip_address, port = net.parse_ip_port(parms)
+            self.log.debug(
+                f"B99176 {self.log_id} received forward_to command"
+                + f"for {ip_address} port {port}"
+            )
+            # if we are a peer, open new TCP connection; else do nothing
+            await self._tcp_connect.open_peer_connection(ip_address, port)
+        elif word == "disconnect":
+            self.log.debug(f"B50142 {self.log_id} received disconnect command")
+            self._tcp_connect.close()
+        else:
+            self.log.warning(f"B67536 {self.log_id} unknown jet command: {cmd}")
+
+    async def _send_tcp_connect(self, ip_address, port) -> None:
+        await self.send(f'forward_to {net.format_ip_port(ip_address, port)}', jet_cmd)
+
+    async def _send_tcp_disconnect(self) -> None:
+        await self.send('disconnect', jet_cmd)
 
     def is_online(self) -> bool:
         return self._ws is not None
@@ -504,3 +546,146 @@ class PersistentWebsocket:
             return  # run timers only when online
         if self._in_index > self._in_last_ack and self._in_last_ack_timer is None:
             self._in_last_ack_timer = Timekeeper(1, self._send_ack)
+
+    async def exec_and_forward_tcp(
+        self,
+        exec_args: list[str],
+        host_ip_address: str,
+        host_port: int,
+        peer_ip_address: str,
+        peer_port: int,
+    ) -> None:
+        await self._tcp_connect.exec_and_forward_tcp(
+            exec_args, host_ip_address, host_port, peer_ip_address, peer_port
+        )
+
+    def allow_port_forwarding(self, allowed) -> None:
+        self._tcp_connect.allow_port_forwarding(allowed)
+
+
+class TcpConnector:
+    """Open a TCP connection and shuffle data between it and the jet channel.
+
+    Typical usage is for the 'host' end of a PersistentWebsocket connection to call
+    exec_and_forward_tcp() and the 'peer' end to call allow_port_forwarding().
+    """
+
+    def __init__(self, pws: PersistentWebsocket):
+        self._pws = pws
+        self._allow_port_forwarding = False  # for security, denied by default
+        self._connections = list()  # list of ActiveTcpConnection objects to call write(), close()
+        self._to_host = False  # True==to local TCP port that we opened; False==to remote machine
+        self._peer_ip_address = ''  # destination peer remote IP (stored by both host and peer)
+        self._peer_port = ''  # destination peer remote port (stored by both host and peer)
+        self._peer_connection = None
+
+    def allow_port_forwarding(self, allowed):
+        self._allow_port_forwarding = allowed  # for security, denied by default
+
+    async def exec_and_forward_tcp(
+        self,
+        exec_args: list[str],
+        host_ip_address: str,
+        host_port: int,
+        peer_ip_address: str,
+        peer_port: int,
+    ) -> None:
+        """Set up port forwarding, similar to 'ssh -L', and run an external program."""
+        try:
+            self._peer_ip_address = peer_ip_address  # to be used later, when exec connects
+            self._peer_port = peer_port
+            open_host_port = await self.open_host_tcp_port(host_ip_address, host_port)
+            output = await net.run_external_async(exec_args)
+            if output:
+                self._pws.log.info(f"B19653 output of: {output}")
+        finally:
+            open_host_port.close()
+
+    async def open_host_tcp_port(self, ip_address: str, port: int) -> asyncio.Server:
+        """Begin listening on the specified local TCP port."""
+        self._to_host = True  # calling this method is the only way to make us host rather than peer
+        loop = asyncio.get_running_loop()
+        open_host_port = await loop.create_server(
+            lambda: ActiveTcpConnection(
+                self._connections,
+                pws=self._pws,
+                peer_ip_address=self._peer_ip_address,
+                peer_port=self._peer_port,
+            ),
+            ip_address,
+            port,
+        )
+        return open_host_port
+
+    async def open_peer_connection(self, ip_address: str, port: int) -> None:
+        """Initiate TCP connection out. Link data both ways with the jet channel."""
+        if self._allow_port_forwarding and self._to_host == False:
+            loop = asyncio.get_running_loop()
+            self._peer_connection, _ = await loop.create_connection(
+                lambda: ActiveTcpConnection(
+                    self._connections,
+                    pws=self._pws,
+                ),
+                ip_address,
+                port,
+            )
+        # do nothing if remote connections are not permitted or if we are not a peer
+
+    def write(self, data: bytes) -> None:
+        if self._connections:
+            self._connections[0].write(data)
+
+    def close(self) -> None:
+        """Close TCP connection (host or peer). For host, keep listening port open."""
+        if self._connections:
+            self._pws.log.debug("B54010 closing TCP connection")
+            self._connections[0].close()
+        if self._to_host == False and self._peer_connection:  # peer
+            self._pws.log.debug("B26968 closing TCP peer connection")
+            self._peer_connection.close()
+            self._peer_connection = None
+        # do nothing if remote connections are not permitted or if we are not a peer
+
+
+class ActiveTcpConnection(asyncio.Protocol):
+    """Represents one active TCP connection (host or peer)."""
+
+    # docs: https://docs.python.org/3/library/asyncio-protocol.html
+    def __init__(
+        self,
+        connections,
+        pws: PersistentWebsocket,
+        peer_ip_address: str = '',
+        peer_port: int = 0,
+    ):
+        self._pws = pws
+        self._connections = connections  # list of connections like this one
+        self._peer_ip_address = peer_ip_address
+        self._peer_port = peer_port
+
+    def connection_made(self, transport):
+        """New TCP connection established."""
+        self._transport = transport
+        peername = self._transport.get_extra_info('peername')
+        self._pws.log.debug(f"B40828 {self._pws.log_id} TCP connection from {peername}")
+        self._connections.append(self)
+        if len(self._connections) > 1:  # allow at most 1 connection because there is 1 jet channel
+            self._transport.close()  # terminate this new connection
+        asyncio.create_task(self._pws._send_tcp_connect(self._peer_ip_address, self._peer_port))
+
+    def data_received(self, data):
+        """Called when TCP connection receives data."""
+        asyncio.create_task(self._pws.jet_send(data))
+
+    def connection_lost(self, exc):
+        """Called when TCP connection is closed by us or by the TCP client."""
+        self._pws.log.debug(f"B33276 {self._pws.log_id} TCP connection lost")
+        self._connections.remove(self)
+        asyncio.create_task(self._pws._send_tcp_disconnect())
+
+    def write(self, data):
+        self._transport.write(data)
+
+    def close(self):
+        """Close this connection but keep listening."""
+        self._transport.close()  # close this connection but keep listening
