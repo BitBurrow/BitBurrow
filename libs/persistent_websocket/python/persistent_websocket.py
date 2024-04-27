@@ -363,15 +363,15 @@ class PersistentWebsocket:
 
     async def process_inbound(self, chunk) -> bytes | None:
         """Test and respond to chunk, returning a message or None."""
+        if hasattr(self, '_ipi'):
+            # connect_lock should prevent this, but we check to be safe; this
+            # happens if WebSocket is closed during send() within process_inbound()
+            # and causes messages to be delivered out of order
+            self.log.error(f"B14725 {self.log_id} process_inbound is not reentrant")
+            await asyncio.sleep(1)  # avoid uninterruptible loop
+            return
+        self._ipi = True  # see above
         try:
-            if hasattr(self, '_ipi'):
-                # connect_lock should prevent this, but we check to be safe; this
-                # happens if WebSocket is closed during send() within process_inbound()
-                # and causes messages to be delivered out of order
-                self.log.error(f"B14725 {self.log_id} process_inbound is not reentrant")
-                await asyncio.sleep(1)  # avoid uninterruptible loop
-                return
-            self._ipi = True  # see above
             i_lsb = int.from_bytes(chunk[0:2], 'big')  # first 2 bytes of chunk
             is_jet = i_lsb & jet_bit != 0
             if i_lsb < signal_bit:  # message chunk
@@ -387,7 +387,6 @@ class PersistentWebsocket:
                         # acknowledge receipt after 16 messages
                         await self._send_ack()
                         # (TESTING) await self.send(f"We've received {self._in_index} messages")  # TESTING
-                    del self._ipi
                     if is_jet:
                         # FIXME: send chunk[2:] to jet connection
                         self.log.info(f"B81185 {len(chunk[2:])} jet channel bytes received)")
@@ -429,13 +428,13 @@ class PersistentWebsocket:
                     pass
                 else:
                     self.log.error(f"B32405 {self.log_id} unknown signal {i_lsb}")
-            del self._ipi
             return None
         except PWUnrecoverableError:
             raise
         except Exception:
-            del self._ipi
             self.log.error(f"B88756 {self.log_id} wsexception, {traceback.format_exc().rstrip()}")
+        finally:
+            del self._ipi
 
     async def _send_ack(self) -> None:
         self._in_last_ack = self._in_index
