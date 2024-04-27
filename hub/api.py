@@ -97,7 +97,7 @@ async def rpc(websocket: WebSocket, rpc_ver: str, auth_account: str, conv_id: st
         #     * fastapi-jsonrpc → can only use HTTP (no PersistentWebsocket); snyk.io 72
         #     * grpc → uses HTTP/2; does not gracefully recover from disconnects; snyk.io 63
         #     * json-rpc → simple, no async but seems to work well; snyk.io 71
-        async for m in messages[conv_id].connected(websocket):
+        async for m in messages[conv_id].connected(websocket):  # process RPC requests, send results
             response = jsonrpc.JSONRPCResponseManager.handle(m, jsonrpc.dispatcher)
             await messages[conv_id].send(json.dumps(db.simplify(response.data)))
     except persistent_websocket.PWUnrecoverableError:

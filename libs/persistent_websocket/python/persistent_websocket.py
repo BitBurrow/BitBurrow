@@ -316,11 +316,7 @@ class PersistentWebsocket:
 
     async def jet_send(self, message: str | bytes) -> None:
         """Same as 'send()', but sends on the jet channel."""
-        # if len(message) > 90:
-        if False:
-            await self.send(message[0:-1] + b'b', jet_bit)
-        else:
-            await self.send(message, jet_bit)
+        await self.send(message, jet_bit)
 
     async def _resend_one(self) -> None:
         """Resend the oldest chunk."""
