@@ -89,24 +89,10 @@ int unmod(int xx, int xxxx, {int w = maxLsb}) {
   return xx + xxxx + w ~/ 2 - splitp - (xx > splitp ? w : 0);
 }
 
-// void unmodTest() {
-//   final random = Random();
-//   final windowSizes = [10, 100, 1000, 10000, 16384, 32768, 8322];
-//   for (final win in windowSizes) {
-//     for (var i = 0; i < 1000000; i++) {
-//       final short = random.nextInt(win);
-//       final long = random.nextInt(0xFFFFFF);
-//       final n = unmod(short, long, w: win);
-//       //print("unmod($short, $long, $win) == $n");
-//       if (n % win == short) {
-//         if ((long - n).abs() <= win ~/ 2) continue;
-//       }
-//       print("unmod failed");
-//       exit(1);
-//     }
-//   }
-// }
-
+/// Call a method after a specified number of seconds.
+///
+/// Seconds can be fractional. Repeating timers are possible using periodic() or
+/// exponential(). For example usage, see test_timekeeper() in "tests/" directory.
 class Timekeeper {
   // based on https://stackoverflow.com/a/45430833
   late double _timeout;
@@ -158,32 +144,6 @@ class Timekeeper {
   }
 }
 
-// /// class Timekeeper usage:
-// void main() async {
-//   var start = DateTime.now();
-//
-//   void log(String s) {
-//     var elapsed = DateTime.now().difference(start).inSeconds;
-//     print('${elapsed.toString().padLeft(3, ' ')}s: $s');
-//   }
-//
-//   void fourSeconds() => log("            four seconds");
-//   void fiveSeconds() => log("                         five seconds");
-//   void twoSeconds() => log("two seconds");
-//
-//   var a = Timekeeper.periodic(4, fourSeconds);
-//   var b = Timekeeper(5, fiveSeconds);
-//   var c = Timekeeper.exponential(2, twoSeconds, 2, 45);
-//   log("zero seconds");
-//   await Future.delayed(const Duration(seconds: 30));
-//   log("            canceling four");
-//   a.cancel();
-//   await Future.delayed(const Duration(seconds: 60));
-//   log("done");
-//   b.cancel();
-//   c.cancel();
-// }
-
 class PWUnrecoverableError implements Exception {
   final String message;
   PWUnrecoverableError(this.message);
@@ -230,15 +190,6 @@ String printableHex(Uint8List chunk) {
     out.write("'${quote.toString()}'");
   }
   return out.toString().trim();
-}
-
-printableHexTest() {
-  var chunkTest = "1234\x0056789\x01\x02abcd\nefg\nhi\nhello\n\n"
-      "hello\n\n\nshouldn't \\ backslash\xe2\x9c\x94 done\n";
-  var chunkTestOut =
-      "'1234' 00 '56789' 01 02 'abcd' 0A 65 66 67 0A 68 69 0A 'hello' 0A 0A "
-      "'hello' 0A 0A 0A 'shouldn' 27 't \\ backslash' E2 9C 94 ' done' 0A";
-  assert(printableHex(Uint8List.fromList(chunkTest.codeUnits)) == chunkTestOut);
 }
 
 /// Implement a never-resets 'try' count.
