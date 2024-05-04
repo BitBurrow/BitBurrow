@@ -562,77 +562,79 @@ class PersistentWebSocket {
       return null;
     }
     _ipi = true;
-    var iLsb = bytesToInt(chunk, 0); // first 2 bytes of chunk
-    bool isJet = iLsb & jetBit != 0;
-    if (iLsb < signalBit) {
-      // message chunk
-      var index = unmod(
-        iLsb & lsbMask, // iLsb with jet bit cleared
-        _inIndex,
-      ); // expand 14 bits to full index
-      if (index == _inIndex) {
-        // valid
-        _inIndex++; // have unacknowledged message(s)
-        // occasionally call _send_ack() so remote can clear _journal
-        enableInTimer();
-        if (_inIndex - _inLastAck >= 16) {
-          // acknowledge receipt after 16 messages
-          _sendAck();
-          // (TESTING) import 'dart:convert' show utf8;
-          // (TESTING) send(Uint8List.fromList(
-          // (TESTING)     utf8.encode("We've received $_inIndex messages"))); // TESTING
-        }
-        _ipi = false;
-        if (isJet) {
-          // FIXME: send chunksublist(2) to jet connection
-          _log.info("B81186 ${chunk.sublist(2)} jet channel bytes received");
+    try {
+      var iLsb = bytesToInt(chunk, 0); // first 2 bytes of chunk
+      bool isJet = iLsb & jetBit != 0;
+      if (iLsb < signalBit) {
+        // message chunk
+        var index = unmod(
+          iLsb & lsbMask, // iLsb with jet bit cleared
+          _inIndex,
+        ); // expand 14 bits to full index
+        if (index == _inIndex) {
+          // valid
+          _inIndex++; // have unacknowledged message(s)
+          // occasionally call _send_ack() so remote can clear _journal
+          enableInTimer();
+          if (_inIndex - _inLastAck >= 16) {
+            // acknowledge receipt after 16 messages
+            _sendAck();
+            // (TESTING) import 'dart:convert' show utf8;
+            // (TESTING) send(Uint8List.fromList(
+            // (TESTING)     utf8.encode("We've received $_inIndex messages"))); // TESTING
+          }
+          if (isJet) {
+            // FIXME: send chunksublist(2) to jet connection
+            _log.info("B81186 ${chunk.sublist(2)} jet channel bytes received");
+          } else {
+            return chunk.sublist(2); // message
+          }
+        } else if (index > _inIndex) {
+          _sendResend(); // request the other end resend what we're missing
         } else {
-          return chunk.sublist(2); // message
+          // index < _inIndex
+          _log.info("B73823 $logId ignoring duplicate chunk $index");
         }
-      } else if (index > _inIndex) {
-        _sendResend(); // request the other end resend what we're missing
       } else {
-        // index < _inIndex
-        _log.info("B73823 $logId ignoring duplicate chunk $index");
+        // signal
+        assert(isJet == false); // for signals, jetBit should be 0
+        if (iLsb == _sigAck || iLsb == _sigResend) {
+          var ackIndex = unmod(bytesToInt(chunk, 2), _journalIndex);
+          var tailIndex = _journalIndex - _journal.length;
+          if (tailIndex < ackIndex) {
+            _log.info("B60967 $logId clearing journal[$tailIndex:$ackIndex]");
+          }
+          if (_journalTimer != null) {
+            _journalTimer!.cancel();
+            _journalTimer = null;
+          }
+          if (_journal.length < (ackIndex - tailIndex)) {
+            _log.severe("B19145 $logId error: "
+                "${_journal.length} < ($ackIndex - $tailIndex)");
+            throw PWUnrecoverableError("B44312 $logId impossible ack");
+          }
+          for (var i = tailIndex; i < ackIndex; i++) {
+            _journal.removeFirst();
+          }
+          enableJournalTimer();
+          if (iLsb == _sigResend) {
+            await _resend(ackIndex);
+          }
+        } else if (iLsb == _sigResendError) {
+          _log.severe("B75562 $logId received resend error signal");
+          throw PWUnrecoverableError(
+              "B91222 $logId received resend error signal");
+        } else if (iLsb == _sigPing) {
+          _sendRaw(cat(constOtw(_sigPong), chunk.sublist(2)));
+        } else if (iLsb == _sigPong) {
+          // pass
+        } else {
+          _log.severe("B32406 $logId unknown signal $iLsb");
+        }
       }
-    } else {
-      // signal
-      assert(isJet == false); // for signals, jetBit should be 0
-      if (iLsb == _sigAck || iLsb == _sigResend) {
-        var ackIndex = unmod(bytesToInt(chunk, 2), _journalIndex);
-        var tailIndex = _journalIndex - _journal.length;
-        if (tailIndex < ackIndex) {
-          _log.info("B60967 $logId clearing journal[$tailIndex:$ackIndex]");
-        }
-        if (_journalTimer != null) {
-          _journalTimer!.cancel();
-          _journalTimer = null;
-        }
-        if (_journal.length < (ackIndex - tailIndex)) {
-          _log.severe("B19145 $logId error: "
-              "${_journal.length} < ($ackIndex - $tailIndex)");
-          throw PWUnrecoverableError("B44312 $logId impossible ack");
-        }
-        for (var i = tailIndex; i < ackIndex; i++) {
-          _journal.removeFirst();
-        }
-        enableJournalTimer();
-        if (iLsb == _sigResend) {
-          await _resend(ackIndex);
-        }
-      } else if (iLsb == _sigResendError) {
-        _log.severe("B75562 $logId received resend error signal");
-        throw PWUnrecoverableError(
-            "B91222 $logId received resend error signal");
-      } else if (iLsb == _sigPing) {
-        _sendRaw(cat(constOtw(_sigPong), chunk.sublist(2)));
-      } else if (iLsb == _sigPong) {
-        // pass
-      } else {
-        _log.severe("B32406 $logId unknown signal $iLsb");
-      }
+    } finally {
+      _ipi = false;
     }
-    _ipi = false;
     return null;
   }
 
