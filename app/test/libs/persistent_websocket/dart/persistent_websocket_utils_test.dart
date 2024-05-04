@@ -1,8 +1,6 @@
 import 'package:test/test.dart';
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:io' as io;
-import 'dart:convert' as convert;
 import 'dart:typed_data';
 import 'package:bitburrow/persistent_websocket.dart';
 
@@ -90,6 +88,80 @@ void main() {
     }, timeout: const Timeout(Duration(minutes: 2)));
     test('printableHex', () {
       expect(printableHexTest(), true);
+    });
+    test('parseIpPort', () {
+      expect(
+          parseIpPort('example.org'),
+          equals({
+            'host': 'example.org',
+            'port': 0,
+          }));
+      expect(
+          parseIpPort('example.org:80'),
+          equals({
+            'host': 'example.org',
+            'port': 80,
+          }));
+      expect(
+          parseIpPort('192.168.100.99'),
+          equals({
+            'host': '192.168.100.99',
+            'port': 0,
+          }));
+      expect(
+          parseIpPort('192.168.100.99:8888'),
+          equals({
+            'host': '192.168.100.99',
+            'port': 8888,
+          }));
+      expect(
+          parseIpPort('[fe80::d4a8:6435:f54c:1f4e]'),
+          equals({
+            'host': 'fe80::d4a8:6435:f54c:1f4e',
+            'port': 0,
+          }));
+      expect(
+          parseIpPort('[fe80::d4a8:6435:f54c:1f4e]:995'),
+          equals({
+            'host': 'fe80::d4a8:6435:f54c:1f4e',
+            'port': 995,
+          }));
+      expect(
+          parseIpPort('[::1]'),
+          equals({
+            'host': '::1',
+            'port': 0,
+          }));
+      expect(
+          parseIpPort('[::1]:22'),
+          equals({
+            'host': '::1',
+            'port': 22,
+          }));
+      expect(
+          parseIpPort('example.org', 443),
+          equals({
+            'host': 'example.org',
+            'port': 443,
+          }));
+      expect(
+          parseIpPort('[::1]', 443),
+          equals({
+            'host': '::1',
+            'port': 443,
+          }));
+      expect(
+          parseIpPort('[::1]:8443', 443),
+          equals({
+            'host': '::1',
+            'port': 8443,
+          }));
+    });
+    test('formatIpPort', () {
+      expect(formatIpPort('example.org', 80), equals('example.org:80'));
+      expect(formatIpPort('10.80.80.205', 1234), equals('10.80.80.205:1234'));
+      expect(formatIpPort('fe80::d4a8:6435:f54c:1f4e', 22),
+          equals('[fe80::d4a8:6435:f54c:1f4e]:22'));
     });
   });
 }

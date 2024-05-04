@@ -733,3 +733,37 @@ class PersistentWebSocket {
     }
   }
 }
+
+/// Parse host:port string into host and port.
+///
+/// Returns Map with 'host': String and 'port': int pairs. IPv6 addresses must
+/// be in square brackets."""
+Map<String, dynamic> parseIpPort(String hostPortString, [int defaultPort = 0]) {
+  if (hostPortString.startsWith('[')) {
+    // IPv6
+    int closeBracket = hostPortString.indexOf(']');
+    var port = 0;
+    if (hostPortString.length > closeBracket + 1) {
+      // close bracket is not end of string
+      assert(hostPortString[closeBracket + 1] == ':');
+      port = int.parse(hostPortString.substring(closeBracket + 2));
+    } else {
+      port = defaultPort;
+    }
+    return {'host': hostPortString.substring(1, closeBracket), 'port': port};
+  }
+  int colon = hostPortString.indexOf(':');
+  if (colon >= 0) {
+    return {
+      'host': hostPortString.substring(0, colon),
+      'port': int.parse(hostPortString.substring(colon + 1))
+    };
+  } else {
+    return {'host': hostPortString, 'port': defaultPort};
+  }
+}
+
+/// Return host:port string version with [] around IPv6 addresses.
+String formatIpPort(String host, int port) {
+  return host.contains(':') ? '[$host]:$port' : '$host:$port';
+}
