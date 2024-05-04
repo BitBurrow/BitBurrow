@@ -11,6 +11,7 @@ import collections
 import hub.logs as logs
 import hub.net as net
 import random
+import re
 from timeit import default_timer as timer
 import traceback
 import typing
@@ -475,13 +476,13 @@ class PersistentWebsocket:
             word = cmd
             parms = ''
         if word == 'forward_to':
-            ip_address, port = net.parse_ip_port(parms)
+            target = parse_ip_port(parms)
             self.log.debug(
                 f"B99176 {self.log_id} received forward_to command"
-                + f"for {ip_address} port {port}"
+                + f"for {target['host']} port {target['port']}"
             )
             # if we are a peer, open new TCP connection; else do nothing
-            await self._tcp_connect.open_peer_connection(ip_address, port)
+            await self._tcp_connect.open_peer_connection(target['host'], target['port'])
         elif word == "disconnect":
             self.log.debug(f"B50142 {self.log_id} received disconnect command")
             self._tcp_connect.close()
@@ -489,7 +490,7 @@ class PersistentWebsocket:
             self.log.warning(f"B67536 {self.log_id} unknown jet command: {cmd}")
 
     async def _send_tcp_connect(self, ip_address, port) -> None:
-        await self.send(f'forward_to {net.format_ip_port(ip_address, port)}', jet_cmd)
+        await self.send(f'forward_to {format_ip_port(ip_address, port)}', jet_cmd)
 
     async def _send_tcp_disconnect(self) -> None:
         await self.send('disconnect', jet_cmd)
@@ -557,6 +558,31 @@ class PersistentWebsocket:
 
     def allow_port_forwarding(self, allowed) -> None:
         self._tcp_connect.allow_port_forwarding(allowed)
+
+
+def parse_ip_port(host_port_string: str, default_port: int = 0) -> dict:
+    """Parse host:port string into host and port.
+
+    Returns dict with 'host': String and 'port': int pairs. IPv6 addresses must be
+    in square brackets."""
+    if host_port_string[0] == '[':  # IPv6
+        close_bracket = host_port_string.index(']')  # may raise ValueError
+        if len(host_port_string) > close_bracket + 1:  # close bracket is not end of string
+            assert host_port_string[close_bracket + 1] == ':'
+            port = int(host_port_string[close_bracket + 2 :])
+        else:
+            port = default_port
+        return {'host': host_port_string[1:close_bracket], 'port': port}
+    try:
+        colon = host_port_string.index(':')
+        return {'host': host_port_string[0:colon], 'port': int(host_port_string[colon + 1 :])}
+    except ValueError:  # assume 'substring not found'
+        return {'host': host_port_string, 'port': default_port}
+
+
+def format_ip_port(host: str, port: int) -> str:
+    """Return host:port string version with [] around IPv6 addresses."""
+    return f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
 
 
 class TcpConnector:

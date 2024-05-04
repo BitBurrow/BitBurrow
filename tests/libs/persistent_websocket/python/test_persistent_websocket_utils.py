@@ -3,7 +3,7 @@ import io
 import sys
 import random
 import time
-from libs.persistent_websocket.python.persistent_websocket import unmod, Timekeeper, printable_hex
+import libs.persistent_websocket.python.persistent_websocket as pws
 
 
 def test_unmod() -> None:
@@ -11,7 +11,7 @@ def test_unmod() -> None:
         for _ in range(0, 100_000):
             short = random.randint(0, win - 1)
             long = random.randint(0, 0xFFFFFF)
-            n = unmod(short, long, win)
+            n = pws.unmod(short, long, win)
             assert n % win == short
             assert abs(long - n) <= win // 2
             # print(f"unmod({short}, {long}, {win}) == {n}")
@@ -33,9 +33,9 @@ def test_timekeeper():
         log("two seconds")
 
     async def demo_timekeeper():
-        a = Timekeeper.periodic(4, four_seconds)
-        b = Timekeeper(5, five_seconds)
-        c = Timekeeper.exponential(2, two_seconds, 2, 45)
+        a = pws.Timekeeper.periodic(4, four_seconds)
+        b = pws.Timekeeper(5, five_seconds)
+        c = pws.Timekeeper.exponential(2, two_seconds, 2, 45)
         log("zero seconds")
         await asyncio.sleep(30)
         log("            canceling four")
@@ -81,4 +81,57 @@ def test_printable_hex() -> None:
         "'1234' 00 '56789' 01 02 'abcd' 0A 65 66 67 0A 68 69 0A 'hello' 0A 0A "
         "'hello' 0A 0A 0A 'shouldn' 27 't \\ backslash' E2 9C 94 ' done' 0A"
     )
-    assert printable_hex([ord(c) for c in chunk_test]) == chunk_test_out
+    assert pws.printable_hex([ord(c) for c in chunk_test]) == chunk_test_out
+
+
+def test_parse_ip_port() -> None:
+    assert pws.parse_ip_port('example.org') == {
+        'host': 'example.org',
+        'port': 0,
+    }
+    assert pws.parse_ip_port('example.org:80') == {
+        'host': 'example.org',
+        'port': 80,
+    }
+    assert pws.parse_ip_port('192.168.100.99') == {
+        'host': '192.168.100.99',
+        'port': 0,
+    }
+    assert pws.parse_ip_port('192.168.100.99:8888') == {
+        'host': '192.168.100.99',
+        'port': 8888,
+    }
+    assert pws.parse_ip_port('[fe80::d4a8:6435:f54c:1f4e]') == {
+        'host': 'fe80::d4a8:6435:f54c:1f4e',
+        'port': 0,
+    }
+    assert pws.parse_ip_port('[fe80::d4a8:6435:f54c:1f4e]:995') == {
+        'host': 'fe80::d4a8:6435:f54c:1f4e',
+        'port': 995,
+    }
+    assert pws.parse_ip_port('[::1]') == {
+        'host': '::1',
+        'port': 0,
+    }
+    assert pws.parse_ip_port('[::1]:22') == {
+        'host': '::1',
+        'port': 22,
+    }
+    assert pws.parse_ip_port('example.org', 443) == {
+        'host': 'example.org',
+        'port': 443,
+    }
+    assert pws.parse_ip_port('[::1]', 443) == {
+        'host': '::1',
+        'port': 443,
+    }
+    assert pws.parse_ip_port('[::1]:8443', 443) == {
+        'host': '::1',
+        'port': 8443,
+    }
+
+
+def test_format_ip_port() -> None:
+    assert pws.format_ip_port('example.org', 80) == 'example.org:80'
+    assert pws.format_ip_port('10.80.80.205', 1234) == '10.80.80.205:1234'
+    assert pws.format_ip_port('fe80::d4a8:6435:f54c:1f4e', 22) == '[fe80::d4a8:6435:f54c:1f4e]:22'

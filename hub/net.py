@@ -263,19 +263,3 @@ def connected_inbound_list(local_port):
         for c in conn_list
         if c.status == psutil.CONN_ESTABLISHED and c.laddr.port == local_port
     ]
-
-
-def parse_ip_port(host_port_string: str) -> tuple[str, int]:
-    """Parse host:port string into host and port."""
-    try:
-        splits = re.split(r'(.+):', host_port_string, maxsplit=1)  # split at right-most colon
-        if len(splits) == 3:
-            return splits[1].strip('[]'), int(splits[2])
-    except:
-        pass  # generally discouraged, but here we ignore all errors
-    return host_port_string, 0
-
-
-def format_ip_port(host: str, port: int) -> str:
-    """Return host:port string version with [] around IPv6 addresses."""
-    return f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
