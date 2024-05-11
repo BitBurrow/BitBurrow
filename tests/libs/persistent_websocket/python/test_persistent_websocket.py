@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import pytest
 import random
 import re
 import sys
@@ -57,6 +58,7 @@ async def test_messaging():
     pws_log.debug("B91688 done waiting on tasks")
 
 
+@pytest.mark.timeout(90)  # network and other issues can freeze this test; should be <20 seconds
 async def test_nodes_1_and_4():
     """Set up 2-node testing lab and run tests  node 1 ↔ 4."""
     print()  # cleaner pytest display
@@ -76,6 +78,7 @@ async def test_nodes_1_and_4():
     await asyncio.gather(*data.other_tasks, return_exceptions=False)
 
 
+@pytest.mark.timeout(90)  # network and other issues can freeze this test; should be <20 seconds
 async def test_nodes_1_through_4():
     """Set up 4-node testing lab and run tests  node 1 ↔ 2 ↔ 3 ↔ 4."""
     print()  # cleaner pytest display
