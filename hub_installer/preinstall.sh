@@ -333,7 +333,7 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
         certbot certonly -n --agree-tos
         --manual --manual-auth-hook=/opt/certbot_hook.sh
         --preferred-challenge=dns
-        --register-unsafely-without-email --manual-public-ip-logging-ok
+        --register-unsafely-without-email
         -d '*.'{{ get_domain.stdout }} -d {{ get_domain.stdout }}
         --server https://acme-v02.api.letsencrypt.org/directory
         && touch /etc/letsencrypt/.registered
