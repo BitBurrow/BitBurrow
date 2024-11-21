@@ -91,7 +91,6 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
   - name: Install bbhub 🦶1--retrieve git id of most recent commit to main branch
     command:
       cmd: "curl -H 'Accept: application/vnd.github.VERSION.sha' https://api.github.com/repos/BitBurrow/BitBurrow/commits/main"
-      warn: false
     register: bbhub_version_latest
     changed_when: false
 
