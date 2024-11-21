@@ -32,6 +32,14 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
   become: true
   tasks:
 
+  - name: Ensure remote_tmp directory exists with correct permissions
+    file:
+      path: /home/bitburrow/.ansible/tmp
+      state: directory
+      mode: '0755'
+      owner: bitburrow
+      group: bitburrow
+
   - name: Run apt upgrade
     apt:
       upgrade: "yes"  # quotes avoid https://github.com/ansible/ansible/issues/56788
