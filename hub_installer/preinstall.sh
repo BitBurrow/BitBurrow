@@ -51,12 +51,17 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
     apt:
       name:
       - unattended-upgrades
-      - python3-pip
+      - python3-poetry  # to install BitBurrow
       - wireguard-tools
       - sqlite3
       - acl  # `setfacl` below and https://stackoverflow.com/a/56379678
       - bind9-dnsutils  # `dig` tool
       state: latest
+
+  - name: Define poetry path
+    set_fact:
+      poetry: /usr/bin/poetry
+    changed_when: false
 
   - name: Enable automatic security updates
     # requires package unattended-upgrades
@@ -88,41 +93,33 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
       dest: /etc/sudoers.d/bitburrow
       mode: '0640'
 
-  - name: Install bbhub 🦶1--retrieve git id of most recent commit to main branch
+  - name: Install bbhub 🦶1--git clone
+    git:
+      repo: https://github.com/BitBurrow/BitBurrow.git
+      dest: /home/bitburrow/bitburrow/
+      version: main
+      update: true
+      depth: 1
+    become_user: bitburrow
+    register: git_result
+
+  - name: Install bbhub 🦶2--configure Poetry so we can find .../bin/bbhub
     command:
-      cmd: "curl -H 'Accept: application/vnd.github.VERSION.sha' https://api.github.com/repos/BitBurrow/BitBurrow/commits/main"
-    register: bbhub_version_latest
+      cmd: "{{ poetry }} config virtualenvs.in-project true"
+    become_user: bitburrow
     changed_when: false
+    when: git_result.changed
 
-  - name: Install bbhub 🦶2--retrieve git id of installed version
-    command:
-      cmd: cat /home/bitburrow/.bbhub_installed
-    register: bbhub_version_installed
-    changed_when: false
-    failed_when: false
+  - name: Install bbhub 🦶3--install
+    shell: |-
+      cd /home/bitburrow/bitburrow/
+      {{ poetry }} install
     become_user: bitburrow
-
-  - name: Install bbhub 🦶3--display bbhub versions
-    debug:
-      msg: "bbhub version: current {{ bbhub_version_installed.stdout }}; available {{ bbhub_version_latest.stdout }}"
-
-  - name: Install bbhub 🦶4--pip install
-    pip:
-      name: git+https://github.com/BitBurrow/BitBurrow.git@main
-      state: forcereinstall  # pip cannot detect git commits
-    become_user: bitburrow
-    when: bbhub_version_installed.stdout != bbhub_version_latest.stdout
-
-  - name: Install bbhub 🦶5--mark hub as updated
-    copy:
-      content: "{{ bbhub_version_latest.stdout }}"
-      dest: /home/bitburrow/.bbhub_installed
-    become_user: bitburrow
-    when: bbhub_version_installed.stdout != bbhub_version_latest.stdout
+    when: git_result.changed
 
   - name: Define bbhub path
     set_fact:
-      bbhub: /home/bitburrow/.local/bin/bbhub
+      bbhub: /home/bitburrow/bitburrow/.venv/bin/bbhub
     changed_when: false
 
   - name: Set domain
@@ -164,7 +161,7 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
         #!/bin/bash
         ##
         VMNAME={{ hostname.stdout }}
-        bbhub() { lxc exec $VMNAME -- sudo -u bitburrow /home/bitburrow/.local/bin/bbhub "$1"; }
+        bbhub() { lxc exec $VMNAME -- sudo -u bitburrow {{ bbhub }} "$1"; }
         ##
         ## Configure port forwarding from host to container for BitBurrow hub
         ##
@@ -204,8 +201,8 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
         RestartSec=2s
         User=bitburrow
         Group=bitburrow
-        WorkingDirectory=/home/bitburrow
-        ExecStart=/home/bitburrow/.local/bin/bbhub --daemon
+        WorkingDirectory=/home/bitburrow/bitburrow
+        ExecStart={{ poetry }} run python3 {{ bbhub }} --daemon
         Restart=always
         PrivateTmp=true
         PrivateDevices=false
