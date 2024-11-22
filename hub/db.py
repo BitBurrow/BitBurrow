@@ -13,6 +13,7 @@ import yaml
 import hub.login_key as lk
 import hub.net as net
 import libs.persistent_websocket.python.persistent_websocket as persistent_websocket
+from pydantic import ConfigDict
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -362,6 +363,7 @@ class Netif(SQLModel, table=True):
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
     public_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
     comment: str = ""
+    model_config = ConfigDict(arbitrary_types_allowed=True)  # for Column(JSON)
 
     def __init__(self):
         self.base_id = None
@@ -374,9 +376,6 @@ class Netif(SQLModel, table=True):
         self.pubkey = net.sudo_wg(['pubkey'], input=self.privkey)
         self.listening_port = 123
         self.public_ports = [123]
-
-    class Config:  # needed for Column(JSON)
-        arbitrary_types_allowed = True
 
     def iface(self):
         return f'{wgif_prefix}{self.id}'  # interface name and Netif.id match
