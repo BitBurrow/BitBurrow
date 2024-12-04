@@ -87,9 +87,21 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
     copy:
       content: |
         bitburrow  ALL = NOPASSWD: /usr/bin/wg *
-        bitburrow  ALL = NOPASSWD: /bin/ip *
+        bitburrow  ALL = NOPASSWD: /usr/bin/ip *
+        bitburrow  ALL = NOPASSWD: /usr/bin/sysctl *
+        bitburrow  ALL = NOPASSWD: /usr/bin/iptables *
+        bitburrow  ALL = NOPASSWD: /usr/sbin/wg *
+        bitburrow  ALL = NOPASSWD: /usr/sbin/ip *
         bitburrow  ALL = NOPASSWD: /usr/sbin/sysctl *
         bitburrow  ALL = NOPASSWD: /usr/sbin/iptables *
+        bitburrow  ALL = NOPASSWD: /bin/wg *
+        bitburrow  ALL = NOPASSWD: /bin/ip *
+        bitburrow  ALL = NOPASSWD: /bin/sysctl *
+        bitburrow  ALL = NOPASSWD: /bin/iptables *
+        bitburrow  ALL = NOPASSWD: /sbin/wg *
+        bitburrow  ALL = NOPASSWD: /sbin/ip *
+        bitburrow  ALL = NOPASSWD: /sbin/sysctl *
+        bitburrow  ALL = NOPASSWD: /sbin/iptables *
       dest: /etc/sudoers.d/bitburrow
       mode: '0640'
 
