@@ -130,7 +130,7 @@ class App extends StatelessWidget {
         colorScheme: ColorScheme.fromSwatch().copyWith(
           primary: const Color(ourPrimaryColor),
           secondary: const Color(0xffd3a492),
-          background: const Color(0xffff0000), // seems unused
+          surface: const Color(0xffff0000), // seems unused
         ),
         // https://docs.flutter.dev/release/breaking-changes/material-3-default
         useMaterial3: false,

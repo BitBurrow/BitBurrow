@@ -73,7 +73,7 @@ class BasesFormState extends ParentFormState {
                       textScaler: TextScaler.linear(1.8),
                       style: TextStyle(
                         fontStyle: FontStyle.italic,
-                        color: Theme.of(context).colorScheme.background,
+                        color: Theme.of(context).colorScheme.surface,
                       ))
                   : loginState.bases.isEmpty
                       ? Text("You have no VPN bases set up.",
@@ -81,7 +81,7 @@ class BasesFormState extends ParentFormState {
                           textScaler: TextScaler.linear(1.8),
                           style: TextStyle(
                             fontStyle: FontStyle.italic,
-                            color: Theme.of(context).colorScheme.background,
+                            color: Theme.of(context).colorScheme.surface,
                           ))
                       : Text(
                           "Your VPN bases",
