@@ -141,23 +141,6 @@ class NewBaseFormState extends ParentFormState {
       int seconds = params['seconds'] ?? 0;
       int ms = params['ms'] ?? 0 + seconds * 1000;
       await Future.delayed(Duration(milliseconds: ms), () {});
-      // } else if (method == 'proxy') {
-      //   // WebSocket to hub to allow tcp connections to base
-      //   result = await bbProxy(
-      //     toAddress: params['to_address'],
-      //     toPort: params['to_port'],
-      //   );
-      //   if (result == "") result = "okay";
-      // } else if (method == 'get_if_list') {
-      //   // return list of network interfaces and IP addresses
-      //   hubWrite(await ifList());
-      //   return;
-      // } else if (method == 'dump_and_clear_log') {
-      //   // return log entries, empty the buffer
-      //   var manager = logm.LoggerManager();
-      //   hubWrite({'log': manager.buffer.toString()});
-      //   manager.buffer.clear();
-      //   return;
     } else {
       throw "B19842 unknown command: $method";
     }
@@ -174,41 +157,6 @@ class NewBaseFormState extends ParentFormState {
       result[interface.name] = i;
     }
     return result;
-  }
-
-  static Future<String> bbProxy({toAddress, toPort}) async {
-    final hub = loginState.hub;
-    final lk = loginState.pureLoginKey;
-    final url = 'wss://$hub:8443/v1/managers/$lk/bases/18/proxy';
-    io.WebSocket.connect(url).then((io.WebSocket ws) async {
-      try {
-        // new connection to target for each connection from hub
-        final socket = await io.Socket.connect(
-          toAddress,
-          toPort,
-          timeout: const Duration(seconds: 20),
-        );
-        // socket.handleError((err) {
-        //   return "B48034 socket error {err}";
-        // });
-        ws.listen(
-          (data) {
-            socket.add(data);
-          },
-          onError: (err) {
-            _log.warning("B47456 proxy WebSocket: $err");
-          },
-          onDone: () {
-            _log.info('proxy connection to server closed');
-          },
-        );
-        //connection.stream.cast<List<int>>().pipe(socket);
-        ws.addStream(socket);
-      } catch (err) {
-        _log.warning("B58186 can't connect to $toAddress:$toPort: $err");
-      }
-    });
-    return "";
   }
 
   @override
