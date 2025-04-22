@@ -598,7 +598,7 @@ class TcpConnector:
         self._connections = list()  # list of ActiveTcpConnection objects to call write(), close()
         self._to_host = False  # True==to local TCP port that we opened; False==to remote machine
         self._peer_ip_address = ''  # destination peer remote IP (stored by both host and peer)
-        self._peer_port = ''  # destination peer remote port (stored by both host and peer)
+        self._peer_port = 0  # destination peer remote port (stored by both host and peer)
         self._peer_connection = None
 
     def allow_port_forwarding(self, allowed):
@@ -641,17 +641,17 @@ class TcpConnector:
 
     async def open_peer_connection(self, ip_address: str, port: int) -> None:
         """Initiate TCP connection out. Link data both ways with the jet channel."""
-        if self._allow_port_forwarding and self._to_host == False:
-            loop = asyncio.get_running_loop()
-            self._peer_connection, _ = await loop.create_connection(
-                lambda: ActiveTcpConnection(
-                    self._connections,
-                    pws=self._pws,
-                ),
-                ip_address,
-                port,
-            )
-        # do nothing if remote connections are not permitted or if we are not a peer
+        if not self._allow_port_forwarding or self._to_host:
+            return  # do nothing if remote connections are not permitted or if we are not a peer
+        loop = asyncio.get_running_loop()
+        self._peer_connection, _ = await loop.create_connection(
+            lambda: ActiveTcpConnection(
+                self._connections,
+                pws=self._pws,
+            ),
+            ip_address,
+            port,
+        )
 
     def write(self, data: bytes) -> None:
         if self._connections:

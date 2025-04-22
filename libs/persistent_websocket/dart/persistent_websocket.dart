@@ -28,12 +28,17 @@ import 'package:web_socket_channel/io.dart' as wsio;
 //   * jet_bit → specify channel; 0=RPC channel; 1=jet channel for TCP and other streams
 //   * ping and pong (below) are barely implemented because we rely on WebSocket keep-alives
 //// on-the-wire format:
-//   * chunk containing a message (when chunk[0:2] < 32768):
+//   * chunk containing a message (chunk[0:2] in range 0..32767):
 //       * chunk[0:2] bits 0..13 i_lsb
 //       * chunk[0:2] bit 14     jet_bit
 //       * chunk[0:2] bit 15     0
 //       * chunk[2:]   message
-//   * a signaling chunk (when chunk[0:2] >= 32768):
+//   * chunk containing a jet channel command (chunk[0:2] in range 49152..65535):
+//       * chunk[0:2] bits 0..13 i_lsb
+//       * chunk[0:2] bit 14     1
+//       * chunk[0:2] bit 15     1
+//       * chunk[2:]  command, e.g. 'forward_to 192.168.8.1:80' or 'disconnect'
+//   * a signaling chunk (chunk[0:2] in range 32768..49151):
 const _sigAck = 0x8010; // "I have received n total chunks"
 //       * chunk[2:4]  i_lsb of next expected chunk
 const _sigResend = 0x8011; // "Please resend chunk n and everything after it"
@@ -46,21 +51,20 @@ const _sigPong = 0x8021; // "Yes, I am alive."
 //       * chunk[2:]   chunk[2:] from corresponding ping
 
 const maxLsb = 16384; // always 16384 (2**14) except for testing (tested 64, 32)
-const lsbMask = 16383; // 0x3FFF
-const jetBit = 16384; // bit 14, 0x4000
-const signalBit = 32768; // bit 15, 0x8000
+const lsbMask = 16383; // aka         0b0011111111111111
+const jetBit = 16384; // bit 14,      0b0100000000000000
+const signalBit = 32768; // bit 15,   0b1000000000000000
+const jetCmd = 49152; // bits 14, 15, 0b1100000000000000
 const maxSendBuffer = 100; // not sure what a reasonable number here would be
 // assert(maxLsb > maxSendBuffer * 3); // avoid wrap-around
 
 /// Convert index to on-the-wire format; see i_lsb description.
-Uint8List lsb(int index, bool isJet) {
-  if (isJet) {
-    return Uint8List(2)
-      ..buffer.asByteData().setUint16(0, (index % maxLsb) | jetBit, Endian.big);
-  } else {
-    return Uint8List(2)
-      ..buffer.asByteData().setUint16(0, index % maxLsb, Endian.big);
-  }
+
+Uint8List lsb(index, {int setBitMask = 0}) {
+  return Uint8List(2)
+    ..buffer
+        .asByteData()
+        .setUint16(0, (index % maxLsb) | setBitMask, Endian.big);
 }
 
 /// Convert _sig constant to on-the-wire format.
@@ -329,18 +333,27 @@ class PersistentWebSocket {
   int connects = 0;
   int chaos = 0;
   final connectLock = Mutex();
+  late TcpConnector _tcpConnect;
   final _inController = StreamController<Uint8List>();
   Stream<Uint8List> get stream => _inController.stream; // in-bound (Uint8List)
   final _outController = StreamController();
   StreamSink get sink => _outController.sink; // out-bound (String or Uint8List)
   final _errController = StreamController<String>();
   Stream<String> get err => _errController.stream; // status/error messages
+  final _jetInController = StreamController<Uint8List>();
+  Stream<Uint8List> get jetStream => _jetInController.stream; // for jet channel
+  final _jetOutController = StreamController();
+  StreamSink get jetSink => _jetOutController.sink; // for jet channel
   var _maintainConnection = true; // flag--set to false in abandonConnection()
   bool _ipi = false;
 
   PersistentWebSocket(this.logId, this._log) {
+    _tcpConnect = TcpConnector(this);
     _outController.stream.listen((message) {
       send(message);
+    });
+    _jetOutController.stream.listen((message) {
+      jetSend(message);
     });
   }
 
@@ -463,7 +476,9 @@ class PersistentWebSocket {
   }
 
   /// Send a message to the remote when possible, resending if necessary.
-  Future<void> send(message, {isJet = false}) async {
+  ///
+  /// To send on jet channel, use a set_bit_mask of jet_bit.
+  Future<void> send(message, {int setBitMask = 0}) async {
     var flowControlDelay = 1;
     while (_journal.length > maxSendBuffer) {
       if (flowControlDelay == 1) {
@@ -479,11 +494,11 @@ class PersistentWebSocket {
     }
     Uint8List chunk;
     if (message is String) {
-      // convert String to Uint8List
-      chunk = cat(lsb(_journalIndex, isJet),
+      // convert message to Uint8List
+      chunk = cat(lsb(_journalIndex, setBitMask: setBitMask),
           Uint8List.fromList(convert.utf8.encode(message)));
     } else if (message is Uint8List) {
-      chunk = cat(lsb(_journalIndex, isJet), message);
+      chunk = cat(lsb(_journalIndex, setBitMask: setBitMask), message);
     } else {
       _log.info("B64474 unsupported type");
       chunk = Uint8List(0);
@@ -502,6 +517,11 @@ class PersistentWebSocket {
         await Future.delayed(Duration(seconds: random.nextInt(3)));
       }
     }
+  }
+
+  /// Same as 'send()', but sends on the jet channel.
+  Future<void> jetSend(message) async {
+    await send(message, setBitMask: jetBit);
   }
 
   /// Resend the oldest chunk.
@@ -565,8 +585,8 @@ class PersistentWebSocket {
     try {
       var iLsb = bytesToInt(chunk, 0); // first 2 bytes of chunk
       bool isJet = iLsb & jetBit != 0;
-      if (iLsb < signalBit) {
-        // message chunk
+      if (iLsb < signalBit || iLsb >= jetCmd) {
+        // message chunk or jet command
         var index = unmod(
           iLsb & lsbMask, // iLsb with jet bit cleared
           _inIndex,
@@ -584,8 +604,13 @@ class PersistentWebSocket {
             // (TESTING)     utf8.encode("We've received $_inIndex messages"))); // TESTING
           }
           if (isJet) {
-            // FIXME: send chunksublist(2) to jet connection
-            _log.info("B81186 ${chunk.sublist(2)} jet channel bytes received");
+            if (iLsb >= jetCmd) {
+              // jet channel command
+              await _processJetCommand(convert.utf8.decode(chunk.sublist(2)));
+            } else {
+              // jet channel data
+              _jetInController.sink.add(chunk.sublist(2));
+            }
           } else {
             return chunk.sublist(2); // message
           }
@@ -597,12 +622,11 @@ class PersistentWebSocket {
         }
       } else {
         // signal
-        assert(isJet == false); // for signals, jetBit should be 0
         if (iLsb == _sigAck || iLsb == _sigResend) {
           var ackIndex = unmod(bytesToInt(chunk, 2), _journalIndex);
           var tailIndex = _journalIndex - _journal.length;
           if (tailIndex < ackIndex) {
-            _log.info("B60967 $logId clearing journal[$tailIndex:$ackIndex]");
+            _log.fine("B60967 $logId clearing journal[$tailIndex:$ackIndex]");
           }
           if (_journalTimer != null) {
             _journalTimer!.cancel();
@@ -644,7 +668,7 @@ class PersistentWebSocket {
       _inLastAckTimer!.cancel();
       _inLastAckTimer = null;
     }
-    _sendRaw(cat(constOtw(_sigAck), lsb(_inIndex, false)));
+    _sendRaw(cat(constOtw(_sigAck), lsb(_inIndex)));
   }
 
   void _sendResend() {
@@ -658,11 +682,42 @@ class PersistentWebSocket {
     }
     _inLastResend = _inIndex;
     _inLastResendTime = nowTime;
-    _sendRaw(cat(constOtw(_sigResend), lsb(_inIndex, false)));
+    _sendRaw(cat(constOtw(_sigResend), lsb(_inIndex)));
   }
 
   Future<void> ping(Uint8List data) async {
     _sendRaw(cat(constOtw(_sigPing), data));
+  }
+
+  Future<void> _processJetCommand(String cmd) async {
+    var word = cmd;
+    var parms = '';
+    var index = cmd.indexOf(' ');
+    if (index >= 0) {
+      word = cmd.substring(0, index);
+      parms = cmd.substring(index + 1);
+    }
+    if (word == 'forward_to') {
+      var target = parseIpPort(parms);
+      _log.fine("B79749 received forward_to command"
+          "for ${target['host']} port ${target['port']}");
+      // if we are a peer, open new TCP connection; else do nothing
+      await _tcpConnect.openPeerConnection(target['host'], target['port']);
+    } else if (word == "disconnect") {
+      _log.fine("B09954 received disconnect command");
+      _tcpConnect.close();
+    } else {
+      _log.warning("B88787 unknown jet command: $cmd");
+    }
+  }
+
+  Future<void> _sendTcpConnect(ipAddress, port) async {
+    await send('forward_to ${formatIpPort(ipAddress, port)}',
+        setBitMask: jetCmd);
+  }
+
+  Future<void> _sendTcpDisconnect(ipAddress, port) async {
+    await send('disconnect', setBitMask: jetCmd);
   }
 
   void abandonConnection() {
@@ -687,8 +742,8 @@ class PersistentWebSocket {
       _log.info("B89446 $logId WebSocket closed");
     } on PWUnrecoverableError {
       rethrow;
-    } catch (e) {
-      _log.severe("B39426 $logId wsexception, ${e.toString().trim()}");
+    } catch (err) {
+      _log.severe("B39426 $logId wsexception, ${err.toString().trim()}");
     } finally {
       _ws = null;
       if (_journalTimer != null) {
@@ -732,6 +787,16 @@ class PersistentWebSocket {
       _inLastAckTimer = Timekeeper(1.0, _sendAck);
     }
   }
+
+  Future<void> execAndForwardTcp(execArgs, String hostIpAddress, int hostPort,
+      String peerIpAddress, int peerPort) async {
+    await _tcpConnect.execAndForwardTcp(
+        execArgs, hostIpAddress, hostPort, peerIpAddress, peerPort);
+  }
+
+  void allowPortForwarding(bool allowed) {
+    _tcpConnect.allowPortForwarding(allowed);
+  }
 }
 
 /// Parse host:port string into host and port.
@@ -766,4 +831,77 @@ Map<String, dynamic> parseIpPort(String hostPortString, [int defaultPort = 0]) {
 /// Return host:port string version with [] around IPv6 addresses.
 String formatIpPort(String host, int port) {
   return host.contains(':') ? '[$host]:$port' : '$host:$port';
+}
+
+/// Open a TCP connection and shuffle data between it and the jet channel.
+///
+/// Typical usage is for the 'host' end of a PersistentWebsocket connection to call
+/// exec_and_forward_tcp() and the 'peer' end to call allow_port_forwarding().
+class TcpConnector {
+  late final PersistentWebSocket _pws;
+  var _allowPortForwarding = false; // for security, denied by default
+  final List<io.Socket> _connections = []; // to call write(), close()
+  // True==to local TCP port that we opened; False==to remote machine
+  final _toHost = false;
+  io.Socket? _peerConnection;
+
+  TcpConnector(this._pws);
+
+  void allowPortForwarding(bool allowed) {
+    _allowPortForwarding = allowed; // for security, denied by default
+  }
+
+  /// Set up port forwarding, similar to 'ssh -L', and run an external program.
+  Future<void> execAndForwardTcp(List<String> execArgs, String hostIpAddress,
+      int hostPort, String peerIpAddress, int peerPort) async {
+    throw UnimplementedError;
+  }
+
+  /// Initiate TCP connection out. Link data both ways with the jet channel.
+  Future<void> openPeerConnection(String ipAddress, int port) async {
+    if (_connections.isNotEmpty) {
+      return; // allow at most 1 connection because there is 1 jet channel
+    }
+    if (_allowPortForwarding && _toHost == false) {
+      io.Socket? socket;
+      try {
+        socket = await io.Socket.connect(ipAddress, port,
+            timeout: const Duration(seconds: 20));
+        _connections.add(socket); // TCP connection established
+        _pws._sendTcpConnect(ipAddress, port);
+        // pipe data from _pws into TCP connection
+        await _pws.jetStream.pipe(socket as StreamConsumer<Uint8List>);
+        // pipe data from TCP connection back to _pws
+        await socket.pipe(_pws.jetSink as StreamConsumer<Uint8List>);
+      } on io.SocketException catch (err) {
+        _pws._log.warning("B49644 error $err");
+      } finally {
+        if (socket != null) {
+          _connections.remove(socket);
+          socket.close();
+          _pws.jetSink.close();
+        }
+      }
+    } // do nothing if remote connections are not permitted or if we are not a peer
+  }
+
+  void write(Uint8List data) {
+    if (_connections.isNotEmpty) {
+      _connections[0].add(data);
+    }
+  }
+
+  /// Close TCP connection (host or peer). For host, keep listening port open.
+  void close() {
+    if (_connections.isNotEmpty) {
+      _pws._log.fine("B38090 closing TCP connection");
+      _connections[0].close();
+    }
+    if (_toHost == false && _peerConnection != null) {
+      // peer
+      _pws._log.fine("B00096 closing TCP peer connection");
+      _peerConnection!.close();
+      _peerConnection = null;
+    }
+  }
 }

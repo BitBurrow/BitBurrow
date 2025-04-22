@@ -1,4 +1,5 @@
 import asyncio
+import hub.net as net
 import logging
 import pytest
 import random
@@ -108,6 +109,54 @@ async def test_nodes_1_through_4():
     #
     ### waiting
     while len(data.speaker_tasks) < 2:
+        await asyncio.sleep(0.1)  # wait for tasks to start
+    await asyncio.gather(*data.speaker_tasks, return_exceptions=True)  # let speakers finish
+    wait_time = 0.0
+    while len(data.successes) < 2 and wait_time < 15.0:
+        await asyncio.sleep(0.1)
+        wait_time += 0.1
+    for t in data.listener_tasks:
+        t.cancel()
+    await asyncio.gather(*data.listener_tasks, return_exceptions=True)  # wait for them to die
+
+
+@pytest.mark.timeout(90)  # network and other issues can freeze this test; should be <20 seconds
+async def test_nodes_1_through_4_dart3():
+    """Set up 4-node testing lab and run tests  node 1 ↔ 2 ↔ 3 ↔ 4; node 3 is Dart."""
+    print()  # cleaner pytest display
+    data = nodes()
+    #
+    ### node_2
+    # connection_list_remote = list()
+    messages2 = persistent_websocket.PersistentWebsocket('nd_2', pws_log)
+    data.listener_tasks.append(asyncio.create_task(data.node_2_websocket_server(messages2)))
+    #
+    ### node_3
+    url = 'ws://127.0.0.1:18732'
+    cmd = 'dart run app/test/libs/persistent_websocket/dart/node_3.dart'.split()
+    cmd.append(url)
+    asyncio.create_task(net.run_external_async(cmd))
+    ### Python code below is functionally what 'node_3.dart' does
+    ## messages3 = persistent_websocket.PersistentWebsocket('nd_3', pws_log)
+    ## messages3.allow_port_forwarding(True)
+    ## async def node_x_listener_dart3():
+    ##     async for _ in messages3.connect(url):
+    ##         pass
+    ## data.listener_tasks.append(asyncio.create_task(node_x_listener_dart3()))
+    #
+    ### node_4
+    node_4_ready = asyncio.Event()
+    data.other_tasks.append(asyncio.create_task(data.node_4(listen_port=28923, ready=node_4_ready)))
+    await node_4_ready.wait()  # make sure node_4 is listening on TCP port
+    #
+    ### node_1 run via node_2
+    # this_file = f'tests/libs/persistent_websocket/python/{os.path.basename(__file__)}'
+    cmd = f'poetry run python3 exec_file node_1'.split()
+    cmd[cmd.index('exec_file')] = __file__  # run *this* file
+    await messages2.exec_and_forward_tcp(cmd, '127.0.0.1', 28922, '127.0.0.1', 28923)
+    #
+    ### waiting
+    while len(data.speaker_tasks) < 1:
         await asyncio.sleep(0.1)  # wait for tasks to start
     await asyncio.gather(*data.speaker_tasks, return_exceptions=True)  # let speakers finish
     wait_time = 0.0
