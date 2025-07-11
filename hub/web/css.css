@@ -1,0 +1,89 @@
+:root {
+    --bb-primary: #1e88e5;
+    --bb-dark: #0d47a1;
+    --bb-light: #e3f2fd;
+    --bb-bg: #fdfdfd;
+    --bb-radius: 0.75rem;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: 'Inter', sans-serif;
+    background: var(--bb-bg);
+    color: #333;
+    line-height: 1.6;
+    display: flex;
+    justify-content: center;
+}
+
+#main_container {
+    max-width: 800px;
+    width: 100%;
+    padding: 1.5rem;
+}
+
+h1 {
+    /* may or may not want to keep this */
+    text-align: center;
+}
+
+
+h1 {
+    font-size: 2rem;
+    margin: 0;
+    color: var(--bb-dark);
+}
+
+h2 {
+    font-size: 1.25rem;
+    margin-top: 2rem;
+    color: var(--bb-dark);
+}
+
+ul {
+    margin: 0.5rem 0 1.25rem 1.25rem;
+}
+
+li {
+    margin-bottom: 0.5rem;
+}
+
+a {
+    color: var(--bb-primary);
+}
+
+input {
+    padding: 0.75rem 1rem;
+    border: 2px solid var(--bb-primary);
+    border-radius: var(--bb-radius);
+    font-size: 1rem;
+}
+
+button {
+    background: var(--bb-primary);
+    color: #fff;
+    border: none;
+    padding: 0.75rem 1.5rem;
+    font-size: 1rem;
+    border-radius: var(--bb-radius);
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+button:hover {
+    background: var(--bb-dark);
+}
+
+button:disabled {
+    background: gray;
+}
+
+@media(min-width:600px) {
+    h1 {
+        font-size: 2.5rem;
+    }
+}

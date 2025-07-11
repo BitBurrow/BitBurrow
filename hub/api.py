@@ -3,10 +3,13 @@ from fastapi import (
     APIRouter,
     responses,
     Request,
+    Response,
     status,
     WebSocket,
     HTTPException,
 )
+import os
+import markdown
 from sqlmodel import Session, SQLModel, select
 from typing import Dict, List
 import json
@@ -178,3 +181,30 @@ def create_base(login_key: str, task_id: int, base_id: int):
 #             print(f"------------------------------------------ {client_id} incoming: {m.decode()}")
 #     except persistent_websocket.PWUnrecoverableError:
 #         del messages[client_id]  # data is no longer usable
+
+
+@router.get('/bitburrow/{page}')
+async def welcome_page(page:str):
+    mdFileNames={
+        'welcome': 'index.md',
+    }
+    if page in mdFileNames.keys():
+        fileName=mdFileNames[page]
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(current_dir, 'web', fileName)
+        file=open(path,'r')
+        mdStr=file.read()
+        file.close()
+        outerHTMLFile=open(os.path.join(current_dir, 'web', 'outer-HTML.html'))
+        out=""
+        for line in outerHTMLFile.readlines():
+            if '<!--markdown-here-->' in line:
+                out+=markdown.markdown(mdStr)
+            else:
+                out+=line
+        outerHTMLFile.close()
+        return Response(out,media_type='text/html')
+    elif page =='css.css':
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(current_dir, 'web', 'css.css')
+        return Response(open(path).read(), media_type='text/css')
