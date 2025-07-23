@@ -280,7 +280,7 @@ class Account(SQLModel, table=True):
                 f"B64292 {persistent_websocket.lkocc_string} length must be {lk.login_key_len}"
             )
         if not set(lk.base28_digits).issuperset(login_key):
-            raise RpcException("B51850 invalid {persistent_websocket.lkocc_string} characters")
+            raise RpcException(f"B51850 invalid {persistent_websocket.lkocc_string} characters")
         with Session(engine) as session:
             statement = select(Account).where(Account.login == Account.login_portion(login_key))
             result = session.exec(statement).one_or_none()
@@ -300,7 +300,7 @@ class Account(SQLModel, table=True):
             result.update()
             logger.info("B74657 rehashed {login_key}")
         if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise RpcException("B18952 {persistent_websocket.lkocc_string} expired")
+            raise RpcException(f"B18952 {persistent_websocket.lkocc_string} expired")
         if allowed_kinds is not None:
             if result.kind not in allowed_kinds:
                 if result.kind in admin_or_manager and allowed_kinds == coupon:
