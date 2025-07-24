@@ -456,17 +456,6 @@ files = [
 ]
 
 [[package]]
-name = "json-rpc"
-version = "1.15.0"
-description = "JSON-RPC transport implementation"
-optional = false
-python-versions = "*"
-files = [
-    {file = "json-rpc-1.15.0.tar.gz", hash = "sha256:e6441d56c1dcd54241c937d0a2dcd193bdf0bdc539b5316524713f554b7f85b9"},
-    {file = "json_rpc-1.15.0-py2.py3-none-any.whl", hash = "sha256:4a4668bbbe7116feb4abbd0f54e64a4adcf4b8f648f19ffa0848ad0f6606a9bf"},
-]
-
-[[package]]
 name = "mypy-extensions"
 version = "1.1.0"
 description = "Type system extensions for programs checked with the mypy type checker."
@@ -1350,4 +1339,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "1bc314cd20abf4d2b4d2d4f55f16d6d31c2bd301768d5f7781e07678ec426426"
+content-hash = "724b79350f5c87a4926b1d0b2ef9a48e284d2982613193ca0a22117c823b03b4"

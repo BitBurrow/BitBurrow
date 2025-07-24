@@ -1,8 +1,8 @@
 import argon2
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import enum
+from fastapi import HTTPException
 import ipaddress
-import jsonrpc
 import logging
 import re
 import secrets
@@ -19,10 +19,11 @@ logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, 
 engine = None
 
 
-class RpcException(jsonrpc.exceptions.JSONRPCDispatchException):
-    def __init__(self, message):
-        # -25718 is arbitrary, matches use in app/lib/parent_form_state.dart
-        super().__init__(code=-25718, message=message)
+class DbException(Exception):
+    def __init__(self, message: str):
+        super().__init__(message)
+        logger.info(message)
+        raise HTTPException(status_code=401, detail=message)
 
 
 ###
@@ -276,9 +277,9 @@ class Account(SQLModel, table=True):
     @staticmethod
     def validate_login_key(login_key, allowed_kinds=None):
         if len(login_key) != lk.login_key_len:
-            raise RpcException(f"B64292 {lkocc_string} length must be {lk.login_key_len}")
+            raise DbException(f"B64292 {lkocc_string} length must be {lk.login_key_len}")
         if not set(lk.base28_digits).issuperset(login_key):
-            raise RpcException(f"B51850 invalid {lkocc_string} characters")
+            raise DbException(f"B51850 invalid {lkocc_string} characters")
         with Session(engine) as session:
             statement = select(Account).where(Account.login == Account.login_portion(login_key))
             result = session.exec(statement).one_or_none()
@@ -293,7 +294,7 @@ class Account(SQLModel, table=True):
         try:
             hasher.verify(key_hash_to_test, key)
         except argon2.exceptions.VerifyMismatchError:
-            raise RpcException(
+            raise DbException(
                 f"B54441 {lkocc_string} not found; " "make sure it was entered correctly"
             )
         if hasher.check_needs_rehash(key_hash_to_test):
@@ -301,21 +302,21 @@ class Account(SQLModel, table=True):
             result.update()
             logger.info("B74657 rehashed {login_key}")
         if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise RpcException(f"B18952 {lkocc_string} expired")
+            raise DbException(f"B18952 {lkocc_string} expired")
         if allowed_kinds is not None:
             if result.kind not in allowed_kinds:
                 if result.kind in admin_or_manager and allowed_kinds == coupon:
-                    raise RpcException(
+                    raise DbException(
                         "B10052 this is a login key; please enter a coupon code "
                         "or select 'Sign in' from the ⋮ menu"
                     )
                 elif result.kind in coupon and allowed_kinds == admin_or_manager:
-                    raise RpcException(
+                    raise DbException(
                         "B20900 this is a coupon code; please enter a login key "
                         " or seelct 'Enter a coupon code' from the ⋮ menu"
                     )
                 else:
-                    raise RpcException("B96593 invalid account kind")
+                    raise DbException("B96593 invalid account kind")
         # FIXME: verify pubkey limit
         return result
 
@@ -484,9 +485,9 @@ class Client(SQLModel, table=True):
     @staticmethod
     def validate_pubkey(k):
         if not (42 <= len(k) < 72):
-            raise RpcException("B64879 invalid pubkey length")
+            raise DbException("B64879 invalid pubkey length")
         if re.search(r'[^A-Za-z0-9/+=]', k):
-            raise RpcException("B16042 invalid pubkey characters")
+            raise DbException("B16042 invalid pubkey characters")
 
     @staticmethod
     def startup(wgif):

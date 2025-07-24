@@ -10,7 +10,6 @@ from fastapi import (
 from sqlmodel import Session, SQLModel, select
 from typing import Dict, List
 import json
-import jsonrpc
 import logging
 import hub.db as db
 import hub.transmutation as transmutation
@@ -55,31 +54,34 @@ router = APIRouter()
 # FIXME: to limit brute-force attacks, throttle any IP address with 4 connects in 60 seconds; https://github.com/tiangolo/fastapi/issues/448
 
 
-@jsonrpc.dispatcher.add_method
-def create_manager(coupon: str):
-    account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)  # verfiy validity
-    return db.Account.new(db.Account_kind.MANAGER)
+@router.post('/v1/coupons/{coupon}/managers')
+async def create_manager(request: Request, coupon: str):
+    account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
+    login_key = db.Account.new(db.Account_kind.MANAGER)
+    return responses.JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={'login_key': login_key},
+    )
     # do not store login_key!
 
 
-@jsonrpc.dispatcher.add_method
-def list_bases(login_key: str):
+@router.get('/v1/managers/{login_key}/bases')
+async def list_bases(request: Request, login_key: str):
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     with Session(db.engine) as session:
         statement = select(db.Base).where(db.Base.account_id == account.id)
-        return list(session.exec(statement))
+        results = session.exec(statement)
+        return {'bases': [c.pubkey for c in results]}
 
 
-@jsonrpc.dispatcher.add_method
-def create_base(login_key: str, task_id: int, base_id: int):
-    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    if task_id == 0:
-        base_id = db.Base.new(account.id)
-        task_id = transmutation.transmute_next_task(task_id)
-    task = transmutation.transmute_task(task_id)
-    return {
-        'method': task['method'],
-        'params': task['params'],
-        'next_task': transmutation.transmute_next_task(task['id']),
-        'base_id': base_id,
-    }
+@router.post('/v1/managers/{login_key}/bases')
+async def new_base(request: Request, login_key: str):
+    return responses.JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={},
+    )
+    account = Account.validate_login_key(login_key)
+    with Session(db.engine) as session:
+        statement = select(Client).where(Client.account_id == account.id)
+        results = session.exec(statement)
+        return [c.pubkey for c in results]
