@@ -285,12 +285,16 @@ class Account(SQLModel, table=True):
             statement = select(Account).where(Account.login == Account.login_portion(login_key))
             result = session.exec(statement).one_or_none()
         hasher = argon2.PasswordHasher()
-        # attempt near constant-time key checking whether login exsists or not
-        key_hash_to_test = 'x' if result is None else result.key_hash
+        if result is None:
+            # attempt near constant-time key checking whether login exsists or not
+            # https://chatgpt.com/share/68812be3-5f14-800d-ba89-55d5914881d9
+            key_hash_to_test = '$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        else:
+            key_hash_to_test = result.key_hash
         key = Account.key_portion(login_key)
         try:
             hasher.verify(key_hash_to_test, key)
-        except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.InvalidHash):
+        except argon2.exceptions.VerifyMismatchError:
             raise RpcException(
                 f"B54441 {persistent_websocket.lkocc_string} not found; "
                 "make sure it was entered correctly"
