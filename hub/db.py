@@ -12,7 +12,6 @@ from typing import Optional
 import yaml
 import hub.login_key as lk
 import hub.net as net
-import libs.persistent_websocket.python.persistent_websocket as persistent_websocket
 from pydantic import ConfigDict
 
 logger = logging.getLogger(__name__)
@@ -208,6 +207,7 @@ class Account_kind(enum.Enum):
 admin_or_manager = {Account_kind.ADMIN, Account_kind.MANAGER}
 coupon = {Account_kind.COUPON}
 admin_manager_or_coupon = {Account_kind.ADMIN, Account_kind.MANAGER, Account_kind.COUPON}
+lkocc_string = '__login_key_or_coupon_code__'
 
 
 class Account(SQLModel, table=True):
@@ -276,11 +276,9 @@ class Account(SQLModel, table=True):
     @staticmethod
     def validate_login_key(login_key, allowed_kinds=None):
         if len(login_key) != lk.login_key_len:
-            raise RpcException(
-                f"B64292 {persistent_websocket.lkocc_string} length must be {lk.login_key_len}"
-            )
+            raise RpcException(f"B64292 {lkocc_string} length must be {lk.login_key_len}")
         if not set(lk.base28_digits).issuperset(login_key):
-            raise RpcException(f"B51850 invalid {persistent_websocket.lkocc_string} characters")
+            raise RpcException(f"B51850 invalid {lkocc_string} characters")
         with Session(engine) as session:
             statement = select(Account).where(Account.login == Account.login_portion(login_key))
             result = session.exec(statement).one_or_none()
@@ -296,15 +294,14 @@ class Account(SQLModel, table=True):
             hasher.verify(key_hash_to_test, key)
         except argon2.exceptions.VerifyMismatchError:
             raise RpcException(
-                f"B54441 {persistent_websocket.lkocc_string} not found; "
-                "make sure it was entered correctly"
+                f"B54441 {lkocc_string} not found; " "make sure it was entered correctly"
             )
         if hasher.check_needs_rehash(key_hash_to_test):
             result.key_hash = hasher.hash(key)  # FIXME: untested
             result.update()
             logger.info("B74657 rehashed {login_key}")
         if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise RpcException(f"B18952 {persistent_websocket.lkocc_string} expired")
+            raise RpcException(f"B18952 {lkocc_string} expired")
         if allowed_kinds is not None:
             if result.kind not in allowed_kinds:
                 if result.kind in admin_or_manager and allowed_kinds == coupon:
