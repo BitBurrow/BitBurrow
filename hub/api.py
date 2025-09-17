@@ -116,3 +116,4 @@ async def logout():
     redirect = responses.RedirectResponse(url='/login')
     redirect.delete_cookie('loginkey')
     return redirect
+

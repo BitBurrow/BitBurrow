@@ -8,18 +8,6 @@ import yaml
 import hub.login_key as lk
 
 
-# use around persistent_websocket.printable_hex() to not evaluate unless needed
-class r:
-    # credit: https://stackoverflow.com/a/60072502
-    def __init__(self, callback, arg1):
-        self._callback = callback
-        self._arg1 = arg1
-
-    def __repr__(self):
-        # need to redact() here because RedactingFilter.filter() only sees instance of class r
-        return redact(self._callback(self._arg1))
-
-
 def redact(msg):
     if isinstance(msg, str):
         return lk.login_key_re.sub(r'\1..............', msg)
