@@ -376,6 +376,22 @@ files = [
 ]
 
 [[package]]
+name = "htmy"
+version = "0.7.4"
+description = "Async, pure-Python server-side rendering engine."
+optional = false
+python-versions = "<4.0,>=3.10"
+files = [
+    {file = "htmy-0.7.4-py3-none-any.whl", hash = "sha256:c5ba928625f152f40f2551f1ce1dd23bd27f80660dc587e4689f1fb8332e9303"},
+    {file = "htmy-0.7.4.tar.gz", hash = "sha256:93546c1d739aa55bdcca59b2639f825f88d0cf5705a6c68c1241cc52379cd100"},
+]
+
+[package.dependencies]
+anyio = ">=4.6.2.post1,<5.0.0"
+async-lru = ">=2.0.4,<3.0.0"
+markdown = ">=3.7,<4.0"
+
+[[package]]
 name = "httptools"
 version = "0.6.4"
 description = "A collection of framework independent HTTP protocol utils."
@@ -454,6 +470,21 @@ files = [
     {file = "iniconfig-2.1.0-py3-none-any.whl", hash = "sha256:9deba5723312380e77435581c6bf4935c94cbfab9b1ed33ef8d238ea168eb760"},
     {file = "iniconfig-2.1.0.tar.gz", hash = "sha256:3abbd2e30b36733fee78f9c7f7308f2d0050e88f0087fd25c2645f63c773e1c7"},
 ]
+
+[[package]]
+name = "markdown"
+version = "3.8.2"
+description = "Python implementation of John Gruber's Markdown."
+optional = false
+python-versions = ">=3.9"
+files = [
+    {file = "markdown-3.8.2-py3-none-any.whl", hash = "sha256:5c83764dbd4e00bdd94d85a19b8d55ccca20fe35b2e678a1422b380324dd5f24"},
+    {file = "markdown-3.8.2.tar.gz", hash = "sha256:247b9a70dd12e27f67431ce62523e675b866d254f900c4fe75ce3dda62237c45"},
+]
+
+[package.extras]
+docs = ["mdx_gh_links (>=0.2)", "mkdocs (>=1.6)", "mkdocs-gen-files", "mkdocs-literate-nav", "mkdocs-nature (>=0.6)", "mkdocs-section-index", "mkdocstrings[python]"]
+testing = ["coverage", "pyyaml"]
 
 [[package]]
 name = "mypy-extensions"
