@@ -73,7 +73,7 @@ async def create_manager(request: Request, coupon: str):
 # @router.get('/v1/managers/{login_key}/bases')
 @router.get('/v1/managers/bases')
 async def list_bases(request: Request):
-    login_key=request.cookies.get("loginkey")
+    login_key = request.cookies.get("loginkey")
     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
     with Session(db.engine) as session:
         statement = select(db.Base).where(db.Base.account_id == account.id)
@@ -94,7 +94,6 @@ async def new_base(request: Request, login_key: str):
         return [c.pubkey for c in results]
 
 
-
 @router.get('/v1/login/{login_key}/')
 async def set_login_cookie(request: Request, response: Response, login_key: str):
     db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
@@ -105,10 +104,9 @@ async def set_login_cookie(request: Request, response: Response, login_key: str)
         httponly=True,
         secure=True,
         samesite='Strict',
-        max_age=315360000, #ten years
+        max_age=315360000,  # ten years
     )
     return {}
-
 
 
 @router.get("/v1/logout")
@@ -116,4 +114,3 @@ async def logout():
     redirect = responses.RedirectResponse(url='/login')
     redirect.delete_cookie('loginkey')
     return redirect
-
