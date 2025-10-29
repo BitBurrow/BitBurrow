@@ -4,10 +4,12 @@ import logging
 import os
 import platformdirs
 import psutil
+import secrets
 import signal
 import socket
 import sys
 import time
+import textwrap
 from fastapi import (
     FastAPI,
     responses,
@@ -16,6 +18,7 @@ from fastapi import (
 )
 from fastapi_restful.tasks import repeat_every
 from sqlmodel import SQLModel, create_engine, sql
+import yaml
 import hub.logs as logs
 import hub.db as db
 import hub.api as api
@@ -37,6 +40,10 @@ async def not_found_error(request: Request, exc: HTTPException):
     return responses.PlainTextResponse(content=None, status_code=404)
 
 
+class StartupError(Exception):
+    pass
+
+
 ###
 ### command-line interface
 ###
@@ -55,66 +62,12 @@ def cli(return_help_text=False):
         prog=app_name(),
         formatter_class=formatter_class,
     )
+    default_config_file = os.path.join(platformdirs.user_config_dir('bitburrow'), 'config.yaml')
     parser.add_argument(
-        "--set-domain",
+        "--config-file",
         type=str,
-        default='',
-        help="Domain to access hub api and for VPN client subdomains, e.g. vxm.example.org",
-    )
-    parser.add_argument(
-        "--get-domain",
-        action='store_true',
-        help="Display the configured domain and exit",
-    )
-    parser.add_argument(
-        "--set-ip",
-        type=str,
-        default='',
-        help="Public IP address to access hub api",
-    )
-    parser.add_argument(
-        "--get-ip",
-        action='store_true',
-        help="Display the configured public IP address and exit",
-    )
-    parser.add_argument(
-        "--set-wg-port",
-        type=int,
-        default=0,
-        help="UDP port used by VPN bases; default: random [2000,65535]",
-    )
-    parser.add_argument(
-        "--get-wg-port",
-        action='store_true',
-        help="Display wg port and exit",
-    )
-    parser.add_argument(
-        "--create-admin-account",
-        action='store_true',
-        help="Create a new admin account and display its login key; KEEP THIS LOGIN KEY SAFE",
-    )
-    parser.add_argument(
-        "--create-coupon-code",
-        action='store_true',
-        help="Create a new coupon and display it; KEEP THIS SAFE",
-    )
-    parser.add_argument(
-        "--test",
-        type=str,
-        default='',
-        help="Run internal test TEST",
-    )
-    parser.add_argument(
-        "--daemon",
-        action='store_true',
-        help="Listen on API port for requests from the app",
-    )
-    db_file_display = db_pathname().replace(os.path.expanduser('~'), '~')
-    parser.add_argument(
-        "--dbfile",
-        type=str,
-        default='',  # need to call db_pathname() again later with create_dir=True
-        help=f"Path for database file ('-' for memory-only; default: {db_file_display})",
+        default=default_config_file,
+        help=f"Config file to use (default '{default_config_file}')",
     )
     parser.add_argument(
         "-q",
@@ -131,10 +84,42 @@ def cli(return_help_text=False):
         const=1,
         help="Increase verbosity",
     )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    p_generate_config = subparsers.add_parser(
+        "generate-config",
+        help="Create a new config file with specified domain and public IP address",
+    )
+    p_generate_config.add_argument(
+        "gc_domain",
+        type=str,
+    )
+    p_generate_config.add_argument(
+        "gc_public_ip",
+        type=str,
+    )
+    subparsers.add_parser(
+        "create-admin-account",
+        help="Create a new admin account and display its login key; KEEP THIS LOGIN KEY SAFE",
+    )
+    subparsers.add_parser(
+        "create-coupon-code",
+        help="Create a new coupon and display it; KEEP THIS SAFE",
+    )
+    p_test = subparsers.add_parser(
+        "test",
+        help="Run internal test TEST",
+    )
+    p_test.add_argument(
+        "test_name",
+        nargs="?",
+        default="all",
+    )
+    subparsers.add_parser(
+        "serve",
+        help="Listen on API port for requests from the app",
+    )
     if return_help_text:  # used by README.py
         return parser.format_help()
-    if not os.access(os.getcwd(), os.W_OK):  # if cwd is not writable ...
-        os.chdir(os.path.expanduser('~'))  # cd to home directory so we can write log file
     args = parser.parse_args()
     log_index = 2 + (0 if args.verbose is None else sum(args.verbose))
     del args.verbose
@@ -158,7 +143,8 @@ def cli(return_help_text=False):
 ### globals
 ###
 
-hub_state: db.Hub = None
+config = None
+config_fv = 5075  # sanity check magic number to identify config file
 app = FastAPI(
     exception_handlers={404: not_found_error},
     docs_url=None,  # disable "Docs URLs" to help avoid being identified; see
@@ -181,16 +167,10 @@ def mkdir_r(path):  # like Linux `mkdir --parents`
     base_dir = os.path.dirname(path)
     if not os.path.exists(base_dir):
         mkdir_r(base_dir)
-    os.makedirs(path, exist_ok=True)
-    # except (PermissionError, FileNotFoundError, NotADirectoryError):
-    #     one of these will be raised if the directory cannot be created
-
-
-def db_pathname(create_dir=False):
-    config_dir = platformdirs.user_config_dir('bitburrow')
-    if create_dir:
-        mkdir_r(config_dir)
-    return os.path.join(config_dir, f'data.sqlite')
+    try:
+        os.makedirs(path, exist_ok=True)
+    except (PermissionError, FileNotFoundError, NotADirectoryError):
+        raise StartupError(f"B19340 cannot create directory: {path}")
 
 
 def get_lock(process_name):  # source: https://stackoverflow.com/a/7758075
@@ -205,29 +185,87 @@ def get_lock(process_name):  # source: https://stackoverflow.com/a/7758075
     return True
 
 
+def generate_config(path, domain, public_ip):
+    digits = '23456789bcdfghjklmnpqrstvwxz'
+    site_code = ''.join(secrets.choice(digits) for i in range(7))
+    wg_port = net.random_free_port(use_udp=True, avoid=[5353])
+    config_file_template = textwrap.dedent(
+        f'''
+            ### BitBurrow configuration file
+            #
+            # Edit this file to configure the BitBurrow hub.
+            #
+            common:
+              # Database file path. Can be absolute or relative to the directory of this config
+              # file. Use "-" (YAML requires the quotes) for memory-only.
+              db_file: data.sqlite
+              log_path: /var/log/bitburrow
+              # Log verbosity: 0=critical only; 1=errors; 2=warnings; 3=info; 4=debug
+              # Log level can be overwritten via CLI options.
+              log_level: 3
+              site_code: {site_code}
+              # Domain to access hub and for VPN client subdomains, e.g. vxm.example.org
+              domain: {domain}
+              # Public IP address(es).
+              public_ips:
+              - {public_ip}
+            wireguard:
+              # UDP port(s) used by VPN bases.
+              ports:
+              - {wg_port}
+            advanced:
+              config_file_version: {config_fv}
+        '''
+    ).lstrip()
+    try:
+        old_umask = os.umask(0o077)  # create a file with 0600 permissions
+        with open(path, "x", encoding="utf-8") as f:
+            f.write(config_file_template)
+    except FileExistsError:
+        raise StartupError(f"B88926 file already exists: {path}")
+    except Exception:
+        raise StartupError(f"B26104 cannot create: {path}")
+    finally:
+        os.umask(old_umask)
+
+
 def init(args):
+    global config
     if db.engine is not None:
         return  # already initialized
-    if args.dbfile == '':  # use default location
-        db_file = db_pathname(create_dir=True)
-    elif args.dbfile == '-':
+    try:
+        with open(args.config_file, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+    except FileNotFoundError:
+        raise StartupError(
+            f"B22006 cannot find configuration file (try 'bbhub generate-config'): {args.config_file}"
+        )
+    except PermissionError:
+        raise StartupError(f"B76167 cannot read configuration file: {args.config_file}")
+    except (yaml.parser.ParserError, yaml.scanner.ScannerError) as e:
+        raise StartupError(f"B60933 cannot parse configuration file: {e}")
+    if (cfv := config['advanced']['config_file_version']) != config_fv:
+        raise StartupError(f"B79322 invalid config_file_version: {cfv}")
+    db_file = config['common']['db_file']
+    if db_file == '-':
         db_file = ':memory:'
-    else:
-        db_file = args.dbfile
+    elif not db_file.startswith("/"):  # if relative, use dir of args.config_file
+        db_file = os.path.join(os.path.dirname(args.config_file), db_file)
+    mkdir_r(os.path.dirname(db_file))
     db.engine = create_engine(f'sqlite:///{db_file}', echo=args.create_engine_echo)
     if is_worker_zero:
         # avoid race condition creating tables: OperationalError: table ... already exists
         SQLModel.metadata.create_all(db.engine)
         db.Hub.startup()  # initialize hub data if needed
-    global hub_state
-    hub_state = db.Hub.state()
 
 
 @app.on_event('startup')
 def on_startup():
+    # sanity check now that we don't call cli() or init() here
+    if config['advanced']['config_file_version'] != config_fv:
+        raise StartupError(f"B62896 invalid config data in on_startup()")
     global is_worker_zero
     is_worker_zero = get_lock('worker_init_lock_BMADCTCY')
-    init(cli())
     if is_worker_zero:
         # only first worker does network set-up, tear-down; avoid "RTNETLINK answers: File exists"
         try:
@@ -254,7 +292,7 @@ def check_tls_cert_daily() -> None:
     if not hasattr(check_tls_cert_daily, 'call_count'):
         check_tls_cert_daily.call_count = 1
         return  # handled by check_tls_cert_at_startup() (on_event("startup") above is required)
-    net.check_tls_cert(hub_state.domain, 8443)
+    net.check_tls_cert(config['common']['domain'], 8443)
 
 
 @app.on_event("startup")
@@ -264,7 +302,7 @@ def check_tls_cert_at_startup() -> None:
     if not hasattr(check_tls_cert_at_startup, 'call_count'):
         check_tls_cert_at_startup.call_count = 1
         return  # do nothing on first run (possible race condition)
-    net.check_tls_cert(hub_state.domain, 8443)
+    net.check_tls_cert(config['common']['domain'], 8443)
 
 
 @app.on_event("startup")
@@ -318,79 +356,56 @@ def entry_point():
 
     global restarts_remaining
     global ssl_keyfile
-    args = cli()
-    init(args)
-    arg_combo_okay = False
-    if args.set_domain != '':
-        hub_state.domain = args.set_domain
-        hub_state.update()
-        arg_combo_okay = True
-    if args.get_domain:
-        print(hub_state.domain)
-        arg_combo_okay = True
-    if args.set_ip != '':
-        hub_state.public_ip = args.set_ip
-        hub_state.update()
-        arg_combo_okay = True
-    if args.get_ip:
-        print(hub_state.public_ip)
-        arg_combo_okay = True
-    if args.set_wg_port != 0:
-        hub_state.wg_port = args.set_wg_port
-        hub_state.update()
-        arg_combo_okay = True
-    if args.get_wg_port:
-        print(hub_state.wg_port)
-        arg_combo_okay = True
-    if args.create_admin_account:
-        login_key = db.Account.new(db.Account_kind.ADMIN)
-        print(f"Login key for your new {db.Account_kind.ADMIN} (KEEP THIS SAFE!): {login_key}")
-        del login_key  # do not store!
-        arg_combo_okay = True
-    if args.create_coupon_code:
-        login_key = db.Account.new(db.Account_kind.COUPON)
-        print(f"Your new {db.Account_kind.COUPON} (KEEP IT SAFE): {login_key}")
-        del login_key  # do not store!
-        arg_combo_okay = True
-    if args.test != '':
-        sys.exit(0 if hub_state.integrity_test_by_id(args.test) else 1)
-    if arg_combo_okay:
-        if args.daemon:
-            logger.error("Argument '--daemon' cannot be used with '--get-xxx' or '--set-xxx'.")
-            sys.exit(2)
-        sys.exit(0)
-    if not args.daemon:
-        logger.error("No arguments specified. See '--help' for usage.")
-        sys.exit(2)
-    if hub_state.domain == '':
-        logger.error("Use `--set-domain` to configure your domain name before running API.")
-        sys.exit(2)
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    strong_ciphers = ':'.join(
-        [
-            cipher['name']
-            for cipher in ctx.get_ciphers()
-            if cipher['name']
-            not in [
-                # remove ciphers considered weak by https://www.ssllabs.com/
-                # SSL Labs says remaining ciphers still work for Android 4.4.2 and iOS 9
-                'ECDHE-ECDSA-AES256-SHA384',
-                'ECDHE-RSA-AES256-SHA384',
-                'ECDHE-ECDSA-AES128-SHA256',
-                'ECDHE-RSA-AES128-SHA256',
+    try:
+        args = cli()
+        if args.command == 'generate-config':
+            generate_config(args.config_file, args.gc_domain, args.gc_public_ip)
+            print(f"Config file generated: {args.config_file}")
+            sys.exit(0)
+        init(args)
+        if args.command == 'create-admin-account':
+            login_key = db.Account.new(db.Account_kind.ADMIN)
+            print(f"Login key for your new {db.Account_kind.ADMIN} (KEEP THIS SAFE!): {login_key}")
+            del login_key  # do not store!
+            sys.exit(0)
+        elif args.command == 'create-coupon-code':
+            login_key = db.Account.new(db.Account_kind.COUPON)
+            print(f"Your new {db.Account_kind.COUPON} (KEEP IT SAFE): {login_key}")
+            del login_key  # do not store!
+            sys.exit(0)
+        elif args.command == 'test':
+            hub_state = db.Hub.state()
+            sys.exit(0 if hub_state.integrity_test_by_id(args.test_name) else 1)
+        # args.command == 'serve':
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        strong_ciphers = ':'.join(
+            [
+                cipher['name']
+                for cipher in ctx.get_ciphers()
+                if cipher['name']
+                not in [
+                    # remove ciphers considered weak by https://www.ssllabs.com/
+                    # SSL Labs says remaining ciphers still work for Android 4.4.2 and iOS 9
+                    'ECDHE-ECDSA-AES256-SHA384',
+                    'ECDHE-RSA-AES256-SHA384',
+                    'ECDHE-ECDSA-AES128-SHA256',
+                    'ECDHE-RSA-AES128-SHA256',
+                ]
             ]
-        ]
-    )
-    ssl_keyfile = f'/etc/letsencrypt/live/{hub_state.domain}/privkey.pem'
-    ssl_certfile = f'/etc/letsencrypt/live/{hub_state.domain}/fullchain.pem'
-    if net.watch_file(ssl_keyfile) == None or net.watch_file(ssl_certfile) == None:
+        )
+        ssl_keyfile = f'/etc/letsencrypt/live/{config['common']['domain']}/privkey.pem'
+        ssl_certfile = f'/etc/letsencrypt/live/{config['common']['domain']}/fullchain.pem'
+        if net.watch_file(ssl_keyfile) == None or net.watch_file(ssl_certfile) == None:
+            sys.exit(1)
+    except StartupError as e:
+        logger.error(e)
         sys.exit(1)
-    logger.info(f"❚ Starting BitBurrow hub {hub_state.hub_number}")
+    logger.info(f"❚ Starting BitBurrow hub {config['common']['site_code']}")
     logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
     logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
     logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
     logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
-    logger.info(f"❚   listening on: {hub_state.domain}:8443")
+    logger.info(f"❚   listening on: {config['common']['domain']}:8443")
     this_python_file = os.path.abspath(inspect.getsourcefile(lambda: 0))
     logger.info(f"Running {this_python_file}")
     while restarts_remaining > 0:

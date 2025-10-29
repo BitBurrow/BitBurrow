@@ -82,9 +82,6 @@ integrity_tests = yaml.safe_load(integrity_tests_yaml)
 
 class Hub(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
-    domain: str = ''  # API url in form example.org or vxm.example.org
-    public_ip: str = ''
-    wg_port: int = 0
     hub_number: str = lk.generate_login_key(lk.login_len)  # uniquely identify this hub
     # note /etc/machine-id identifies the machine while hub_number identifies the database
     db_version: int = 1
