@@ -1,4 +1,6 @@
 #!/bin/bash
+# cSpell:disable  # don't spell check this file
+
 set -e # exit script if anything fails
 
 ## install dependencies
