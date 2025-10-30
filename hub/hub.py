@@ -201,7 +201,7 @@ def init(args):
 @app.on_event('startup')
 def on_startup():
     # sanity check now that we don't call cli() or init() here
-    if not conf.loaded():
+    if not conf.is_loaded():
         raise StartupError(f"B62896 invalid config data in on_startup()")
     global is_worker_zero
     is_worker_zero = get_lock('worker_init_lock_BMADCTCY')
