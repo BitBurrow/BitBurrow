@@ -4,12 +4,10 @@ import logging
 import os
 import platformdirs
 import psutil
-import secrets
 import signal
 import socket
 import sys
 import time
-import textwrap
 from fastapi import (
     FastAPI,
     responses,
@@ -18,8 +16,8 @@ from fastapi import (
 )
 from fastapi_restful.tasks import repeat_every
 from sqlmodel import SQLModel, create_engine, sql
-import yaml
 import hub.logs as logs
+import hub.config as conf
 import hub.db as db
 import hub.api as api
 import hub.net as net
@@ -143,8 +141,6 @@ def cli(return_help_text=False):
 ### globals
 ###
 
-config = None
-config_fv = 5075  # sanity check magic number to identify config file
 app = FastAPI(
     exception_handlers={404: not_found_error},
     docs_url=None,  # disable "Docs URLs" to help avoid being identified; see
@@ -185,68 +181,11 @@ def get_lock(process_name):  # source: https://stackoverflow.com/a/7758075
     return True
 
 
-def generate_config(path, domain, public_ip):
-    digits = '23456789bcdfghjklmnpqrstvwxz'
-    site_code = ''.join(secrets.choice(digits) for i in range(7))
-    wg_port = net.random_free_port(use_udp=True, avoid=[5353])
-    config_file_template = textwrap.dedent(
-        f'''
-            ### BitBurrow configuration file
-            #
-            # Edit this file to configure the BitBurrow hub.
-            #
-            common:
-              # Database file path. Can be absolute or relative to the directory of this config
-              # file. Use "-" (YAML requires the quotes) for memory-only.
-              db_file: data.sqlite
-              log_path: /var/log/bitburrow
-              # Log verbosity: 0=critical only; 1=errors; 2=warnings; 3=info; 4=debug
-              # Log level can be overwritten via CLI options.
-              log_level: 3
-              site_code: {site_code}
-              # Domain to access hub and for VPN client subdomains, e.g. vxm.example.org
-              domain: {domain}
-              # Public IP address(es).
-              public_ips:
-              - {public_ip}
-            wireguard:
-              # UDP port(s) used by VPN bases.
-              ports:
-              - {wg_port}
-            advanced:
-              config_file_version: {config_fv}
-        '''
-    ).lstrip()
-    try:
-        old_umask = os.umask(0o077)  # create a file with 0600 permissions
-        with open(path, "x", encoding="utf-8") as f:
-            f.write(config_file_template)
-    except FileExistsError:
-        raise StartupError(f"B88926 file already exists: {path}")
-    except Exception:
-        raise StartupError(f"B26104 cannot create: {path}")
-    finally:
-        os.umask(old_umask)
-
-
 def init(args):
-    global config
     if db.engine is not None:
         return  # already initialized
-    try:
-        with open(args.config_file, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-    except FileNotFoundError:
-        raise StartupError(
-            f"B22006 cannot find configuration file (try 'bbhub generate-config'): {args.config_file}"
-        )
-    except PermissionError:
-        raise StartupError(f"B76167 cannot read configuration file: {args.config_file}")
-    except (yaml.parser.ParserError, yaml.scanner.ScannerError) as e:
-        raise StartupError(f"B60933 cannot parse configuration file: {e}")
-    if (cfv := config['advanced']['config_file_version']) != config_fv:
-        raise StartupError(f"B79322 invalid config_file_version: {cfv}")
-    db_file = config['common']['db_file']
+    conf.load(args.config_file)
+    db_file = conf.get('common.db_file')
     if db_file == '-':
         db_file = ':memory:'
     elif not db_file.startswith("/"):  # if relative, use dir of args.config_file
@@ -262,7 +201,7 @@ def init(args):
 @app.on_event('startup')
 def on_startup():
     # sanity check now that we don't call cli() or init() here
-    if config['advanced']['config_file_version'] != config_fv:
+    if not conf.loaded():
         raise StartupError(f"B62896 invalid config data in on_startup()")
     global is_worker_zero
     is_worker_zero = get_lock('worker_init_lock_BMADCTCY')
@@ -292,7 +231,7 @@ def check_tls_cert_daily() -> None:
     if not hasattr(check_tls_cert_daily, 'call_count'):
         check_tls_cert_daily.call_count = 1
         return  # handled by check_tls_cert_at_startup() (on_event("startup") above is required)
-    net.check_tls_cert(config['common']['domain'], 8443)
+    net.check_tls_cert(conf.get('common.domain'), 8443)
 
 
 @app.on_event("startup")
@@ -302,7 +241,7 @@ def check_tls_cert_at_startup() -> None:
     if not hasattr(check_tls_cert_at_startup, 'call_count'):
         check_tls_cert_at_startup.call_count = 1
         return  # do nothing on first run (possible race condition)
-    net.check_tls_cert(config['common']['domain'], 8443)
+    net.check_tls_cert(conf.get('common.domain'), 8443)
 
 
 @app.on_event("startup")
@@ -359,7 +298,7 @@ def entry_point():
     try:
         args = cli()
         if args.command == 'generate-config':
-            generate_config(args.config_file, args.gc_domain, args.gc_public_ip)
+            conf.generate(args.config_file, args.gc_domain, args.gc_public_ip)
             print(f"Config file generated: {args.config_file}")
             sys.exit(0)
         init(args)
@@ -393,19 +332,19 @@ def entry_point():
                 ]
             ]
         )
-        ssl_keyfile = f'/etc/letsencrypt/live/{config['common']['domain']}/privkey.pem'
-        ssl_certfile = f'/etc/letsencrypt/live/{config['common']['domain']}/fullchain.pem'
+        ssl_keyfile = f'/etc/letsencrypt/live/{conf.get('common.domain')}/privkey.pem'
+        ssl_certfile = f'/etc/letsencrypt/live/{conf.get('common.domain')}/fullchain.pem'
         if net.watch_file(ssl_keyfile) == None or net.watch_file(ssl_certfile) == None:
             sys.exit(1)
-    except StartupError as e:
+    except (StartupError, conf.ConfError) as e:
         logger.error(e)
         sys.exit(1)
-    logger.info(f"❚ Starting BitBurrow hub {config['common']['site_code']}")
+    logger.info(f"❚ Starting BitBurrow hub {conf.get('common.site_code')}")
     logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
     logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
     logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
     logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
-    logger.info(f"❚   listening on: {config['common']['domain']}:8443")
+    logger.info(f"❚   listening on: {conf.get('common.domain')}:8443")
     this_python_file = os.path.abspath(inspect.getsourcefile(lambda: 0))
     logger.info(f"Running {this_python_file}")
     while restarts_remaining > 0:
