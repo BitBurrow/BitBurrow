@@ -65,7 +65,7 @@ def cli(return_help_text=False):
         "--config-file",
         type=str,
         default=default_config_file,
-        help=f"Config file to use (default '{default_config_file}')",
+        help=f"Config file to use (default '{default_config_file}').",
     )
     parser.add_argument(
         "-q",
@@ -73,14 +73,14 @@ def cli(return_help_text=False):
         action='append_const',
         const=-1,
         dest="verbose",  # see log_levels for mapping
-        help="Silence warning messages",
+        help="Silence warning messages.",
     )
     parser.add_argument(
         "-v",
         "--verbose",
         action='append_const',
         const=1,
-        help="Increase verbosity",
+        help="Increase verbosity. Can be used multiple times.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     p_generate_config = subparsers.add_parser(
@@ -96,16 +96,21 @@ def cli(return_help_text=False):
         type=str,
     )
     subparsers.add_parser(
+        "migrate-config",
+        help="Migrate an existing config file to the current version. Make a backup "
+        "of the current file.",
+    )
+    subparsers.add_parser(
         "create-admin-account",
-        help="Create a new admin account and display its login key; KEEP THIS LOGIN KEY SAFE",
+        help="Create a new admin account and display its login key. KEEP THIS LOGIN KEY SAFE!",
     )
     subparsers.add_parser(
         "create-coupon-code",
-        help="Create a new coupon and display it; KEEP THIS SAFE",
+        help="Create a new coupon and display it. KEEP THIS SAFE!",
     )
     p_test = subparsers.add_parser(
         "test",
-        help="Run internal test TEST",
+        help="Run internal test TEST.",
     )
     p_test.add_argument(
         "test_name",
@@ -114,7 +119,7 @@ def cli(return_help_text=False):
     )
     subparsers.add_parser(
         "serve",
-        help="Listen on API port for requests from the app",
+        help="Listen on specified port(s).",
     )
     if return_help_text:  # used by README.py
         return parser.format_help()
@@ -302,6 +307,10 @@ def entry_point():
             print(f"Config file generated: {args.config_file}")
             sys.exit(0)
         init(args)
+        if args.command == 'migrate-config':
+            conf.save(args.config_file)
+            print(f"Config file migrated: {args.config_file}")
+            sys.exit(0)
         if args.command == 'create-admin-account':
             login_key = db.Account.new(db.Account_kind.ADMIN)
             print(f"Login key for your new {db.Account_kind.ADMIN} (KEEP THIS SAFE!): {login_key}")
