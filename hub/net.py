@@ -37,6 +37,14 @@ def random_free_port(use_udp, avoid=None):
     return port
 
 
+def ip_route_get(item: str):  # get default route
+    droute = ip(['route', 'get', '1.0.0.0'])
+    # example output: 1.0.0.0 via 192.168.8.1 dev wlp58s0 src 192.168.8.101 uid 1000
+    value_portion = re.search(r'\s' + item + r'\s(\S+)', droute)
+    assert value_portion is not None, f"ip route returned: {droute}"
+    return value_portion[1]
+
+
 def default_route_interface():  # network interface of default route
     return ip_route_get('dev')
 
@@ -49,12 +57,39 @@ def default_route_gateway():  # default gateway IP adddress
     return ip_route_get('via')
 
 
-def ip_route_get(item: str):  # get default route
-    droute = ip(['route', 'get', '1.0.0.0'])
-    # example output: 1.0.0.0 via 192.168.8.1 dev wlp58s0 src 192.168.8.101 uid 1000
-    value_portion = re.search(r'\s' + item + r'\s(\S+)', droute)
-    assert value_portion is not None, f"ip route returned: {droute}"
-    return value_portion[1]
+def all_local_ips(wildcard_address, ipv6_enclosure='[]', include_link_local=False):
+    # set of IPs for '0.0.0.0', '::0'
+    if wildcard_address == '':
+        ip_versions = ['-4', '-6']
+    elif wildcard_address == '0.0.0.0':
+        ip_versions = ['-4']
+    elif wildcard_address == '::0':
+        ip_versions = ['-6']
+    else:
+        return {wildcard_address}
+    address_set = set()
+    for ip_version in ip_versions:
+        ip_stdout = ip([ip_version, '-oneline', 'addr', 'show', 'up'])
+        for line in ip_stdout.splitlines():
+            if ' lo ' in line:
+                continue
+            if any(flag in line for flag in ('tentative', 'dadfailed', 'deprecated')):
+                continue
+            m = re.search(r'\sinet6?\s([0-9a-fA-F\.:]+)/(?:\d+)', line)
+            if not m:
+                continue
+            address = m.group(1)
+            if address.startswith('127.'):
+                continue
+            if address == '::1':
+                continue
+            if ':' in address and not include_link_local and address.lower().startswith('fe80:'):
+                continue
+            if ip_version == '-6' and len(ipv6_enclosure) == 2:
+                address_set.add(ipv6_enclosure[0] + address + ipv6_enclosure[1])
+            else:
+                address_set.add(address)
+    return address_set
 
 
 def sudo_sysctl(args):

@@ -218,8 +218,6 @@ def on_startup():
         except Exception as e:
             on_shutdown()
             raise e
-    if is_worker_zero:
-        logger.info(f"API listening on port 8443")
     logger.debug(f"initialization complete")
 
 
@@ -233,20 +231,24 @@ def on_shutdown():
 @repeat_every(seconds=60 * 60 * 24)
 def check_tls_cert_daily() -> None:
     """Verify TLS certificate after 24 hours, 48 hours, etc."""
+    if conf.get('http.tls_enabled') == False or conf.get('http.tls_use_certbot') == False:
+        return
     if not hasattr(check_tls_cert_daily, 'call_count'):
         check_tls_cert_daily.call_count = 1
         return  # handled by check_tls_cert_at_startup() (on_event("startup") above is required)
-    net.check_tls_cert(conf.get('common.domain'), 8443)
+    net.check_tls_cert(conf.get('common.domain'), conf.get('http.port'))
 
 
 @app.on_event("startup")
 @repeat_every(seconds=20, max_repetitions=2)  # run at t+0 and t+20 only
 def check_tls_cert_at_startup() -> None:
     """Verify TLS certificate 20 seconds after startup"""
+    if conf.get('http.tls_enabled') == False or conf.get('http.tls_use_certbot') == False:
+        return
     if not hasattr(check_tls_cert_at_startup, 'call_count'):
         check_tls_cert_at_startup.call_count = 1
         return  # do nothing on first run (possible race condition)
-    net.check_tls_cert(conf.get('common.domain'), 8443)
+    net.check_tls_cert(conf.get('common.domain'), conf.get('http.port'))
 
 
 @app.on_event("startup")
@@ -257,13 +259,15 @@ def monitor_tls_cert_file() -> None:
     Check every minute. Don't restart if there are active in-bound network connections.
     """
     global restarts_remaining
+    if conf.get('http.tls_enabled') == False or conf.get('http.tls_use_certbot') == False:
+        return
     if not hasattr(monitor_tls_cert_file, 'call_count'):
         monitor_tls_cert_file.call_count = 1
         monitor_tls_cert_file.minutes_waiting = 0
         return  # do nothing on first run (possible race condition)
     file_changes = net.has_file_changed(ssl_keyfile, max_items=1)
     if file_changes:  # our TLS cert file has changed
-        connection_count = len(net.connected_inbound_list(8443))
+        connection_count = len(net.connected_inbound_list(conf.get('http.port')))
         # if we have no TCP connections (but give up waiting after 24 hours)
         if connection_count == 0 or monitor_tls_cert_file.minutes_waiting > (60 * 24):
             # reset 'restart' conditions ...
@@ -325,35 +329,53 @@ def entry_point():
             hub_state = db.Hub.state()
             sys.exit(0 if hub_state.integrity_test_by_id(args.test_name) else 1)
         # args.command == 'serve':
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        strong_ciphers = ':'.join(
-            [
-                cipher['name']
-                for cipher in ctx.get_ciphers()
-                if cipher['name']
-                not in [
-                    # remove ciphers considered weak by https://www.ssllabs.com/
-                    # SSL Labs says remaining ciphers still work for Android 4.4.2 and iOS 9
-                    'ECDHE-ECDSA-AES256-SHA384',
-                    'ECDHE-RSA-AES256-SHA384',
-                    'ECDHE-ECDSA-AES128-SHA256',
-                    'ECDHE-RSA-AES128-SHA256',
+        if conf.get('http.tls_enabled'):
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            strong_ciphers = ':'.join(
+                [
+                    cipher['name']
+                    for cipher in ctx.get_ciphers()
+                    if cipher['name']
+                    not in [
+                        # remove ciphers considered weak by https://www.ssllabs.com/
+                        # SSL Labs says remaining ciphers still work for Android 4.4.2 and iOS 9
+                        'ECDHE-ECDSA-AES256-SHA384',
+                        'ECDHE-RSA-AES256-SHA384',
+                        'ECDHE-ECDSA-AES128-SHA256',
+                        'ECDHE-RSA-AES128-SHA256',
+                    ]
                 ]
-            ]
-        )
-        ssl_keyfile = f'/etc/letsencrypt/live/{conf.get('common.domain')}/privkey.pem'
-        ssl_certfile = f'/etc/letsencrypt/live/{conf.get('common.domain')}/fullchain.pem'
-        if net.watch_file(ssl_keyfile) == None or net.watch_file(ssl_certfile) == None:
-            sys.exit(1)
+            )
+            if conf.get('http.tls_use_certbot'):
+                ssl_keyfile = f'/etc/letsencrypt/live/{conf.get('common.domain')}/privkey.pem'
+                ssl_certfile = f'/etc/letsencrypt/live/{conf.get('common.domain')}/fullchain.pem'
+                if net.watch_file(ssl_keyfile) == None or net.watch_file(ssl_certfile) == None:
+                    sys.exit(1)
+            else:
+                ssl_keyfile = conf.get('http.tls_key_file')
+                ssl_certfile = conf.get('http.tls_cert_file')
+            scheme = 'https'
+        else:
+            strong_ciphers = ''
+            ssl_keyfile = None
+            ssl_certfile = None
+            scheme = 'http'
     except (StartupError, conf.ConfError) as e:
         logger.error(e)
         sys.exit(1)
-    logger.info(f"❚ Starting BitBurrow hub {conf.get('common.site_code')}")
+    address_list = net.all_local_ips(conf.get('http.address'), ipv6_enclosure='[]')
+    public_port = conf.get('common.port')
+    port_spec = '' if public_port == 443 else ':' + str(public_port)
+    base_url = f"https://{conf.get('common.domain')}{port_spec}"
+    logger.info(f"❚ Starting BitBurrow hub")
     logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
     logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
     logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
     logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
-    logger.info(f"❚   listening on: {conf.get('common.domain')}:8443")
+    for address in address_list:
+        logger.info(f"❚   listening on: {scheme}://{address}:{conf.get('http.port')}")
+    logger.info(f"❚   public URL: {base_url}/welcome")
+    # FIXME: logger.info(f"❚   public URL: {base_url}{conf.get('common.site_code')}/welcome")
     this_python_file = os.path.abspath(inspect.getsourcefile(lambda: 0))
     logger.info(f"Running {this_python_file}")
     while restarts_remaining > 0:
@@ -361,8 +383,8 @@ def entry_point():
         try:
             uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
                 f'{app_name()}.hub:app',
-                host='',  # both IPv4 and IPv6; for one use '0.0.0.0' or '::0'
-                port=8443,
+                host=conf.get('http.address'),
+                port=conf.get('http.port'),
                 # FIXME: when using `workers=3`, additional workers' messages aren't ...
                 # delivered to api.messages.message_handler()
                 # may be helpful: https://medium.com/cuddle-ai/1bd809916130

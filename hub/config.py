@@ -97,7 +97,35 @@ def insert_item_before(existing_item: str, new_key: str, new_value: str):
 def migrate():  # update config data to current format
     if (cfv := get('advanced.config_file_version')) < 5076:
         raise ConfError(f"B79322 invalid config_file_version: {cfv}")
-    if cfv != 5076:
+    if cfv == 5076:  # migrate in-memory to 5077
+        new_branch = yaml.safe_load(
+            textwrap.dedent(
+                '''
+                    address_help: Address to listen on, '' for all, '0.0.0.0' for
+                      IPv4 only, '::0' for IPv6 only, or a specific IP.
+                    address: ''
+                    port_help: TCP port to listen on. If behind a reverse proxy, set this
+                      accordingly, e.g. 8000, and set tls_enabled to false.
+                    port: 8443
+                    tls_enabled: true
+                    tls_use_certbot_help: Set to true to have bbhub manage TLS keys with certbot.
+                    tls_use_certbot: true
+                    tls_key_file_help: TLS key file, e.g. 'privkey.pem'. Ignored if
+                      tls_use_certbot is true.
+                    tls_key_file: ''
+                    tls_cert_file_help: Cert file, e.g. 'fullchain.pem'. Ignored if
+                      tls_use_certbot is true.
+                    tls_cert_file: ''
+                '''
+            ).lstrip()
+        )
+        insert_item_after('common', 'http', new_branch)
+        insert_item_after('common.domain', 'port_help', 'Public-facing TCP port, normally 443.')
+        insert_item_after('common.port_help', 'port', 8443)
+        cfv += 1
+        set('advanced.config_file_version', cfv)
+    # when adding a config version, add an 'if cfv == ...' and increment version below
+    if cfv != 5077:
         raise ConfError(f"B87851 invalid config_file_version: {cfv}")
 
 
@@ -172,7 +200,7 @@ def generate(path, domain, public_ip):
               made here will persist. Items ending in '_help' are documentation.
             common:
               db_file_help: Database file path. Can be absolute or relative to the directory
-                of this config file. Use "-" (YAML requires the quotes) for memory-only.
+                of this config file. Use '-' (YAML requires the quotes) for memory-only.
               db_file: data.sqlite
               log_path: /var/log/bitburrow
               log_level_help: Levels are 0 (critical only), 1 (errors), 2 (warnings), 3
