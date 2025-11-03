@@ -220,18 +220,12 @@ class Account(SQLModel, table=True):
     key_hash: str = ''  # Argon2 hash of key (used like a hashed password)
     clients_max: int = 7
     created_at: DateTime = Field(
-        sa_column=sqlalchemy.Column(
-            sqlalchemy.DateTime(timezone=True),
-            # FIXME: don't use utcnow() https://news.ycombinator.com/item?id=33138302
-            default=DateTime.utcnow,
-        )
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default_factory=lambda: DateTime.now(TimeZone.utc),
     )
     valid_until: DateTime = Field(
-        sa_column=sqlalchemy.Column(
-            sqlalchemy.DateTime(timezone=True),
-            # FIXME: don't use utcnow() https://news.ycombinator.com/item?id=33138302
-            default=lambda: DateTime.utcnow() + TimeDelta(days=3650),
-        )
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default_factory=lambda: DateTime.now(TimeZone.utc) + TimeDelta(days=3650),
     )
     kind: Account_kind = Account_kind.NONE
     netif_id: Optional[int] = Field(foreign_key='netif.id')  # used only if kind == USER
