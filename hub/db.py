@@ -30,8 +30,9 @@ class DbException(Exception):
 ### DB table 'hub' - details for this BitBurrow hub; should be exactly 1 row
 ###
 
-integrity_tests_yaml = '''
+integrity_tests_yaml = r'''
 # note: the ending "|keep_only 'regex'" is similar to CLI "|grep -o 'regex'" with Python's re
+# note: needs r-triplle-quoted string for regex after keep_only
 # localhost domain A record
 - id: bind_a
   cmd: dig @127.0.0.1 A {domain} +short
