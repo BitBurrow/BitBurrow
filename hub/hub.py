@@ -21,7 +21,9 @@ import hub.config as conf
 import hub.db as db
 import hub.api as api
 import hub.net as net
+import hub.util as util
 
+Berror = util.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 
@@ -36,10 +38,6 @@ def app_name():
 
 async def not_found_error(request: Request, exc: HTTPException):
     return responses.PlainTextResponse(content=None, status_code=404)
-
-
-class StartupError(Exception):
-    pass
 
 
 ###
@@ -171,7 +169,7 @@ def mkdir_r(path):  # like Linux `mkdir --parents`
     try:
         os.makedirs(path, exist_ok=True)
     except (PermissionError, FileNotFoundError, NotADirectoryError):
-        raise StartupError(f"B19340 cannot create directory: {path}")
+        raise Berror(f"B19340 cannot create directory: {path}")
 
 
 def get_lock(process_name):  # source: https://stackoverflow.com/a/7758075
@@ -207,7 +205,7 @@ def init(args):
 def on_startup():
     # sanity check now that we don't call cli() or init() here
     if not conf.is_loaded():
-        raise StartupError(f"B62896 invalid config data in on_startup()")
+        raise Berror(f"B62896 invalid config data in on_startup()")
     global is_worker_zero
     is_worker_zero = get_lock('worker_init_lock_BMADCTCY')
     if is_worker_zero:
@@ -360,7 +358,7 @@ def entry_point():
             ssl_keyfile = None
             ssl_certfile = None
             scheme = 'http'
-    except (StartupError, conf.ConfError) as e:
+    except Berror as e:
         logger.error(e)
         sys.exit(1)
     address_list = net.all_local_ips(conf.get('http.address'), ipv6_enclosure='[]')

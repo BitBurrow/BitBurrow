@@ -4,13 +4,17 @@ import tempfile
 import textwrap
 import yaml
 import hub.net as net
+import hub.util as util
 
-
-class ConfError(Exception):
-    pass
-
-
+Berror = util.Berror
 config = None
+
+### How to make a new version of the config file
+# 1. add an 'if cfv == ...' section near the end of migrate() to transform the config file; finish
+#        the section with the 2 lines `cfv += 1` and `set('advanced.config_file_version', cfv)`.
+# 2. increment config_fv below
+# 3. test
+config_fv = 5077  # version of the config file key structure
 
 
 def get(cpath: str):
@@ -24,13 +28,13 @@ def get(cpath: str):
             return config[s[0]][s[1]][s[2]]
         if len(s) == 4:
             return config[s[0]][s[1]][s[2]][s[3]]
-        raise ConfError(f"B99402 invalid cpath length: {cpath}")
+        raise Berror(f"B99402 invalid cpath length: {cpath}")
     except TypeError as e:
         if config == None:
-            raise ConfError(f"B69102 config not loaded getting: {cpath}")
-        raise ConfError(f"B21331 invalid get ({e}): {cpath}")
+            raise Berror(f"B69102 config not loaded getting: {cpath}")
+        raise Berror(f"B21331 invalid get ({e}): {cpath}")
     except KeyError:
-        raise ConfError(f"B62808 invalid cpath: {cpath}")
+        raise Berror(f"B62808 invalid cpath: {cpath}")
 
 
 # use only in migrate(); changes are not saved
@@ -46,9 +50,9 @@ def set(cpath: str, new_value):
         elif len(s) == 4:
             config[s[0]][s[1]][s[2]][s[3]] = new_value
         else:
-            raise ConfError(f"B14141 invalid cpath: {cpath}")
+            raise Berror(f"B14141 invalid cpath: {cpath}")
     except TypeError:
-        raise ConfError(f"B92390 config not loaded getting: {cpath}")
+        raise Berror(f"B92390 config not loaded getting: {cpath}")
 
 
 # use only in migrate(); changes are not saved
@@ -68,10 +72,10 @@ def insert_item_after(existing_item: str, new_key: str, new_value, before_not_af
         insert_after = insert_anchor_key
         insert_before = None
     if not isinstance(old_dict, dict):
-        raise ConfError(f"B62854 existing_item is not a dict member: {existing_item}")
+        raise Berror(f"B62854 existing_item is not a dict member: {existing_item}")
     new_dict = dict()
     if new_key in old_dict:
-        raise ConfError(f"B80342 new_key already exists: {insert_section}.{new_key}")
+        raise Berror(f"B80342 new_key already exists: {insert_section}.{new_key}")
     found = False
     for k, v in old_dict.items():
         if k == insert_before:
@@ -82,7 +86,7 @@ def insert_item_after(existing_item: str, new_key: str, new_value, before_not_af
             new_dict[new_key] = new_value
             found = True
     if not found:
-        raise ConfError(f"B07330 existing_item not found: {existing_item}")
+        raise Berror(f"B07330 existing_item not found: {existing_item}")
     if len(dotsplit) == 1:  # special case for modifying root
         config = new_dict
     else:
@@ -96,7 +100,7 @@ def insert_item_before(existing_item: str, new_key: str, new_value: str):
 
 def migrate():  # update config data to current format
     if (cfv := get('advanced.config_file_version')) < 5076:
-        raise ConfError(f"B79322 invalid config_file_version: {cfv}")
+        raise Berror(f"B79322 invalid config_file_version: {cfv}")
     if cfv == 5076:  # migrate in-memory to 5077
         new_branch = yaml.safe_load(
             textwrap.dedent(
@@ -124,9 +128,12 @@ def migrate():  # update config data to current format
         insert_item_after('common.port_help', 'port', 8443)
         cfv += 1
         set('advanced.config_file_version', cfv)
-    # when adding a config version, add an 'if cfv == ...' and increment version below
-    if cfv != 5077:
-        raise ConfError(f"B87851 invalid config_file_version: {cfv}")
+    # if cfv == 5077:  # migrate in-memory to 5078
+    #     ...
+    #     cfv += 1
+    #     set('advanced.config_file_version', cfv)
+    if cfv != config_fv:
+        raise Berror(f"B87851 invalid config_file_version: {cfv}")
 
 
 def load(path: str):
@@ -135,13 +142,11 @@ def load(path: str):
         with open(path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
     except FileNotFoundError:
-        raise ConfError(
-            f"B22006 cannot find configuration file (try 'bbhub generate-config'): {path}"
-        )
+        raise Berror(f"B22006 cannot find configuration file (try 'bbhub generate-config'): {path}")
     except PermissionError:
-        raise ConfError(f"B76167 cannot read configuration file: {path}")
+        raise Berror(f"B76167 cannot read configuration file: {path}")
     except (yaml.parser.ParserError, yaml.scanner.ScannerError) as e:
-        raise ConfError(f"B60933 cannot parse configuration file: {e}")
+        raise Berror(f"B60933 cannot parse configuration file: {e}")
     migrate()
 
 
@@ -152,25 +157,9 @@ def is_loaded():
         return False
 
 
-def rotate_backups(path: str, new_path: str, max_versions: int = 9):
-    base, ext = os.path.splitext(path)
-    for v in range(max_versions, 0, -1):
-        dst = f'{base}.{v}{ext}'
-        if v > 1:
-            src = f'{base}.{v-1}{ext}'
-            if os.path.exists(src):
-                try:
-                    os.replace(src, dst)  # mv config.8.yaml config.9.yaml
-                except Exception:
-                    pass
-        else:
-            os.link(path, dst)  # ln config.yaml config.1.yaml  # hard link so migration is atomic
-            os.replace(new_path, path)  # mv config-EWIL.yaml config.yaml
-
-
 def save(path: str):
     if not os.path.exists(path):
-        raise ConfError(f"B69061 config file must already exist; use generate(): {path}")
+        raise Berror(f"B69061 config file must already exist; use generate(): {path}")
     try:
         old_umask = os.umask(0o077)  # create a file with 0600 permissions
         with tempfile.NamedTemporaryFile(
@@ -185,7 +174,7 @@ def save(path: str):
             tmp_path = f.name
     finally:
         os.umask(old_umask)
-    rotate_backups(path, tmp_path)
+    util.rotate_backups(path, tmp_path)
 
 
 def generate(path, domain, public_ip):
@@ -229,15 +218,15 @@ def generate(path, domain, public_ip):
     try:
         config = yaml.safe_load(config_file_template)
     except (yaml.parser.ParserError, yaml.scanner.ScannerError) as e:
-        raise ConfError(f"B06494 cannot parse YAML data: {e}")
+        raise Berror(f"B06494 cannot parse YAML data: {e}")
     migrate()
     try:
         old_umask = os.umask(0o077)  # create a file with 0600 permissions
         with open(path, "x", encoding="utf-8") as f:
             yaml.dump(config, f, sort_keys=False, allow_unicode=True)
     except FileExistsError:
-        raise ConfError(f"B88926 file already exists: {path}")
+        raise Berror(f"B88926 file already exists: {path}")
     except Exception:
-        raise ConfError(f"B26104 cannot create: {path}")
+        raise Berror(f"B26104 cannot create: {path}")
     finally:
         os.umask(old_umask)
