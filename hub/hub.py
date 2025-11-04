@@ -325,7 +325,7 @@ def entry_point():
             sys.exit(0)
         elif args.command == 'test':
             hub_state = db.Hub.state()
-            sys.exit(0 if hub_state.integrity_test_by_id(args.test_name) else 1)
+            sys.exit(0 if util.integrity_test_by_id(args.test_name) else 1)
         # args.command == 'serve':
         if conf.get('http.tls_enabled'):
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
