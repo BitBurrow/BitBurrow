@@ -55,11 +55,11 @@ integrity_tests_yaml = r'''
   cmd: dig @{public_ip} SOA {domain} +short |keep_only '^\S*'
   expected: '{domain}.'
 # global A record
-# FIXME: Is there any reason to get this directly from the nameserver of the parent domain,
-#     i.e. `dig @{parent_domain_ns} {domain} |keep_only '^[0-9a-z\._-]+.*'` shows an A 
-#     record and an NS record?
+# note: below, `dig A {domain} +short` works too (for most set-ups), but going directly
+#     to the nameserver feels better and works for a server behind NAT connected via VPN
+# note: we assume that the parent domain *is* the nameserver
 - id: global_a
-  cmd: dig A {domain} +short
+  cmd: dig @{parent_domain} A {domain} +short
   expected: '{public_ip}'
 # global NS record
 - id: global_ns
@@ -115,18 +115,19 @@ class Hub(SQLModel, table=True):
             return self.id
 
     def integrity_test(self, test):
+        domain = conf.get('common.domain')
+        public_ip = conf.get('common.public_ips')[0]
         cmd = test['cmd'].format(  # substitute {domain} for the actual domain, etc.
-            domain=conf.get('common.domain'),
-            public_ip=conf.get('common.public_ips')[0],
+            domain=domain,
+            parent_domain=domain.partition('.')[2],
+            public_ip=public_ip,
         )
         keep_only = None  # support syntax at end of cmd similar to `grep -o`
         keep_only_search = re.search(r'^(.*?)\s*\|\s*keep_only\s+["\']([^"\']+)["\']$', cmd)
         if keep_only_search != None:
             cmd = keep_only_search.group(1)
             keep_only = keep_only_search.group(2)
-        expected = test['expected'].format(
-            domain=conf.get('common.domain'), public_ip=conf.get('common.public_ips')[0]
-        )
+        expected = test['expected'].format(domain=domain, public_ip=public_ip)
         try:
             result = net.run_external(cmd.split(' '))
         except RuntimeError as e:
@@ -162,6 +163,8 @@ class Hub(SQLModel, table=True):
                     failed_count += 1
         if pass_count + failed_count == 0:
             logger.warning(f"B37855 nonexistent test ID {test_id}")
+        else:
+            logger.info(f"B28874 {pass_count} of {pass_count + failed_count} tests passed")
         return failed_count == 0
 
 
