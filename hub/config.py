@@ -1,3 +1,4 @@
+import logging
 import os
 import secrets
 import tempfile
@@ -7,6 +8,8 @@ import hub.net as net
 import hub.util as util
 
 Berror = util.Berror
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 config = None
 
 ### How to make a new version of the config file
@@ -17,18 +20,12 @@ config = None
 config_fv = 5077  # version of the config file key structure
 
 
-def get(cpath: str):
-    s = cpath.split('.')
+def get(cpath: str):  # parse config path, e.g. get('common.public_ips')[0]
+    base = config
     try:
-        if len(s) == 1:
-            return config[s[0]]
-        if len(s) == 2:
-            return config[s[0]][s[1]]
-        if len(s) == 3:
-            return config[s[0]][s[1]][s[2]]
-        if len(s) == 4:
-            return config[s[0]][s[1]][s[2]][s[3]]
-        raise Berror(f"B99402 invalid cpath length: {cpath}")
+        for c in cpath.split('.'):
+            base = base[c]
+        return base
     except TypeError as e:
         if config == None:
             raise Berror(f"B69102 config not loaded getting: {cpath}")
@@ -40,17 +37,11 @@ def get(cpath: str):
 # use only in migrate(); changes are not saved
 def set(cpath: str, new_value):
     s = cpath.split('.')
+    base = config
     try:
-        if len(s) == 1:
-            config[s[0]] = new_value
-        elif len(s) == 2:
-            config[s[0]][s[1]] = new_value
-        elif len(s) == 3:
-            config[s[0]][s[1]][s[2]] = new_value
-        elif len(s) == 4:
-            config[s[0]][s[1]][s[2]][s[3]] = new_value
-        else:
-            raise Berror(f"B14141 invalid cpath: {cpath}")
+        for c in s[:-1]:
+            base = base[c]
+        base[s[-1]] = new_value
     except TypeError:
         raise Berror(f"B92390 config not loaded getting: {cpath}")
 
@@ -101,6 +92,8 @@ def insert_item_before(existing_item: str, new_key: str, new_value: str):
 def migrate():  # update config data to current format
     if (cfv := get('advanced.config_file_version')) < 5076:
         raise Berror(f"B79322 invalid config_file_version: {cfv}")
+    if cfv != config_fv:
+        logger.debug(f"B93350 migrate() from {cfv} to {config_fv}")
     if cfv == 5076:  # migrate in-memory to 5077
         new_branch = yaml.safe_load(
             textwrap.dedent(

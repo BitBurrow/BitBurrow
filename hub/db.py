@@ -10,6 +10,7 @@ import sqlalchemy
 from sqlmodel import Field, Session, SQLModel, select, JSON, Column
 from typing import Optional
 import yaml
+import hub.config as conf
 import hub.login_key as lk
 import hub.net as net
 from pydantic import ConfigDict
@@ -115,15 +116,17 @@ class Hub(SQLModel, table=True):
 
     def integrity_test(self, test):
         cmd = test['cmd'].format(  # substitute {domain} for the actual domain, etc.
-            domain=self.domain,
-            public_ip=self.public_ip,
+            domain=conf.get('common.domain'),
+            public_ip=conf.get('common.public_ips')[0],
         )
         keep_only = None  # support syntax at end of cmd similar to `grep -o`
         keep_only_search = re.search(r'^(.*?)\s*\|\s*keep_only\s+["\']([^"\']+)["\']$', cmd)
         if keep_only_search != None:
             cmd = keep_only_search.group(1)
             keep_only = keep_only_search.group(2)
-        expected = test['expected'].format(domain=self.domain, public_ip=self.public_ip)
+        expected = test['expected'].format(
+            domain=conf.get('common.domain'), public_ip=conf.get('common.public_ips')[0]
+        )
         try:
             result = net.run_external(cmd.split(' '))
         except RuntimeError as e:
