@@ -121,23 +121,7 @@ def cli(return_help_text=False):
     )
     if return_help_text:  # used by README.py
         return parser.format_help()
-    args = parser.parse_args()
-    log_index = 2 + (0 if args.verbose is None else sum(args.verbose))
-    del args.verbose
-    log_levels = [
-        logging.CRITICAL,  # 0, -qq
-        logging.ERROR,  # 1, -q
-        logging.WARNING,  # 2, default
-        logging.INFO,  # 3, -v
-        logging.DEBUG,  # 4, -vv
-        logging.DEBUG,  # 5, -vvv; sets 'echo=True' in create_engine()
-    ]
-    if log_index < 0 or log_index >= len(log_levels):
-        raise ValueError("Invalid log level")
-    args.console_log_level = log_levels[log_index]
-    args.create_engine_echo = log_index == 5
-    logging.config.dictConfig(logs.logging_config(console_log_level=args.console_log_level))
-    return args
+    return parser.parse_args()
 
 
 ###
@@ -187,7 +171,6 @@ def get_lock(process_name):  # source: https://stackoverflow.com/a/7758075
 def init(args):
     if db.engine is not None:
         return  # already initialized
-    conf.load(args.config_file)
     db_file = conf.get('common.db_file')
     if db_file == '-':
         db_file = ':memory:'
@@ -199,6 +182,27 @@ def init(args):
         # avoid race condition creating tables: OperationalError: table ... already exists
         SQLModel.metadata.create_all(db.engine)
         db.Hub.startup()  # initialize hub data if needed
+
+
+def set_logging(args):
+    if args.verbose is None:  # no CLI args for log level, so use config setting
+        log_index = conf.get('common.log_level')
+    else:  # CLI -v and -q override
+        log_index = 2 + sum(args.verbose)
+    del args.verbose
+    log_levels = [
+        logging.CRITICAL,  # 0, -qq
+        logging.ERROR,  # 1, -q
+        logging.WARNING,  # 2, default
+        logging.INFO,  # 3, -v
+        logging.DEBUG,  # 4, -vv
+        logging.DEBUG,  # 5, -vvv; sets 'echo=True' in create_engine()
+    ]
+    if log_index < 0 or log_index >= len(log_levels):
+        raise ValueError("B43857 invalid log level")
+    args.console_log_level = log_levels[log_index]
+    args.create_engine_echo = log_index == 5
+    logging.config.dictConfig(logs.logging_config(console_log_level=args.console_log_level))
 
 
 @app.on_event('startup')
@@ -308,6 +312,8 @@ def entry_point():
             conf.generate(args.config_file, args.gc_domain, args.gc_public_ip)
             print(f"Config file generated: {args.config_file}")
             sys.exit(0)
+        conf.load(args.config_file)
+        set_logging(args)  # requires config file be loaded
         init(args)
         if args.command == 'migrate-config':
             conf.save(args.config_file)
