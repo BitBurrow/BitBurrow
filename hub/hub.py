@@ -7,6 +7,7 @@ import psutil
 import signal
 import socket
 import sys
+import sqlalchemy.exc
 import time
 from fastapi import (
     FastAPI,
@@ -21,6 +22,7 @@ import hub.config as conf
 import hub.db as db
 import hub.api as api
 import hub.net as net
+import hub.migrate_db as migrate_db
 import hub.util as util
 
 Berror = util.Berror
@@ -177,6 +179,7 @@ def init(args):
     elif not db_file.startswith("/"):  # if relative, use dir of args.config_file
         db_file = os.path.join(os.path.dirname(args.config_file), db_file)
     mkdir_r(os.path.dirname(db_file))
+    migrate_db.migrate(db_file)
     db.engine = create_engine(f'sqlite:///{db_file}', echo=args.create_engine_echo)
     if is_worker_zero:
         # avoid race condition creating tables: OperationalError: table ... already exists
@@ -367,21 +370,27 @@ def entry_point():
     except Berror as e:
         logger.error(e)
         sys.exit(1)
-    address_list = net.all_local_ips(conf.get('http.address'), ipv6_enclosure='[]')
-    public_port = conf.get('common.port')
-    port_spec = '' if public_port == 443 else ':' + str(public_port)
-    base_url = f"https://{conf.get('common.domain')}{port_spec}"
-    logger.info(f"❚ Starting BitBurrow hub")
-    logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
-    logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
-    logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
-    logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
-    for address in address_list:
-        logger.info(f"❚   listening on: {scheme}://{address}:{conf.get('http.port')}")
-    logger.info(f"❚   public URL: {base_url}/welcome")
-    # FIXME: logger.info(f"❚   public URL: {base_url}{conf.get('common.site_code')}/welcome")
-    this_python_file = os.path.abspath(inspect.getsourcefile(lambda: 0))
-    logger.info(f"Running {this_python_file}")
+    try:
+        version_string = f"{util.app_version()}_{migrate_db.db_schema_version}_{conf.config_fv}"
+        address_list = net.all_local_ips(conf.get('http.address'), ipv6_enclosure='[]')
+        public_port = conf.get('common.port')
+        port_spec = '' if public_port == 443 else ':' + str(public_port)
+        base_url = f"https://{conf.get('common.domain')}{port_spec}"
+        logger.info(f"❚ Starting BitBurrow hub")
+        logger.info(f"❚   version string: {version_string}")
+        logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
+        logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
+        logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
+        logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
+        for address in address_list:
+            logger.info(f"❚   listening on: {scheme}://{address}:{conf.get('http.port')}")
+        logger.info(f"❚   public URL: {base_url}/welcome")
+        # FIXME: logger.info(f"❚   public URL: {base_url}{conf.get('common.site_code')}/welcome")
+        this_python_file = os.path.abspath(inspect.getsourcefile(lambda: 0))
+        logger.info(f"Running {this_python_file}")
+    except sqlalchemy.exc.OperationalError as e:
+        logger.error(f"B50313 DB error (may need to increase db_schema_version): {e}")
+        sys.exit(1)
     while restarts_remaining > 0:
         restarts_remaining -= 1
         try:
