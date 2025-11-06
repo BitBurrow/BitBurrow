@@ -26,44 +26,6 @@ class DbException(Exception):
 
 
 ###
-### DB table 'hub' - details for this BitBurrow hub; should be exactly 1 row
-###
-
-
-class Hub(SQLModel, table=True):
-    id: Optional[int] = Field(primary_key=True, default=None)
-    hub_number: str = lk.generate_login_key(lk.login_len)  # uniquely identify this hub
-    # note /etc/machine-id identifies the machine while hub_number identifies the database
-    db_version: int = 1
-
-    @staticmethod
-    def startup():
-        with Session(engine) as session:
-            hub_count = session.query(Hub).count()
-        if hub_count == 0:
-            with Session(engine) as session:
-                hub = Hub()
-                hub.wg_port = net.random_free_port(use_udp=True, avoid=[5353])
-                session.add(hub)
-                session.commit()
-                logger.debug(f"hub row created; wg_port {hub.wg_port}")
-
-    @staticmethod
-    def state():
-        with Session(engine) as session:
-            statement = select(Hub).where(Hub.id == 1)
-            result = session.exec(statement).one_or_none()
-            assert result is not None
-            return result
-
-    def update(self):
-        with Session(engine) as session:
-            session.add(self)
-            session.commit()
-            return self.id
-
-
-###
 ### DB table 'account' - an administrative login, coupon code, manager, or user
 ###
 

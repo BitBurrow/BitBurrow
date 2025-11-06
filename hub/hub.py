@@ -184,7 +184,6 @@ def init(args):
     if is_worker_zero:
         # avoid race condition creating tables: OperationalError: table ... already exists
         SQLModel.metadata.create_all(db.engine)
-        db.Hub.startup()  # initialize hub data if needed
 
 
 def set_logging(args):
