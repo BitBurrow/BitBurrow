@@ -370,6 +370,9 @@ def entry_point():
     except Berror as e:
         logger.error(e)
         sys.exit(1)
+    except sqlalchemy.exc.OperationalError as e:
+        logger.error(f"B14242 DB error (may need to increase db_schema_version): {e}")
+        sys.exit(1)
     try:
         version_string = f"{util.app_version()}_{migrate_db.db_schema_version}_{conf.config_fv}"
         address_list = net.all_local_ips(conf.get('http.address'), ipv6_enclosure='[]')

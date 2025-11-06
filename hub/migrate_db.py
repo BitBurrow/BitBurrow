@@ -8,7 +8,8 @@ from sqlmodel import SQLModel, create_engine
 import hub.util as util
 
 ### How to make a new schema version of the database
-# 1. update your SQLModel classes
+# 1. update your SQLModel classes (note that the migration below will not fill in default
+#      values for new fields)
 # 2. increment db_schema_version below
 # 3. run bbhub and verify that it does this correctly:
 #    * copy `data.sqlite` to `data.1.sqlite`
@@ -17,7 +18,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 4
+db_schema_version = 11
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -33,48 +34,64 @@ def sqlite_conn(db_path: str):
         conn.close()
 
 
-def db_table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
-    rows = conn.execute(f'''PRAGMA table_info('{table}');''').fetchall()
-    return [r[1] for r in rows]  # column name
-
-
-def intersection(a: Iterable[str], b: Iterable[str]) -> list[str]:
-    sa, sb = set(a), set(b)
-    return [c for c in a if c in sb]  # preserve order from 'a'
-
-
 def copy_data_from_old_db_to_new(new_db_path: str, old_db_path: str) -> None:
     with sqlite_conn(new_db_path) as conn:
         # https://sqlite.org/lang_attach.html
-        conn.execute(f'''ATTACH DATABASE ? AS old_db;''', (old_db_path,))
+        conn.execute('''ATTACH DATABASE ? AS old_db;''', (old_db_path,))
         try:
             rows = conn.execute(  # https://sqlite.org/schematab.html
                 '''SELECT name FROM sqlite_master
                 WHERE type='table' AND name NOT LIKE 'sqlite_%';'''
             ).fetchall()
             new_tables = [r[0] for r in rows]
-
-            for table in new_tables:  # columns for tables in main (new) and old_db (old)
-                new_cols = db_table_columns(conn, table)
-                old_cols = db_table_columns(conn, f'old_db.{table}')
-                common = intersection(new_cols, old_cols)
-                if not common:
+            for table in new_tables:
+                new_info = conn.execute(f'''PRAGMA table_info("{table}");''').fetchall()
+                old_info = conn.execute(f'''PRAGMA old_db.table_info("{table}");''').fetchall()
+                new_cols = [r[1] for r in new_info]
+                old_cols = {r[1] for r in old_info}
+                select_exprs = list()  # build SELECT list aligned with new_cols
+                for cid, name, coltype, notnull, dflt_value, _pk in new_info:
+                    if name in old_cols:
+                        select_exprs.append(f'"{name}"')
+                        continue
+                    if dflt_value is not None:
+                        select_exprs.append(dflt_value)  # dflt_value is already SQL-quoted
+                    elif notnull:
+                        t = (coltype or '').upper()
+                        if 'CHAR' in t or 'CLOB' in t or 'TEXT' in t:
+                            select_exprs.append("''")
+                        elif 'INT' in t or 'REAL' in t or 'FLOA' in t or 'DOUB' in t or 'NUM' in t:
+                            select_exprs.append("0")
+                        elif 'BLOB' in t:
+                            select_exprs.append("X'00'")
+                        else:
+                            select_exprs.append("''")
+                    else:
+                        select_exprs.append("NULL")
+                cols_csv = ', '.join(f'"{c}"' for c in new_cols)
+                selects_csv = ', '.join(select_exprs)
+                # only attempt to copy if the table existed in old_db
+                old_exists = conn.execute(
+                    '''SELECT 1 FROM old_db.sqlite_master
+                       WHERE type='table' AND name=?;''',
+                    (table,),
+                ).fetchone()
+                if not old_exists:
                     continue
-                cols_csv = ', '.join([f'"{c}"' for c in common])
                 conn.execute(
-                    f'''INSERT INTO '{table}' ({cols_csv})
-                    SELECT {cols_csv} FROM old_db.'{table}';'''
+                    f'''INSERT INTO "{table}" ({cols_csv})
+                    SELECT {selects_csv} FROM old_db."{table}";'''
                 )
         finally:
+            conn.commit()
             conn.execute('''DETACH DATABASE old_db;''')
 
 
 def migrate(db_path: str) -> None:
     if not os.path.exists(db_path):
-        raise util.Berror(f"B31778 cannot read database: {db_path}")
+        return  # not an error because it may have not been created yet
     with sqlite_conn(db_path) as conn:
-        cur = conn.execute('''PRAGMA user_version;''')
-        row = cur.fetchone()
+        row = conn.execute('''PRAGMA user_version;''').fetchone()
         current_version = int(row[0] if row and row[0] is not None else 0)
     if current_version >= db_schema_version:
         return
@@ -90,6 +107,6 @@ def migrate(db_path: str) -> None:
     engine = create_engine(f'sqlite:///{tmp_path}')
     SQLModel.metadata.create_all(engine)
     with sqlite_conn(tmp_path) as conn:
-        conn.execute(f'PRAGMA user_version = {int(db_schema_version)};')
+        conn.execute(f'''PRAGMA user_version = {int(db_schema_version)};''')
     copy_data_from_old_db_to_new(tmp_path, db_path)
     util.rotate_backups(db_path, tmp_path)
