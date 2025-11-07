@@ -1,30 +1,67 @@
-from datetime import datetime, timezone
+# Full NiceGUI + FastAPI demo with security improvements
+# - REST + WebSocket UI
+# - Secure cookie session (hash stored server-side)
+# - CSRF (double-submit cookie with header)
+# - No tokens in URLs
+# - POST for state-changing actions (login, logout, set session)
+# - Proxy header trust restricted
+# - Security headers (CSP, HSTS, etc.)
+# - Idle + absolute session timeouts
+# - Improved rate limiting, including login-specific limiter
+# - Pending-confirm store with TTL
+# - IP extraction via trusted proxy middleware
+
 import os
 import re
-import secrets
+import time
 import string
-from collections import deque, defaultdict
-from typing import Optional, Dict, Deque, List
+import secrets
+import hashlib
+from collections import defaultdict, deque, OrderedDict
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Deque, List, Optional
 
-from fastapi import Request
+from nicegui import ui, Client
+from fastapi import Request, Response, Body, APIRouter
 from fastapi.responses import PlainTextResponse, RedirectResponse
-from nicegui import app, Client, ui
-from sqlmodel import Field, SQLModel, Session, create_engine, select, Column, String, Relationship
+from sqlmodel import SQLModel, Field, Session, select, create_engine, Column, String, Relationship
 import argon2
+from starlette.middleware.proxy_headers import ProxyHeadersMiddleware
 
 # ------------------------------ CONFIG ---------------------------------
 
 RATE_LIMIT_REQUESTS = 100
 RATE_LIMIT_WINDOW_SECONDS = 60
 
+LOGIN_ATTEMPTS = 10
+LOGIN_WINDOW = 60  # seconds
+
 USERNAME_PATTERN = re.compile(r'^[a-zA-Z_.-]{4,12}$')
 ALLOWED_CHARS_PATTERN = re.compile(r'^[a-zA-Z_.-]*$')
 
 DB_PATH = os.environ.get('DB_PATH', 'sqlite:///./users.db')
 
-COOKIE_NAME = 'session_token'
+COOKIE_NAME = '__Host-session'
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
+# CSRF
+CSRF_COOKIE = '__Host-csrf'
+CSRF_HEADER = 'x-csrf-token'
+
+# Session timeouts
+IDLE_TIMEOUT = timedelta(hours=8)
+ABSOLUTE_LIFETIME = timedelta(days=7)
+
+# Pending confirm TTL and capacity
+PENDING_TTL = 300  # seconds
+PENDING_CAP = 200
+
+# ------------------------------ FASTAPI APP ---------------------------------
+
+app = ui.get_app()
+
+# Trust only local proxy / adjust to your actual reverse proxy IPs
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=['127.0.0.1', '::1'])
 
 # ------------------------------ DATABASE ---------------------------------
 
@@ -34,19 +71,18 @@ class Account(SQLModel, table=True):
     username: str = Field(sa_column=Column(String(64), unique=True, index=True))
     normalized_username: str = Field(sa_column=Column(String(64), unique=True, index=True))
     key_hash: str
-
     sessions: List["LoginSession"] = Relationship(back_populates="account")
 
 
 class LoginSession(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     account_id: int = Field(foreign_key='account.id', index=True)
-    token: str = Field(index=True, unique=True)
+    token_hash: str = Field(index=True, unique=True)
     user_agent: str
     ip: str
+    created_at: datetime
     last_activity: datetime
     valid: bool = Field(default=True)
-
     account: Optional[Account] = Relationship(back_populates="sessions")
 
 
@@ -64,9 +100,8 @@ hasher = argon2.PasswordHasher()
 
 
 def ip_from_request(request: Request) -> str:
-    return request.headers.get('X-Real-IP') or (
-        request.client.host if request.client else '0.0.0.0'
-    )
+    # With ProxyHeadersMiddleware, request.client.host is the real client IP (from trusted proxy)
+    return request.client.host if request.client else '0.0.0.0'
 
 
 def generate_password(length: int = 5) -> str:
@@ -76,6 +111,10 @@ def generate_password(length: int = 5) -> str:
 
 def generate_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def _hash_token(t: str) -> str:
+    return hashlib.sha256(t.encode()).hexdigest()
 
 
 def user_agent_brief(ua: str) -> str:
@@ -110,33 +149,91 @@ def user_agent_brief(ua: str) -> str:
     return f'{browser} on {os_name}'
 
 
-# ------------------------------ RATE LIMITING MIDDLEWARE ---------------------------------
-
-_rate_limit_buckets: Dict[str, Deque[datetime]] = defaultdict(deque)
+# ------------------------------ CSRF MIDDLEWARE ---------------------------------
 
 
 @app.middleware('http')
-async def rate_limit_middleware(request: Request, call_next):
-    ip = ip_from_request(request)
+async def csrf_middleware(request: Request, call_next):
+    if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
+        c = request.cookies.get(CSRF_COOKIE)
+        h = request.headers.get(CSRF_HEADER)
+        if not c or not h or not secrets.compare_digest(c, h):
+            return PlainTextResponse('CSRF check failed', status_code=403)
+    response = await call_next(request)
+    if not request.cookies.get(CSRF_COOKIE):
+        # non-HttpOnly so the client JS can reflect it into header; __Host- requires Secure, Path=/, no Domain
+        response.set_cookie(
+            CSRF_COOKIE,
+            secrets.token_urlsafe(32),
+            httponly=False,
+            secure=True,
+            samesite='lax',
+            path='/',
+            max_age=COOKIE_MAX_AGE,
+        )
+    return response
+
+
+# ------------------------------ SECURITY HEADERS MIDDLEWARE ---------------------------------
+
+
+@app.middleware('http')
+async def headers_middleware(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault('Content-Security-Policy', "default-src 'self'")
+    resp.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    resp.headers.setdefault('X-Frame-Options', 'DENY')
+    resp.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    return resp
+
+
+# ------------------------------ RATE LIMITING ---------------------------------
+
+_rate_limit_buckets: Dict[str, Deque[datetime]] = defaultdict(deque)
+_login_buckets: Dict[tuple, Deque[datetime]] = defaultdict(deque)
+
+
+def _bucket_ok(bucket: Deque[datetime], limit: int, window_s: int) -> bool:
     now = datetime.now(timezone.utc)
-    bucket = _rate_limit_buckets[ip]
-    while bucket and (now - bucket[0]).total_seconds() > RATE_LIMIT_WINDOW_SECONDS:
+    while bucket and (now - bucket[0]).total_seconds() > window_s:
         bucket.popleft()
-    if len(bucket) >= RATE_LIMIT_REQUESTS:
-        return PlainTextResponse('Too Many Requests', status_code=429)
+    if len(bucket) >= limit:
+        return False
     bucket.append(now)
+    return True
+
+
+@app.middleware('http')
+async def rate_limit_and_session_middleware(request: Request, call_next):
+    ip = ip_from_request(request)
+    # global per-IP limiter
+    if not _bucket_ok(_rate_limit_buckets[ip], RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS):
+        return PlainTextResponse('Too Many Requests', status_code=429)
 
     response = await call_next(request)
 
+    # session activity & timeout enforcement
     try:
         token = request.cookies.get(COOKIE_NAME)
         if token:
             with db_session() as s:
-                ls = s.exec(select(LoginSession).where(LoginSession.token == token)).first()
+                h = _hash_token(token)
+                ls = s.exec(select(LoginSession).where(LoginSession.token_hash == h)).first()
                 if ls and ls.valid:
-                    ls.last_activity = datetime.now(timezone.utc)
-                    s.add(ls)
-                    s.commit()
+                    now = datetime.now(timezone.utc)
+                    # absolute lifetime from created_at; idle from last_activity
+                    if (now - ls.created_at) > ABSOLUTE_LIFETIME or (
+                        now - ls.last_activity
+                    ) > IDLE_TIMEOUT:
+                        ls.valid = False
+                        s.add(ls)
+                        s.commit()
+                        response.delete_cookie(COOKIE_NAME, path='/')
+                    else:
+                        ls.last_activity = now
+                        s.add(ls)
+                        s.commit()
     except Exception:
         pass
 
@@ -146,14 +243,14 @@ async def rate_limit_middleware(request: Request, call_next):
 # ------------------------------ AUTH HELPERS & ENDPOINTS ---------------------------------
 
 
-def set_session_cookie(response: RedirectResponse, token: str):
+def set_session_cookie(response: Response, token: str):
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
         httponly=True,
         max_age=COOKIE_MAX_AGE,
         samesite='lax',
-        secure=False,  # TLS is terminated by the reverse proxy
+        secure=True,
         path='/',
     )
 
@@ -163,9 +260,10 @@ def create_login_session_record(account: Account, request: Request) -> str:
         token = generate_token()
         ls = LoginSession(
             account_id=account.id,
-            token=token,
+            token_hash=_hash_token(token),
             user_agent=request.headers.get('User-Agent', ''),
             ip=ip_from_request(request),
+            created_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
             valid=True,
         )
@@ -174,27 +272,15 @@ def create_login_session_record(account: Account, request: Request) -> str:
         return token
 
 
-@app.get('/_set_session')
-def _set_session(token: str, redirect: str = '/home'):
-    response = RedirectResponse(redirect, status_code=303)
-    set_session_cookie(response, token)
-    return response
-
-
-@app.get('/_logout')
-def _logout(redirect: str = '/login'):
-    resp = RedirectResponse(redirect, status_code=303)
-    resp.delete_cookie(COOKIE_NAME, path='/')
-    return resp
-
-
 def get_current_session_and_account(request: Request):
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         return None, None
     with db_session() as s:
         row = s.exec(
-            select(LoginSession, Account).join(Account).where(LoginSession.token == token)
+            select(LoginSession, Account)
+            .join(Account)
+            .where(LoginSession.token_hash == _hash_token(token))
         ).first()
         if not row:
             return None, None
@@ -213,13 +299,84 @@ def require_auth_or_redirect(client: Client) -> Optional[Account]:
     return acc
 
 
+# POST-only endpoints for session management
+router = APIRouter()
+
+
+@router.post('/_set_session')
+def _post_set_session(
+    token: str = Body(..., embed=True), redirect: str = Body('/home', embed=True)
+):
+    response = RedirectResponse(redirect, status_code=303)
+    set_session_cookie(response, token)
+    return response
+
+
+@router.post('/_logout')
+def _logout(redirect: str = Body('/login', embed=True)):
+    resp = RedirectResponse(redirect, status_code=303)
+    resp.delete_cookie(COOKIE_NAME, path='/')
+    return resp
+
+
+app.include_router(router)
+
 # ------------------------------ EPHEMERAL STATE FOR CONFIRM PAGE ---------------------------------
 
-# Keyed by a one-time nonce passed via the URL; avoids relying on client.id across pages.
-pending_confirm: Dict[str, Dict[str, str]] = {}  # token -> {'username': ..., 'password': ...}
+# token -> (timestamp, {'username': ..., 'password': ...})
+pending_confirm: "OrderedDict[str, tuple[float, Dict[str, str]]]" = OrderedDict()
+
+
+def _pending_put(nonce: str, data: Dict[str, str]):
+    now = time.time()
+    pending_confirm[nonce] = (now, data)
+    # purge by size
+    while len(pending_confirm) > PENDING_CAP:
+        pending_confirm.popitem(last=False)
+    # purge by TTL
+    # remove oldest while expired
+    while pending_confirm:
+        ts, _ = next(iter(pending_confirm.values()))
+        if now - ts <= PENDING_TTL:
+            break
+        pending_confirm.popitem(last=False)
+
+
+def _pending_take(nonce: str) -> Optional[Dict[str, str]]:
+    item = pending_confirm.pop(nonce, None)
+    if not item:
+        return None
+    ts, data = item
+    return data if (time.time() - ts) <= PENDING_TTL else None
 
 
 # ------------------------------ PAGES ---------------------------------
+
+
+def _js_fetch_post(path: str, payload: dict) -> str:
+    # Sends CSRF header from cookie and follows redirect
+    return f"""
+(() => {{
+  function g(n) {{
+    return document.cookie.split('; ').find(row => row.startsWith(n+'='))?.split('=')[1];
+  }}
+  fetch('{path}', {{
+    method: 'POST',
+    headers: {{
+      'Content-Type': 'application/json',
+      '{CSRF_HEADER}': g('{CSRF_COOKIE}') || ''
+    }},
+    credentials: 'same-origin',
+    body: JSON.stringify({payload})
+  }}).then(r => {{
+    if (r.redirected) {{
+      window.location.href = r.url;
+    }} else {{
+      r.text().then(t => console.log(t));
+    }}
+  }});
+}})();
+"""
 
 
 @ui.page('/')
@@ -273,9 +430,9 @@ def create_account_page():
             if existing:
                 error_duplicate.text = 'That username is already taken. Please choose another.'
                 return
-        pwd = generate_password(5)
+        pwd = generate_password(5)  # intentionally short per demo
         nonce = secrets.token_urlsafe(16)
-        pending_confirm[nonce] = {'username': username, 'password': pwd}
+        _pending_put(nonce, {'username': username, 'password': pwd})
         ui.navigate.to(f'/confirm?token={nonce}')
 
     next_button.on('click', proceed)
@@ -292,7 +449,7 @@ def create_account_page():
 @ui.page('/confirm')
 def confirm_password_page(client: Client):
     token = client.request.query_params.get('token')
-    data = pending_confirm.get(token or '')
+    data = _pending_take(token or '')
     if not token or not data:
         ui.notify('No pending account creation found.', color='warning')
         ui.navigate.to('/create')
@@ -322,25 +479,22 @@ def confirm_password_page(client: Client):
                 s.add(account)
                 s.commit()
                 s.refresh(account)
-            pending_confirm.pop(token, None)
             login_token = create_login_session_record(account, client.request)
-            ui.navigate.to(f'/_set_session?token={login_token}&redirect=/home')
+            ui.run_javascript(
+                _js_fetch_post('/_set_session', {'token': login_token, 'redirect': '/home'})
+            )
 
         next_button = ui.button('Next', on_click=finalize)
         next_button.disable()
 
         def sync_next_state():
-            if acknowledged.value:
-                next_button.enable()
-            else:
-                next_button.disable()
+            next_button.enable() if acknowledged.value else next_button.disable()
 
         acknowledged.on('update:model-value', lambda _: sync_next_state())
         acknowledged.on('click', lambda _: sync_next_state())
         ui.timer(0.05, sync_next_state, once=True)
 
         def cancel_and_discard():
-            pending_confirm.pop(token, None)
             ui.navigate.to('/create')
 
         with ui.row().style('margin-top: 8px;'):
@@ -359,6 +513,13 @@ def login_page(client: Client):
             error.text = ''
             u = (username.value or '').strip()
             p = password.value or ''
+            ip = ip_from_request(client.request)
+
+            # login-specific rate limit
+            if not _bucket_ok(_login_buckets[(ip, u.lower())], LOGIN_ATTEMPTS, LOGIN_WINDOW):
+                error.text = 'Too many attempts. Please try again later.'
+                return
+
             with db_session() as s:
                 account = s.exec(
                     select(Account).where(Account.normalized_username == u.lower())
@@ -368,12 +529,19 @@ def login_page(client: Client):
                     return
                 try:
                     hasher.verify(account.key_hash, p)
+                    # optional rehash if parameters have changed
+                    if hasher.check_needs_rehash(account.key_hash):
+                        account.key_hash = hasher.hash(p)
+                        s.add(account)
+                        s.commit()
                 except Exception:
                     error.text = 'Invalid username or password.'
                     return
 
             login_token = create_login_session_record(account, client.request)
-            ui.navigate.to(f'/_set_session?token={login_token}&redirect=/home')
+            ui.run_javascript(
+                _js_fetch_post('/_set_session', {'token': login_token, 'redirect': '/home'})
+            )
 
         ui.button('Log in', on_click=do_login)
         ui.button('Back', on_click=lambda: ui.navigate.to('/'))
@@ -391,39 +559,15 @@ def home_page(client: Client):
         these = s.exec(select(LoginSession).where(LoginSession.account_id == account.id)).all()
 
     current_token = client.request.cookies.get(COOKIE_NAME, '')
+    current_token_hash = _hash_token(current_token) if current_token else ''
 
     ui.label('You are on the home page').style(
         'font-size: 1.6rem; font-weight: 600; margin-bottom: 8px;'
     )
     ui.label(f'Logged in as: {account.username}').style('color: #555; margin-bottom: 16px;')
 
-    select_all_btn = ui.button('Select all')
-    invalidate_btn = ui.button('Invalidate selected')
-
-    # header = ui.row().style('gap: 12px; font-weight: 600; border-bottom: 1px solid #ddd; padding-bottom: 6px; margin-top: 10px;')
-    # with header:
-    #     ui.label('Select').style('width: 70px;')
-    #     ui.label('Device').style('flex: 2;')
-    #     ui.label('IP').style('flex: 1;')
-    #     ui.label('Last activity').style('flex: 1;')
-    #     ui.label('Status').style('flex: 0.6;')
-    #     ui.label('Current').style('flex: 0.6;')
-
-    # checkbox_refs: List[tuple] = []
-
-    # for sess in these:
-    #     with ui.row().style('gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid #f0f0f0;'):
-    #         cb = ui.checkbox(value=False)
-    #         checkbox_refs.append((cb, sess.id, sess.token))
-    #         ui.label(user_agent_brief(sess.user_agent)).style('flex: 2;')
-    #         ui.label(sess.ip).style('flex: 1;')
-    #         ts = sess.last_activity.astimezone() if sess.last_activity.tzinfo else sess.last_activity
-    #         ui.label(ts.strftime('%Y-%m-%d %H:%M:%S')).style('flex: 1;')
-    #         ui.label('valid' if sess.valid else 'invalid').style(f'flex: 0.6; color: {"#2a8" if sess.valid else "#d33"};')
-    #         ui.label('Yes' if sess.token == current_token else '').style('flex: 0.6; font-weight: 600;' if sess.token == current_token else 'flex: 0.6;')
-
     columns = [
-        {'name': 'select', 'label': 'Select', 'field': 'id'},
+        {'name': 'id', 'label': 'ID', 'field': 'id'},
         {'name': 'device', 'label': 'Device', 'field': 'device'},
         {'name': 'ip', 'label': 'IP', 'field': 'ip'},
         {'name': 'last', 'label': 'Last activity', 'field': 'last'},
@@ -438,58 +582,55 @@ def home_page(client: Client):
                 'id': sess.id,
                 'device': user_agent_brief(sess.user_agent),
                 'ip': sess.ip,
-                'last': sess.last_activity.strftime('%Y-%m-%d %H:%M:%S'),
+                'last': (
+                    sess.last_activity.astimezone()
+                    if sess.last_activity.tzinfo
+                    else sess.last_activity
+                ).strftime('%Y-%m-%d %H:%M:%S'),
                 'status': 'valid' if sess.valid else 'invalid',
-                'current': 'Yes' if sess.token == current_token else '',
+                'current': 'Yes' if sess.token_hash == current_token_hash else '',
             }
         )
 
-    with ui.table(columns=columns, rows=rows, row_key='id', selection='multiple') as table:
-        table.add_slot(
-            'body-cell-select',
-            '''
-            <q-td>
-                <q-checkbox v-model="props.selected"></q-checkbox>
-            </q-td>
-        ''',
-        )
+    table = ui.table(columns=columns, rows=rows, row_key='id', selection='multiple')
 
-    def select_all():
-        for cb, _, _ in checkbox_refs:
-            cb.value = True
+    with ui.row().style('gap: 8px; margin-top: 10px;'):
 
-    async def invalidate_selected():
-        selected_ids = [sid for cb, sid, _ in checkbox_refs if cb.value]
-        if not selected_ids:
-            ui.notify('No devices selected.', color='warning')
-            return
-        current_invalidated = False
-        with db_session() as s:
-            for sid in selected_ids:
-                sess = s.get(LoginSession, sid)
-                if not sess:
-                    continue
-                if sess.token == current_token:
-                    current_invalidated = True
-                sess.valid = False
-                s.add(sess)
-            s.commit()
-        ui.notify('Selected devices invalidated.', color='positive')
-        if current_invalidated:
-            ui.navigate.to('/_logout?redirect=/login')
-        else:
-            ui.navigate.reload()
+        def select_all():
+            table._props['selected'] = [r['id'] for r in rows]  # NiceGUI hacky selection set
+            table.update()
 
-    select_all_btn.on('click', select_all)
-    invalidate_btn.on('click', invalidate_selected)
+        async def invalidate_selected():
+            selected_ids = table.selected
+            if not selected_ids:
+                ui.notify('No devices selected.', color='warning')
+                return
+            current_invalidated = False
+            with db_session() as s:
+                for sid in selected_ids:
+                    sess = s.get(LoginSession, sid)
+                    if not sess:
+                        continue
+                    if sess.token_hash == current_token_hash:
+                        current_invalidated = True
+                    sess.valid = False
+                    s.add(sess)
+                s.commit()
+            ui.notify('Selected devices invalidated.', color='positive')
+            if current_invalidated:
+                ui.run_javascript(_js_fetch_post('/_logout', {'redirect': '/login'}))
+            else:
+                ui.navigate.reload()
+
+        ui.button('Select all', on_click=select_all)
+        ui.button('Invalidate selected', on_click=invalidate_selected)
 
 
 # ------------------------------ RUN ---------------------------------
 
-import os
-
-os.environ["PROXY_HEADERS"] = "1"
-os.environ["FORWARDED_ALLOW_IPS"] = "*"
+# Remove permissive proxy env; rely on ProxyHeadersMiddleware allowlist above
+os.environ.pop("FORWARDED_ALLOW_IPS", None)
+os.environ.pop("PROXY_HEADERS", None)
 
 ui.run(
     host='0.0.0.0',
