@@ -20,13 +20,14 @@ import hashlib
 from collections import defaultdict, deque, OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Deque, List, Optional
-
-from nicegui import ui, Client
+from urllib.parse import urlsplit
+from nicegui import ui, app, Client
 from fastapi import Request, Response, Body, APIRouter
 from fastapi.responses import PlainTextResponse, RedirectResponse
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, Field, Session, select, create_engine, Column, String, Relationship
 import argon2
-from starlette.middleware.proxy_headers import ProxyHeadersMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 # ------------------------------ CONFIG ---------------------------------
 
@@ -41,11 +42,9 @@ ALLOWED_CHARS_PATTERN = re.compile(r'^[a-zA-Z_.-]*$')
 
 DB_PATH = os.environ.get('DB_PATH', 'sqlite:///./users.db')
 
-COOKIE_NAME = '__Host-session'
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
 # CSRF
-CSRF_COOKIE = '__Host-csrf'
 CSRF_HEADER = 'x-csrf-token'
 
 # Session timeouts
@@ -56,9 +55,14 @@ ABSOLUTE_LIFETIME = timedelta(days=7)
 PENDING_TTL = 300  # seconds
 PENDING_CAP = 200
 
-# ------------------------------ FASTAPI APP ---------------------------------
+SECURE_COOKIES = bool(int(os.environ.get('SECURE_COOKIES', '0')))  # 0 in local HTTP, 1 behind HTTPS
 
-app = ui.get_app()
+SESSION_COOKIE_NAME = '__Host-session' if SECURE_COOKIES else 'session'
+CSRF_COOKIE_NAME = '__Host-csrf' if SECURE_COOKIES else 'csrf'
+
+COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+
+# ------------------------------ FASTAPI APP ---------------------------------
 
 # Trust only local proxy / adjust to your actual reverse proxy IPs
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=['127.0.0.1', '::1'])
@@ -151,22 +155,64 @@ def user_agent_brief(ua: str) -> str:
 
 # ------------------------------ CSRF MIDDLEWARE ---------------------------------
 
+# NiceGUI hits several internal endpoints (polling/events/socket.io).
+# Exempt them fully, or the UI won't bootstrap and pages can appear blank.
+NICEGUI_CSRF_EXEMPT_PREFIXES = (
+    '/socket.io',  # Socket.IO transport
+    '/_nicegui',  # NiceGUI JSON/event endpoints
+    '/_event',  # some versions use this path for events
+    '/_static',  # static assets served by NiceGUI
+)
+
+
+def _hostport(netloc: str) -> str:
+    # normalize "example.com:80" vs "example.com"
+    return netloc.lower()
+
+
+def _same_origin(request: Request) -> bool:
+    # Accept same-origin if Origin/Referer host:port equals our host:port after proxy headers
+    req_scheme = request.url.scheme
+    req_host = _hostport(request.url.netloc)
+    origin = request.headers.get('origin')
+    referer = request.headers.get('referer')
+
+    def ok(h: str) -> bool:
+        if not h:
+            return False
+        parts = urlsplit(h)
+        if parts.scheme != req_scheme:
+            return False
+        return _hostport(parts.netloc) == req_host
+
+    return ok(origin) or ok(referer)
+
 
 @app.middleware('http')
 async def csrf_middleware(request: Request, call_next):
+    path = request.url.path
+    if any(path.startswith(p) for p in NICEGUI_CSRF_EXEMPT_PREFIXES):
+        return await call_next(request)
+
     if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
-        c = request.cookies.get(CSRF_COOKIE)
+        c = request.cookies.get(CSRF_COOKIE_NAME)
         h = request.headers.get(CSRF_HEADER)
-        if not c or not h or not secrets.compare_digest(c, h):
+        ok = False
+        if c and h and secrets.compare_digest(c, h):
+            ok = True
+        elif _same_origin(request):
+            ok = True
+        if not ok:
             return PlainTextResponse('CSRF check failed', status_code=403)
+
     response = await call_next(request)
-    if not request.cookies.get(CSRF_COOKIE):
-        # non-HttpOnly so the client JS can reflect it into header; __Host- requires Secure, Path=/, no Domain
+
+    if not request.cookies.get(CSRF_COOKIE_NAME):
         response.set_cookie(
-            CSRF_COOKIE,
+            CSRF_COOKIE_NAME,
             secrets.token_urlsafe(32),
             httponly=False,
-            secure=True,
+            secure=SECURE_COOKIES,
             samesite='lax',
             path='/',
             max_age=COOKIE_MAX_AGE,
@@ -180,8 +226,22 @@ async def csrf_middleware(request: Request, call_next):
 @app.middleware('http')
 async def headers_middleware(request: Request, call_next):
     resp = await call_next(request)
-    resp.headers.setdefault('Content-Security-Policy', "default-src 'self'")
-    resp.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+
+    # NiceGUI (Vue/Quasar) may use inline scripts and eval in dev; allow websocket connects.
+    # If you later harden for prod, try removing 'unsafe-eval' after verifying the app still loads.
+    resp.headers.setdefault(
+        'Content-Security-Policy',
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self' data:; "
+        "connect-src 'self' ws: wss:; "
+        "frame-ancestors 'none'",
+    )
+
+    if SECURE_COOKIES:
+        resp.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
     resp.headers.setdefault('X-Frame-Options', 'DENY')
     resp.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
     resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
@@ -215,7 +275,7 @@ async def rate_limit_and_session_middleware(request: Request, call_next):
 
     # session activity & timeout enforcement
     try:
-        token = request.cookies.get(COOKIE_NAME)
+        token = request.cookies.get(SESSION_COOKIE_NAME)
         if token:
             with db_session() as s:
                 h = _hash_token(token)
@@ -229,7 +289,7 @@ async def rate_limit_and_session_middleware(request: Request, call_next):
                         ls.valid = False
                         s.add(ls)
                         s.commit()
-                        response.delete_cookie(COOKIE_NAME, path='/')
+                        response.delete_cookie(SESSION_COOKIE_NAME, path='/')
                     else:
                         ls.last_activity = now
                         s.add(ls)
@@ -243,14 +303,20 @@ async def rate_limit_and_session_middleware(request: Request, call_next):
 # ------------------------------ AUTH HELPERS & ENDPOINTS ---------------------------------
 
 
+# Add near CONFIG:
+SECURE_COOKIES = bool(
+    int(os.environ.get('SECURE_COOKIES', '0'))
+)  # 1 in prod (HTTPS), 0 in local dev (HTTP)
+
+
 def set_session_cookie(response: Response, token: str):
     response.set_cookie(
-        key=COOKIE_NAME,
+        key=SESSION_COOKIE_NAME,
         value=token,
         httponly=True,
         max_age=COOKIE_MAX_AGE,
         samesite='lax',
-        secure=True,
+        secure=SECURE_COOKIES,
         path='/',
     )
 
@@ -273,7 +339,7 @@ def create_login_session_record(account: Account, request: Request) -> str:
 
 
 def get_current_session_and_account(request: Request):
-    token = request.cookies.get(COOKIE_NAME)
+    token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         return None, None
     with db_session() as s:
@@ -315,7 +381,7 @@ def _post_set_session(
 @router.post('/_logout')
 def _logout(redirect: str = Body('/login', embed=True)):
     resp = RedirectResponse(redirect, status_code=303)
-    resp.delete_cookie(COOKIE_NAME, path='/')
+    resp.delete_cookie(SESSION_COOKIE_NAME, path='/')
     return resp
 
 
@@ -354,27 +420,46 @@ def _pending_take(nonce: str) -> Optional[Dict[str, str]]:
 
 
 def _js_fetch_post(path: str, payload: dict) -> str:
-    # Sends CSRF header from cookie and follows redirect
     return f"""
-(() => {{
-  function g(n) {{
-    return document.cookie.split('; ').find(row => row.startsWith(n+'='))?.split('=')[1];
+(async () => {{
+  function getCookie(name) {{
+    const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{{}}()\\[\\]\\\\\\/\\+^])/g, '\\\\$1') + '=([^;]*)'));
+    return m ? decodeURIComponent(m[1]) : null;
   }}
-  fetch('{path}', {{
-    method: 'POST',
-    headers: {{
-      'Content-Type': 'application/json',
-      '{CSRF_HEADER}': g('{CSRF_COOKIE}') || ''
-    }},
-    credentials: 'same-origin',
-    body: JSON.stringify({payload})
-  }}).then(r => {{
-    if (r.redirected) {{
-      window.location.href = r.url;
-    }} else {{
-      r.text().then(t => console.log(t));
+
+  async function ensureCsrf() {{
+    if (!getCookie('{CSRF_COOKIE_NAME}')) {{
+      await fetch('/', {{ credentials: 'same-origin' }}); // prime CSRF cookie
     }}
-  }});
+  }}
+
+  async function postOnce() {{
+    const csrf = getCookie('{CSRF_COOKIE_NAME}') || '';
+    const res = await fetch('{path}', {{
+      method: 'POST',
+      headers: {{
+        'Content-Type': 'application/json',
+        '{CSRF_HEADER}': csrf
+      }},
+      credentials: 'same-origin',
+      body: JSON.stringify({payload})
+    }});
+    return res;
+  }}
+
+  await ensureCsrf();
+  let r = await postOnce();
+  if (r.status === 403) {{
+    await ensureCsrf();
+    r = await postOnce(); // retry once after priming
+  }}
+  if (r.redirected) {{
+    window.location.href = r.url;
+  }} else {{
+    // Optional: surface errors
+    const t = await r.text();
+    console.log('POST {path} ->', r.status, t);
+  }}
 }})();
 """
 
@@ -470,19 +555,45 @@ def confirm_password_page(client: Client):
         acknowledged = ui.checkbox('I have stored this password in a safe place.')
 
         async def finalize():
-            with db_session() as s:
-                account = Account(
-                    username=username,
-                    normalized_username=username.lower(),
-                    key_hash=hasher.hash(password),
+            next_button.disable()  # prevent double submit
+            try:
+                # Create (or load) account safely
+                with db_session() as s:
+                    account = s.exec(
+                        select(Account).where(Account.normalized_username == username.lower())
+                    ).first()
+                    if not account:
+                        account = Account(
+                            username=username,
+                            normalized_username=username.lower(),
+                            key_hash=hasher.hash(password),
+                        )
+                        s.add(account)
+                        try:
+                            s.commit()
+                            s.refresh(account)
+                        except IntegrityError:
+                            s.rollback()
+                            account = s.exec(
+                                select(Account).where(
+                                    Account.normalized_username == username.lower()
+                                )
+                            ).first()
+                            if not account:
+                                ui.notify(
+                                    'Could not create account. Please try again.', color='negative'
+                                )
+                                return
+
+                # Create session and set cookie via CSRF-safe POST
+                login_token = create_login_session_record(account, client.request)
+                ui.run_javascript(
+                    _js_fetch_post('/_set_session', {'token': login_token, 'redirect': '/home'})
                 )
-                s.add(account)
-                s.commit()
-                s.refresh(account)
-            login_token = create_login_session_record(account, client.request)
-            ui.run_javascript(
-                _js_fetch_post('/_set_session', {'token': login_token, 'redirect': '/home'})
-            )
+
+            finally:
+                # Don't re-enable; navigation will occur. If it doesn’t, user can refresh.
+                pass
 
         next_button = ui.button('Next', on_click=finalize)
         next_button.disable()
@@ -558,7 +669,7 @@ def home_page(client: Client):
     with db_session() as s:
         these = s.exec(select(LoginSession).where(LoginSession.account_id == account.id)).all()
 
-    current_token = client.request.cookies.get(COOKIE_NAME, '')
+    current_token = client.request.cookies.get(SESSION_COOKIE_NAME, '')
     current_token_hash = _hash_token(current_token) if current_token else ''
 
     ui.label('You are on the home page').style(
