@@ -12,11 +12,9 @@ from nicegui import app, Client, ui
 from sqlmodel import Field, SQLModel, Session, create_engine, select, Column, String, Relationship
 import argon2
 
-
 # ------------------------------ CONFIG ---------------------------------
 
-PORT = 8080
-RATE_LIMIT_REQUESTS = 10
+RATE_LIMIT_REQUESTS = 100
 RATE_LIMIT_WINDOW_SECONDS = 60
 
 USERNAME_PATTERN = re.compile(r'^[a-zA-Z_.-]{4,12}$')
@@ -402,37 +400,59 @@ def home_page(client: Client):
     select_all_btn = ui.button('Select all')
     invalidate_btn = ui.button('Invalidate selected')
 
-    header = ui.row().style(
-        'gap: 12px; font-weight: 600; border-bottom: 1px solid #ddd; padding-bottom: 6px; margin-top: 10px;'
-    )
-    with header:
-        ui.label('Select').style('width: 70px;')
-        ui.label('Device').style('flex: 2;')
-        ui.label('IP').style('flex: 1;')
-        ui.label('Last activity').style('flex: 1;')
-        ui.label('Status').style('flex: 0.6;')
-        ui.label('Current').style('flex: 0.6;')
+    # header = ui.row().style('gap: 12px; font-weight: 600; border-bottom: 1px solid #ddd; padding-bottom: 6px; margin-top: 10px;')
+    # with header:
+    #     ui.label('Select').style('width: 70px;')
+    #     ui.label('Device').style('flex: 2;')
+    #     ui.label('IP').style('flex: 1;')
+    #     ui.label('Last activity').style('flex: 1;')
+    #     ui.label('Status').style('flex: 0.6;')
+    #     ui.label('Current').style('flex: 0.6;')
 
-    checkbox_refs: List[tuple] = []
+    # checkbox_refs: List[tuple] = []
 
+    # for sess in these:
+    #     with ui.row().style('gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid #f0f0f0;'):
+    #         cb = ui.checkbox(value=False)
+    #         checkbox_refs.append((cb, sess.id, sess.token))
+    #         ui.label(user_agent_brief(sess.user_agent)).style('flex: 2;')
+    #         ui.label(sess.ip).style('flex: 1;')
+    #         ts = sess.last_activity.astimezone() if sess.last_activity.tzinfo else sess.last_activity
+    #         ui.label(ts.strftime('%Y-%m-%d %H:%M:%S')).style('flex: 1;')
+    #         ui.label('valid' if sess.valid else 'invalid').style(f'flex: 0.6; color: {"#2a8" if sess.valid else "#d33"};')
+    #         ui.label('Yes' if sess.token == current_token else '').style('flex: 0.6; font-weight: 600;' if sess.token == current_token else 'flex: 0.6;')
+
+    columns = [
+        {'name': 'select', 'label': 'Select', 'field': 'id'},
+        {'name': 'device', 'label': 'Device', 'field': 'device'},
+        {'name': 'ip', 'label': 'IP', 'field': 'ip'},
+        {'name': 'last', 'label': 'Last activity', 'field': 'last'},
+        {'name': 'status', 'label': 'Status', 'field': 'status'},
+        {'name': 'current', 'label': 'Current', 'field': 'current'},
+    ]
+
+    rows = []
     for sess in these:
-        with ui.row().style(
-            'gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid #f0f0f0;'
-        ):
-            cb = ui.checkbox(value=False)
-            checkbox_refs.append((cb, sess.id, sess.token))
-            ui.label(user_agent_brief(sess.user_agent)).style('flex: 2;')
-            ui.label(sess.ip).style('flex: 1;')
-            ts = (
-                sess.last_activity.astimezone() if sess.last_activity.tzinfo else sess.last_activity
-            )
-            ui.label(ts.strftime('%Y-%m-%d %H:%M:%S')).style('flex: 1;')
-            ui.label('valid' if sess.valid else 'invalid').style(
-                f'flex: 0.6; color: {"#2a8" if sess.valid else "#d33"};'
-            )
-            ui.label('Yes' if sess.token == current_token else '').style(
-                'flex: 0.6; font-weight: 600;' if sess.token == current_token else 'flex: 0.6;'
-            )
+        rows.append(
+            {
+                'id': sess.id,
+                'device': user_agent_brief(sess.user_agent),
+                'ip': sess.ip,
+                'last': sess.last_activity.strftime('%Y-%m-%d %H:%M:%S'),
+                'status': 'valid' if sess.valid else 'invalid',
+                'current': 'Yes' if sess.token == current_token else '',
+            }
+        )
+
+    with ui.table(columns=columns, rows=rows, row_key='id', selection='multiple') as table:
+        table.add_slot(
+            'body-cell-select',
+            '''
+            <q-td>
+                <q-checkbox v-model="props.selected"></q-checkbox>
+            </q-td>
+        ''',
+        )
 
     def select_all():
         for cb, _, _ in checkbox_refs:
@@ -466,9 +486,15 @@ def home_page(client: Client):
 
 # ------------------------------ RUN ---------------------------------
 
+import os
+
+os.environ["PROXY_HEADERS"] = "1"
+os.environ["FORWARDED_ALLOW_IPS"] = "*"
+
 ui.run(
     host='0.0.0.0',
-    port=PORT,
+    port=8080,
     title='NiceGUI Auth Demo',
     reload=False,
+    uvicorn_logging_level='info',
 )
