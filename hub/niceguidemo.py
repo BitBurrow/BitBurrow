@@ -7,9 +7,13 @@
 # - Proxy header trust restricted
 # - Security headers (CSP, HSTS, etc.)
 # - Idle + absolute session timeouts
-# - Improved rate limiting, including login-specific limiter
+# - Improved rate limiting, including login-specific limiter (with minimal eviction cap)
 # - Pending-confirm store with TTL
 # - IP extraction via trusted proxy middleware
+# - Enforce session expiry before handlers
+# - Logout invalidates server-side session
+# - Open-redirect protection
+# - TrustedHostMiddleware
 
 import os
 import re
@@ -28,6 +32,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, Field, Session, select, create_engine, Column, String, Relationship
 import argon2
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 
 # ------------------------------ CONFIG ---------------------------------
 
@@ -55,17 +61,37 @@ ABSOLUTE_LIFETIME = timedelta(days=7)
 PENDING_TTL = 300  # seconds
 PENDING_CAP = 200
 
-SECURE_COOKIES = bool(int(os.environ.get('SECURE_COOKIES', '0')))  # 0 in local HTTP, 1 behind HTTPS
-
+# 1 in prod (HTTPS), 0 in local dev (HTTP)
+SECURE_COOKIES = bool(int(os.environ.get('SECURE_COOKIES', '0')))
 SESSION_COOKIE_NAME = '__Host-session' if SECURE_COOKIES else 'session'
 CSRF_COOKIE_NAME = '__Host-csrf' if SECURE_COOKIES else 'csrf'
 
-COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+# Environment
+PROD = os.getenv('ENV', 'dev') == 'prod'
+
+# Rate limiter minimal eviction cap
+_BUCKET_CAP = int(os.getenv('BUCKET_CAP', '10000'))
+
+# Trusted hosts
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,[::1]').split(',')
 
 # ------------------------------ FASTAPI APP ---------------------------------
 
-# Trust only local proxy / adjust to your actual reverse proxy IPs
+# Trust only local proxy / adjust to your actual reverse proxy IPs separately if needed
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=['127.0.0.1', '::1'])
+
+# Enforce HTTPS redirects in prod (expects TLS termination at proxy)
+if PROD and SECURE_COOKIES:
+    app.add_middleware(HTTPSRedirectMiddleware)
+
+# Host header hardening
+if PROD:
+    app.add_middleware(
+        TrustedHostMiddleware, allowed_hosts=[h.strip() for h in ALLOWED_HOSTS if h.strip()]
+    )
+else:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=['*'])
+
 
 # ------------------------------ DATABASE ---------------------------------
 
@@ -229,16 +255,29 @@ async def headers_middleware(request: Request, call_next):
 
     # NiceGUI (Vue/Quasar) may use inline scripts and eval in dev; allow websocket connects.
     # If you later harden for prod, try removing 'unsafe-eval' after verifying the app still loads.
-    resp.headers.setdefault(
-        'Content-Security-Policy',
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; "
-        "font-src 'self' data:; "
-        "connect-src 'self' ws: wss:; "
-        "frame-ancestors 'none'",
-    )
+    if PROD:
+        resp.headers['Content-Security-Policy'] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self'; "
+            "img-src 'self' data:; "
+            "font-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'"
+        )
+        resp.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
+        resp.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+    else:
+        resp.headers.setdefault(
+            'Content-Security-Policy',
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "font-src 'self' data:; "
+            "connect-src 'self' ws: wss:; "
+            "frame-ancestors 'none'",
+        )
 
     if SECURE_COOKIES:
         resp.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
@@ -264,36 +303,62 @@ def _bucket_ok(bucket: Deque[datetime], limit: int, window_s: int) -> bool:
     return True
 
 
+def _get_bucket(store: Dict, key):
+    if key not in store and len(store) >= _BUCKET_CAP:
+        try:
+            store.pop(next(iter(store)))
+        except StopIteration:
+            pass
+    return store.setdefault(key, deque())
+
+
+def _utc_aware(dt: datetime) -> datetime:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 @app.middleware('http')
 async def rate_limit_and_session_middleware(request: Request, call_next):
     ip = ip_from_request(request)
-    # global per-IP limiter
-    if not _bucket_ok(_rate_limit_buckets[ip], RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS):
+    if not _bucket_ok(
+        _get_bucket(_rate_limit_buckets, ip), RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS
+    ):
         return PlainTextResponse('Too Many Requests', status_code=429)
+
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token:
+        with db_session() as s:
+            h = _hash_token(token)
+            ls = s.exec(select(LoginSession).where(LoginSession.token_hash == h)).first()
+            if ls and ls.valid:
+                now = datetime.now(timezone.utc)
+                created = _utc_aware(ls.created_at)
+                last = _utc_aware(ls.last_activity)
+                if (now - created) > ABSOLUTE_LIFETIME or (now - last) > IDLE_TIMEOUT:
+                    ls.valid = False
+                    s.add(ls)
+                    s.commit()
+                    resp = (
+                        RedirectResponse('/login', status_code=303)
+                        if 'text/html' in (request.headers.get('accept', ''))
+                        else PlainTextResponse('Session expired', status_code=401)
+                    )
+                    resp.delete_cookie(SESSION_COOKIE_NAME, path='/')
+                    return resp
 
     response = await call_next(request)
 
-    # session activity & timeout enforcement
     try:
-        token = request.cookies.get(SESSION_COOKIE_NAME)
-        if token:
+        if token and response.status_code < 400:
             with db_session() as s:
-                h = _hash_token(token)
-                ls = s.exec(select(LoginSession).where(LoginSession.token_hash == h)).first()
+                ls = s.exec(
+                    select(LoginSession).where(LoginSession.token_hash == _hash_token(token))
+                ).first()
                 if ls and ls.valid:
-                    now = datetime.now(timezone.utc)
-                    # absolute lifetime from created_at; idle from last_activity
-                    if (now - ls.created_at) > ABSOLUTE_LIFETIME or (
-                        now - ls.last_activity
-                    ) > IDLE_TIMEOUT:
-                        ls.valid = False
-                        s.add(ls)
-                        s.commit()
-                        response.delete_cookie(SESSION_COOKIE_NAME, path='/')
-                    else:
-                        ls.last_activity = now
-                        s.add(ls)
-                        s.commit()
+                    ls.last_activity = datetime.now(timezone.utc)
+                    s.add(ls)
+                    s.commit()
     except Exception:
         pass
 
@@ -303,19 +368,13 @@ async def rate_limit_and_session_middleware(request: Request, call_next):
 # ------------------------------ AUTH HELPERS & ENDPOINTS ---------------------------------
 
 
-# Add near CONFIG:
-SECURE_COOKIES = bool(
-    int(os.environ.get('SECURE_COOKIES', '0'))
-)  # 1 in prod (HTTPS), 0 in local dev (HTTP)
-
-
 def set_session_cookie(response: Response, token: str):
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
         httponly=True,
         max_age=COOKIE_MAX_AGE,
-        samesite='lax',
+        samesite='strict',
         secure=SECURE_COOKIES,
         path='/',
     )
@@ -365,7 +424,10 @@ def require_auth_or_redirect(client: Client) -> Optional[Account]:
     return acc
 
 
-# POST-only endpoints for session management
+def _sanitize_redirect(url: str) -> str:
+    return url if url.startswith('/') and '://' not in url else '/home'
+
+
 router = APIRouter()
 
 
@@ -373,14 +435,24 @@ router = APIRouter()
 def _post_set_session(
     token: str = Body(..., embed=True), redirect: str = Body('/home', embed=True)
 ):
-    response = RedirectResponse(redirect, status_code=303)
+    response = RedirectResponse(_sanitize_redirect(redirect), status_code=303)
     set_session_cookie(response, token)
     return response
 
 
 @router.post('/_logout')
-def _logout(redirect: str = Body('/login', embed=True)):
-    resp = RedirectResponse(redirect, status_code=303)
+def _logout(request: Request, redirect: str = Body('/login', embed=True)):
+    safe_redirect = _sanitize_redirect(redirect)
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token:
+        with db_session() as s:
+            h = _hash_token(token)
+            ls = s.exec(select(LoginSession).where(LoginSession.token_hash == h)).first()
+            if ls:
+                ls.valid = False
+                s.add(ls)
+                s.commit()
+    resp = RedirectResponse(safe_redirect, status_code=303)
     resp.delete_cookie(SESSION_COOKIE_NAME, path='/')
     return resp
 
@@ -627,7 +699,9 @@ def login_page(client: Client):
             ip = ip_from_request(client.request)
 
             # login-specific rate limit
-            if not _bucket_ok(_login_buckets[(ip, u.lower())], LOGIN_ATTEMPTS, LOGIN_WINDOW):
+            if not _bucket_ok(
+                _get_bucket(_login_buckets, (ip, u.lower())), LOGIN_ATTEMPTS, LOGIN_WINDOW
+            ):
                 error.text = 'Too many attempts. Please try again later.'
                 return
 
