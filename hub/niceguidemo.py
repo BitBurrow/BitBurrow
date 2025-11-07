@@ -1,41 +1,27 @@
-# Full NiceGUI + FastAPI demo with security improvements
-# - REST + WebSocket UI
-# - Secure cookie session (hash stored server-side)
-# - CSRF (double-submit cookie with header)
-# - No tokens in URLs
-# - POST for state-changing actions (login, logout, set session)
-# - Proxy header trust restricted
-# - Security headers (CSP, HSTS, etc.)
-# - Idle + absolute session timeouts
-# - Improved rate limiting, including login-specific limiter (with minimal eviction cap)
-# - Pending-confirm store with TTL
-# - IP extraction via trusted proxy middleware
-# - Enforce session expiry before handlers
-# - Logout invalidates server-side session
-# - Open-redirect protection
-# - TrustedHostMiddleware
-
 import os
 import re
 import time
 import string
 import secrets
 import hashlib
-from collections import defaultdict, deque, OrderedDict
-from datetime import datetime, timedelta, timezone
+import collections
+from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from typing import Dict, Deque, List, Optional
-from urllib.parse import urlsplit
+import urllib.parse
 from nicegui import ui, app, Client
 from fastapi import Request, Response, Body, APIRouter
 from fastapi.responses import PlainTextResponse, RedirectResponse
-from sqlalchemy.exc import IntegrityError
+import sqlalchemy.exc
 from sqlmodel import SQLModel, Field, Session, select, create_engine, Column, String, Relationship
 import argon2
-from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
+import uvicorn.middleware.proxy_headers
+import fastapi.middleware.trustedhost
+import starlette.middleware.httpsredirect
 
-# ------------------------------ CONFIG ---------------------------------
+###
+### config
+###
+
 
 RATE_LIMIT_REQUESTS = 100
 RATE_LIMIT_WINDOW_SECONDS = 60
@@ -54,8 +40,8 @@ COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 CSRF_HEADER = 'x-csrf-token'
 
 # Session timeouts
-IDLE_TIMEOUT = timedelta(hours=8)
-ABSOLUTE_LIFETIME = timedelta(days=7)
+IDLE_TIMEOUT = TimeDelta(hours=8)
+ABSOLUTE_LIFETIME = TimeDelta(days=7)
 
 # Pending confirm TTL and capacity
 PENDING_TTL = 300  # seconds
@@ -72,28 +58,52 @@ PROD = os.getenv('ENV', 'dev') == 'prod'
 # Rate limiter minimal eviction cap
 _BUCKET_CAP = int(os.getenv('BUCKET_CAP', '10000'))
 
-# Trusted hosts
+# Allowed hosts, e.g. 'example.com,www.example.com,localhost'
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,[::1]').split(',')
 
-# ------------------------------ FASTAPI APP ---------------------------------
+# Trusted IPs, e.g. '127.0.0.1,::1,172.17.0.1,10.8.0.0/16'
+TRUSTED_IPS = {h.strip() for h in os.getenv('TRUSTED_IPS', '127.0.0.1,::1').split(',') if h.strip()}
 
-# Trust only local proxy / adjust to your actual reverse proxy IPs separately if needed
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=['127.0.0.1', '::1'])
+
+###
+### FastAPI app
+###
+
 
 # Enforce HTTPS redirects in prod (expects TLS termination at proxy)
 if PROD and SECURE_COOKIES:
-    app.add_middleware(HTTPSRedirectMiddleware)
+    app.add_middleware(starlette.middleware.httpsredirect.HTTPSRedirectMiddleware)
 
-# Host header hardening
-if PROD:
-    app.add_middleware(
-        TrustedHostMiddleware, allowed_hosts=[h.strip() for h in ALLOWED_HOSTS if h.strip()]
-    )
-else:
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=['*'])
+app.add_middleware(
+    fastapi.middleware.trustedhost.TrustedHostMiddleware,
+    allowed_hosts=list(ALLOWED_HOSTS),
+)
+app.add_middleware(
+    uvicorn.middleware.proxy_headers.ProxyHeadersMiddleware,
+    trusted_hosts=list(TRUSTED_IPS),
+)
 
 
-# ------------------------------ DATABASE ---------------------------------
+###
+### database
+###
+
+
+class EpochUTCDateTime(sqlalchemy.types.TypeDecorator):
+    impl = sqlalchemy.types.Integer
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=TimeZone.utc)
+        return int(value.timestamp())
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return DateTime.fromtimestamp(value, tz=TimeZone.utc)
 
 
 class Account(SQLModel, table=True):
@@ -101,7 +111,7 @@ class Account(SQLModel, table=True):
     username: str = Field(sa_column=Column(String(64), unique=True, index=True))
     normalized_username: str = Field(sa_column=Column(String(64), unique=True, index=True))
     key_hash: str
-    sessions: List["LoginSession"] = Relationship(back_populates="account")
+    login_sessions: List['LoginSession'] = Relationship(back_populates='account')
 
 
 class LoginSession(SQLModel, table=True):
@@ -110,10 +120,16 @@ class LoginSession(SQLModel, table=True):
     token_hash: str = Field(index=True, unique=True)
     user_agent: str
     ip: str
-    created_at: datetime
-    last_activity: datetime
+    created_at: DateTime = Field(
+        sa_column=Column(EpochUTCDateTime()),
+        default_factory=lambda: DateTime.now(TimeZone.utc),
+    )
+    last_activity: DateTime = Field(
+        sa_column=Column(EpochUTCDateTime()),
+        default_factory=lambda: DateTime.now(TimeZone.utc),
+    )
     valid: bool = Field(default=True)
-    account: Optional[Account] = Relationship(back_populates="sessions")
+    account: Optional[Account] = Relationship(back_populates="login_sessions")
 
 
 engine = create_engine(DB_PATH, echo=False)
@@ -124,7 +140,10 @@ def db_session() -> Session:
     return Session(engine)
 
 
-# ------------------------------ SECURITY ---------------------------------
+###
+### security
+###
+
 
 hasher = argon2.PasswordHasher()
 
@@ -139,11 +158,7 @@ def generate_password(length: int = 5) -> str:
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
-def generate_token() -> str:
-    return secrets.token_urlsafe(32)
-
-
-def _hash_token(t: str) -> str:
+def hash_token(t: str) -> str:
     return hashlib.sha256(t.encode()).hexdigest()
 
 
@@ -163,7 +178,6 @@ def user_agent_brief(ua: str) -> str:
         os_name = 'iPhone iOS'
     elif 'iPad' in ua:
         os_name = 'iPad iOS'
-
     browser = 'Browser'
     if 'Edg/' in ua or 'Edge/' in ua:
         browser = 'Edge'
@@ -175,11 +189,13 @@ def user_agent_brief(ua: str) -> str:
         browser = 'Firefox'
     elif 'Chromium' in ua:
         browser = 'Chromium'
-
     return f'{browser} on {os_name}'
 
 
-# ------------------------------ CSRF MIDDLEWARE ---------------------------------
+###
+### CSRF middleware
+###
+
 
 # NiceGUI hits several internal endpoints (polling/events/socket.io).
 # Exempt them fully, or the UI won't bootstrap and pages can appear blank.
@@ -191,25 +207,25 @@ NICEGUI_CSRF_EXEMPT_PREFIXES = (
 )
 
 
-def _hostport(netloc: str) -> str:
-    # normalize "example.com:80" vs "example.com"
+def hostport(netloc: str) -> str:
+    # normalize 'example.com:80' vs 'example.com'
     return netloc.lower()
 
 
-def _same_origin(request: Request) -> bool:
+def same_origin(request: Request) -> bool:
     # Accept same-origin if Origin/Referer host:port equals our host:port after proxy headers
     req_scheme = request.url.scheme
-    req_host = _hostport(request.url.netloc)
+    req_host = hostport(request.url.netloc)
     origin = request.headers.get('origin')
     referer = request.headers.get('referer')
 
     def ok(h: str) -> bool:
         if not h:
             return False
-        parts = urlsplit(h)
+        parts = urllib.parse.urlsplit(h)
         if parts.scheme != req_scheme:
             return False
-        return _hostport(parts.netloc) == req_host
+        return hostport(parts.netloc) == req_host
 
     return ok(origin) or ok(referer)
 
@@ -219,20 +235,17 @@ async def csrf_middleware(request: Request, call_next):
     path = request.url.path
     if any(path.startswith(p) for p in NICEGUI_CSRF_EXEMPT_PREFIXES):
         return await call_next(request)
-
     if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
         c = request.cookies.get(CSRF_COOKIE_NAME)
         h = request.headers.get(CSRF_HEADER)
         ok = False
         if c and h and secrets.compare_digest(c, h):
             ok = True
-        elif _same_origin(request):
+        elif same_origin(request):
             ok = True
         if not ok:
             return PlainTextResponse('CSRF check failed', status_code=403)
-
     response = await call_next(request)
-
     if not request.cookies.get(CSRF_COOKIE_NAME):
         response.set_cookie(
             CSRF_COOKIE_NAME,
@@ -246,7 +259,9 @@ async def csrf_middleware(request: Request, call_next):
     return response
 
 
-# ------------------------------ SECURITY HEADERS MIDDLEWARE ---------------------------------
+###
+### security headers middleware
+###
 
 
 @app.middleware('http')
@@ -278,7 +293,6 @@ async def headers_middleware(request: Request, call_next):
             "connect-src 'self' ws: wss:; "
             "frame-ancestors 'none'",
         )
-
     if SECURE_COOKIES:
         resp.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
     resp.headers.setdefault('X-Frame-Options', 'DENY')
@@ -287,14 +301,17 @@ async def headers_middleware(request: Request, call_next):
     return resp
 
 
-# ------------------------------ RATE LIMITING ---------------------------------
+###
+### rate limiting
+###
 
-_rate_limit_buckets: Dict[str, Deque[datetime]] = defaultdict(deque)
-_login_buckets: Dict[tuple, Deque[datetime]] = defaultdict(deque)
+
+_rate_limit_buckets: Dict[str, Deque[DateTime]] = collections.defaultdict(collections.deque)
+_login_buckets: Dict[tuple, Deque[DateTime]] = collections.defaultdict(collections.deque)
 
 
-def _bucket_ok(bucket: Deque[datetime], limit: int, window_s: int) -> bool:
-    now = datetime.now(timezone.utc)
+def bucket_ok(bucket: Deque[DateTime], limit: int, window_s: int) -> bool:
+    now = DateTime.now(TimeZone.utc)
     while bucket and (now - bucket[0]).total_seconds() > window_s:
         bucket.popleft()
     if len(bucket) >= limit:
@@ -303,39 +320,32 @@ def _bucket_ok(bucket: Deque[datetime], limit: int, window_s: int) -> bool:
     return True
 
 
-def _get_bucket(store: Dict, key):
+def get_bucket(store: Dict, key):
     if key not in store and len(store) >= _BUCKET_CAP:
         try:
             store.pop(next(iter(store)))
         except StopIteration:
             pass
-    return store.setdefault(key, deque())
-
-
-def _utc_aware(dt: datetime) -> datetime:
-    if dt is None:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return store.setdefault(key, collections.deque())
 
 
 @app.middleware('http')
 async def rate_limit_and_session_middleware(request: Request, call_next):
     ip = ip_from_request(request)
-    if not _bucket_ok(
-        _get_bucket(_rate_limit_buckets, ip), RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS
+    if not bucket_ok(
+        get_bucket(_rate_limit_buckets, ip), RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS
     ):
         return PlainTextResponse('Too Many Requests', status_code=429)
-
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
         with db_session() as s:
-            h = _hash_token(token)
+            h = hash_token(token)
             ls = s.exec(select(LoginSession).where(LoginSession.token_hash == h)).first()
             if ls and ls.valid:
-                now = datetime.now(timezone.utc)
-                created = _utc_aware(ls.created_at)
-                last = _utc_aware(ls.last_activity)
-                if (now - created) > ABSOLUTE_LIFETIME or (now - last) > IDLE_TIMEOUT:
+                now = DateTime.now(TimeZone.utc)
+                if (now - ls.created_at) > ABSOLUTE_LIFETIME or (
+                    now - ls.last_activity
+                ) > IDLE_TIMEOUT:
                     ls.valid = False
                     s.add(ls)
                     s.commit()
@@ -346,26 +356,25 @@ async def rate_limit_and_session_middleware(request: Request, call_next):
                     )
                     resp.delete_cookie(SESSION_COOKIE_NAME, path='/')
                     return resp
-
     response = await call_next(request)
-
     try:
         if token and response.status_code < 400:
             with db_session() as s:
                 ls = s.exec(
-                    select(LoginSession).where(LoginSession.token_hash == _hash_token(token))
+                    select(LoginSession).where(LoginSession.token_hash == hash_token(token))
                 ).first()
                 if ls and ls.valid:
-                    ls.last_activity = datetime.now(timezone.utc)
+                    ls.last_activity = DateTime.now(TimeZone.utc)
                     s.add(ls)
                     s.commit()
     except Exception:
         pass
-
     return response
 
 
-# ------------------------------ AUTH HELPERS & ENDPOINTS ---------------------------------
+###
+### authentication helpers and endpoints
+###
 
 
 def set_session_cookie(response: Response, token: str):
@@ -382,14 +391,14 @@ def set_session_cookie(response: Response, token: str):
 
 def create_login_session_record(account: Account, request: Request) -> str:
     with db_session() as s:
-        token = generate_token()
+        token = secrets.token_urlsafe(32)
         ls = LoginSession(
             account_id=account.id,
-            token_hash=_hash_token(token),
+            token_hash=hash_token(token),
             user_agent=request.headers.get('User-Agent', ''),
             ip=ip_from_request(request),
-            created_at=datetime.now(timezone.utc),
-            last_activity=datetime.now(timezone.utc),
+            created_at=DateTime.now(TimeZone.utc),
+            last_activity=DateTime.now(TimeZone.utc),
             valid=True,
         )
         s.add(ls)
@@ -405,7 +414,7 @@ def get_current_session_and_account(request: Request):
         row = s.exec(
             select(LoginSession, Account)
             .join(Account)
-            .where(LoginSession.token_hash == _hash_token(token))
+            .where(LoginSession.token_hash == hash_token(token))
         ).first()
         if not row:
             return None, None
@@ -424,7 +433,7 @@ def require_auth_or_redirect(client: Client) -> Optional[Account]:
     return acc
 
 
-def _sanitize_redirect(url: str) -> str:
+def sanitize_redirect(url: str) -> str:
     return url if url.startswith('/') and '://' not in url else '/home'
 
 
@@ -432,21 +441,19 @@ router = APIRouter()
 
 
 @router.post('/_set_session')
-def _post_set_session(
-    token: str = Body(..., embed=True), redirect: str = Body('/home', embed=True)
-):
-    response = RedirectResponse(_sanitize_redirect(redirect), status_code=303)
+def post_set_session(token: str = Body(..., embed=True), redirect: str = Body('/home', embed=True)):
+    response = RedirectResponse(sanitize_redirect(redirect), status_code=303)
     set_session_cookie(response, token)
     return response
 
 
 @router.post('/_logout')
-def _logout(request: Request, redirect: str = Body('/login', embed=True)):
-    safe_redirect = _sanitize_redirect(redirect)
+def logout(request: Request, redirect: str = Body('/login', embed=True)):
+    safe_redirect = sanitize_redirect(redirect)
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
         with db_session() as s:
-            h = _hash_token(token)
+            h = hash_token(token)
             ls = s.exec(select(LoginSession).where(LoginSession.token_hash == h)).first()
             if ls:
                 ls.valid = False
@@ -459,13 +466,18 @@ def _logout(request: Request, redirect: str = Body('/login', embed=True)):
 
 app.include_router(router)
 
-# ------------------------------ EPHEMERAL STATE FOR CONFIRM PAGE ---------------------------------
+###
+### ephemeral state for confirm page
+###
+
 
 # token -> (timestamp, {'username': ..., 'password': ...})
-pending_confirm: "OrderedDict[str, tuple[float, Dict[str, str]]]" = OrderedDict()
+pending_confirm: 'collections.OrderedDict[str, tuple[float, Dict[str, str]]]' = (
+    collections.OrderedDict()
+)
 
 
-def _pending_put(nonce: str, data: Dict[str, str]):
+def pending_put(nonce: str, data: Dict[str, str]):
     now = time.time()
     pending_confirm[nonce] = (now, data)
     # purge by size
@@ -480,7 +492,7 @@ def _pending_put(nonce: str, data: Dict[str, str]):
         pending_confirm.popitem(last=False)
 
 
-def _pending_take(nonce: str) -> Optional[Dict[str, str]]:
+def pending_take(nonce: str) -> Optional[Dict[str, str]]:
     item = pending_confirm.pop(nonce, None)
     if not item:
         return None
@@ -488,11 +500,13 @@ def _pending_take(nonce: str) -> Optional[Dict[str, str]]:
     return data if (time.time() - ts) <= PENDING_TTL else None
 
 
-# ------------------------------ PAGES ---------------------------------
+###
+### pages
+###
 
 
-def _js_fetch_post(path: str, payload: dict) -> str:
-    return f"""
+def js_fetch_post(path: str, payload: dict) -> str:
+    return f'''
 (async () => {{
   function getCookie(name) {{
     const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{{}}()\\[\\]\\\\\\/\\+^])/g, '\\\\$1') + '=([^;]*)'));
@@ -533,7 +547,7 @@ def _js_fetch_post(path: str, payload: dict) -> str:
     console.log('POST {path} ->', r.status, t);
   }}
 }})();
-"""
+'''
 
 
 @ui.page('/')
@@ -589,7 +603,7 @@ def create_account_page():
                 return
         pwd = generate_password(5)  # intentionally short per demo
         nonce = secrets.token_urlsafe(16)
-        _pending_put(nonce, {'username': username, 'password': pwd})
+        pending_put(nonce, {'username': username, 'password': pwd})
         ui.navigate.to(f'/confirm?token={nonce}')
 
     next_button.on('click', proceed)
@@ -606,15 +620,13 @@ def create_account_page():
 @ui.page('/confirm')
 def confirm_password_page(client: Client):
     token = client.request.query_params.get('token')
-    data = _pending_take(token or '')
+    data = pending_take(token or '')
     if not token or not data:
         ui.notify('No pending account creation found.', color='warning')
         ui.navigate.to('/create')
         return
-
     username = data['username']
     password = data['password']
-
     with ui.column().style('max-width: 520px; margin: 60px auto; gap: 14px;'):
         ui.label('Confirm password').style('font-size: 1.6rem; font-weight: 600;')
         ui.label(f'Username: {username}')
@@ -623,7 +635,6 @@ def confirm_password_page(client: Client):
             ui.label(password).style(
                 'font-family: monospace; padding: 2px 6px; border: 1px solid #ccc; border-radius: 4px;'
             )
-
         acknowledged = ui.checkbox('I have stored this password in a safe place.')
 
         async def finalize():
@@ -644,7 +655,7 @@ def confirm_password_page(client: Client):
                         try:
                             s.commit()
                             s.refresh(account)
-                        except IntegrityError:
+                        except sqlalchemy.exc.IntegrityError:
                             s.rollback()
                             account = s.exec(
                                 select(Account).where(
@@ -656,13 +667,11 @@ def confirm_password_page(client: Client):
                                     'Could not create account. Please try again.', color='negative'
                                 )
                                 return
-
                 # Create session and set cookie via CSRF-safe POST
                 login_token = create_login_session_record(account, client.request)
                 ui.run_javascript(
-                    _js_fetch_post('/_set_session', {'token': login_token, 'redirect': '/home'})
+                    js_fetch_post('/_set_session', {'token': login_token, 'redirect': '/home'})
                 )
-
             finally:
                 # Don't re-enable; navigation will occur. If it doesn’t, user can refresh.
                 pass
@@ -699,12 +708,11 @@ def login_page(client: Client):
             ip = ip_from_request(client.request)
 
             # login-specific rate limit
-            if not _bucket_ok(
-                _get_bucket(_login_buckets, (ip, u.lower())), LOGIN_ATTEMPTS, LOGIN_WINDOW
+            if not bucket_ok(
+                get_bucket(_login_buckets, (ip, u.lower())), LOGIN_ATTEMPTS, LOGIN_WINDOW
             ):
                 error.text = 'Too many attempts. Please try again later.'
                 return
-
             with db_session() as s:
                 account = s.exec(
                     select(Account).where(Account.normalized_username == u.lower())
@@ -722,10 +730,9 @@ def login_page(client: Client):
                 except Exception:
                     error.text = 'Invalid username or password.'
                     return
-
             login_token = create_login_session_record(account, client.request)
             ui.run_javascript(
-                _js_fetch_post('/_set_session', {'token': login_token, 'redirect': '/home'})
+                js_fetch_post('/_set_session', {'token': login_token, 'redirect': '/home'})
             )
 
         ui.button('Log in', on_click=do_login)
@@ -739,18 +746,14 @@ def home_page(client: Client):
     account = require_auth_or_redirect(client)
     if not account:
         return
-
     with db_session() as s:
         these = s.exec(select(LoginSession).where(LoginSession.account_id == account.id)).all()
-
     current_token = client.request.cookies.get(SESSION_COOKIE_NAME, '')
-    current_token_hash = _hash_token(current_token) if current_token else ''
-
+    current_token_hash = hash_token(current_token) if current_token else ''
     ui.label('You are on the home page').style(
         'font-size: 1.6rem; font-weight: 600; margin-bottom: 8px;'
     )
     ui.label(f'Logged in as: {account.username}').style('color: #555; margin-bottom: 16px;')
-
     columns = [
         {'name': 'id', 'label': 'ID', 'field': 'id'},
         {'name': 'device', 'label': 'Device', 'field': 'device'},
@@ -759,8 +762,7 @@ def home_page(client: Client):
         {'name': 'status', 'label': 'Status', 'field': 'status'},
         {'name': 'current', 'label': 'Current', 'field': 'current'},
     ]
-
-    rows = []
+    rows = list()
     for sess in these:
         rows.append(
             {
@@ -776,9 +778,7 @@ def home_page(client: Client):
                 'current': 'Yes' if sess.token_hash == current_token_hash else '',
             }
         )
-
     table = ui.table(columns=columns, rows=rows, row_key='id', selection='multiple')
-
     with ui.row().style('gap: 8px; margin-top: 10px;'):
 
         def select_all():
@@ -803,7 +803,7 @@ def home_page(client: Client):
                 s.commit()
             ui.notify('Selected devices invalidated.', color='positive')
             if current_invalidated:
-                ui.run_javascript(_js_fetch_post('/_logout', {'redirect': '/login'}))
+                ui.run_javascript(js_fetch_post('/_logout', {'redirect': '/login'}))
             else:
                 ui.navigate.reload()
 
@@ -811,11 +811,14 @@ def home_page(client: Client):
         ui.button('Invalidate selected', on_click=invalidate_selected)
 
 
-# ------------------------------ RUN ---------------------------------
+###
+### run
+###
+
 
 # Remove permissive proxy env; rely on ProxyHeadersMiddleware allowlist above
-os.environ.pop("FORWARDED_ALLOW_IPS", None)
-os.environ.pop("PROXY_HEADERS", None)
+os.environ.pop('FORWARDED_ALLOW_IPS', None)
+os.environ.pop('PROXY_HEADERS', None)
 
 ui.run(
     host='0.0.0.0',
