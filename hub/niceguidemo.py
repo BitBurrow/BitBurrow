@@ -819,11 +819,3 @@ def home_page(client: Client):
 # Remove permissive proxy env; rely on ProxyHeadersMiddleware allowlist above
 os.environ.pop('FORWARDED_ALLOW_IPS', None)
 os.environ.pop('PROXY_HEADERS', None)
-
-ui.run(
-    host='0.0.0.0',
-    port=8080,
-    title='NiceGUI Auth Demo',
-    reload=False,
-    uvicorn_logging_level='info',
-)

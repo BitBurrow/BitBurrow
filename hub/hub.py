@@ -1,21 +1,16 @@
 import asyncio
-import inspect
 import logging
+import nicegui
 import os
 import platformdirs
-import psutil
-import signal
-import socket
+import ssl
 import sys
 import sqlalchemy.exc
-import time
 from fastapi import (
-    FastAPI,
     responses,
     Request,
     HTTPException,
 )
-from fastapi_restful.tasks import repeat_every
 from sqlmodel import SQLModel, create_engine, sql
 import hub.logs as logs
 import hub.config as conf
@@ -35,7 +30,7 @@ sql.expression.SelectOfScalar.inherit_cache = False
 
 
 def app_name():
-    return os.path.splitext(os.path.basename(__file__))[0]
+    return 'bbhub'  # this is just 'hub': os.path.splitext(os.path.basename(__file__))[0]
 
 
 async def not_found_error(request: Request, exc: HTTPException):
@@ -127,21 +122,6 @@ def cli(return_help_text=False):
 
 
 ###
-### globals
-###
-
-app = FastAPI(
-    exception_handlers={404: not_found_error},
-    docs_url=None,  # disable "Docs URLs" to help avoid being identified; see
-    redoc_url=None,  # ... https://fastapi.tiangolo.com/tutorial/metadata/#docs-urls
-)
-app.include_router(api.router)
-is_worker_zero: bool = True
-restarts_remaining = 1  # for restarting Uvicorn
-ssl_keyfile = ""
-
-
-###
 ### startup and shutdown
 ###
 
@@ -158,34 +138,6 @@ def mkdir_r(path):  # like Linux `mkdir --parents`
         raise Berror(f"B19340 cannot create directory: {path}")
 
 
-def get_lock(process_name):  # source: https://stackoverflow.com/a/7758075
-    # hold a reference to our socket so it does not get garbage collected when the function exits
-    get_lock._lock_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    try:
-        # the null byte (\0) means the socket is created in the abstract namespace instead of being
-        # created on the file system itself;  works only in Linux
-        get_lock._lock_socket.bind('\0' + process_name)
-    except socket.error:
-        return False
-    return True
-
-
-def init(args):
-    if db.engine is not None:
-        return  # already initialized
-    db_file = conf.get('common.db_file')
-    if db_file == '-':
-        db_file = ':memory:'
-    elif not db_file.startswith("/"):  # if relative, use dir of args.config_file
-        db_file = os.path.join(os.path.dirname(args.config_file), db_file)
-    mkdir_r(os.path.dirname(db_file))
-    migrate_db.migrate(db_file)
-    db.engine = create_engine(f'sqlite:///{db_file}', echo=args.create_engine_echo)
-    if is_worker_zero:
-        # avoid race condition creating tables: OperationalError: table ... already exists
-        SQLModel.metadata.create_all(db.engine)
-
-
 def set_logging(args):
     if args.verbose is None:  # no CLI args for log level, so use config setting
         log_index = conf.get('common.log_level')
@@ -200,114 +152,111 @@ def set_logging(args):
         logging.DEBUG,  # 4, -vv
         logging.DEBUG,  # 5, -vvv; sets 'echo=True' in create_engine()
     ]
+    uvicorn_log_level_map = {
+        0: 'critical',
+        1: 'error',
+        2: 'warning',
+        3: 'info',
+        4: 'debug',
+        5: 'trace',
+    }
     if log_index < 0 or log_index >= len(log_levels):
         raise ValueError("B43857 invalid log level")
     args.console_log_level = log_levels[log_index]
     args.create_engine_echo = log_index == 5
+    args.uvicorn_log_level = uvicorn_log_level_map[log_index - 1 if log_index > 0 else 0]
     logging.config.dictConfig(logs.logging_config(console_log_level=args.console_log_level))
 
 
-@app.on_event('startup')
-def on_startup():
-    # sanity check now that we don't call cli() or init() here
-    if not conf.is_loaded():
-        raise Berror(f"B62896 invalid config data in on_startup()")
-    global is_worker_zero
-    is_worker_zero = get_lock('worker_init_lock_BMADCTCY')
-    if is_worker_zero:
-        # only first worker does network set-up, tear-down; avoid "RTNETLINK answers: File exists"
-        try:
-            wgif = db.Netif.startup()  # configure new WireGuard interface
-            db.Client.startup(wgif)  # add peers to WireGuard interface
-        except Exception as e:
-            on_shutdown()
-            raise e
-    logger.debug(f"initialization complete")
+async def startup_netif():
+    if not conf.is_loaded():  # sanity check
+        raise Berror(f"B62896 invalid config data in startup_netif()")
+    try:
+        wgif = db.Netif.startup()  # configure new WireGuard interface
+        db.Client.startup(wgif)  # add peers to WireGuard interface
+    except Exception as e:
+        shutdown_netif()
+        raise e
 
 
-@app.on_event('shutdown')
-def on_shutdown():
-    if is_worker_zero:
-        db.Netif.shutdown()
+async def shutdown_netif():
+    db.Netif.shutdown()
 
 
-@app.on_event("startup")
-@repeat_every(seconds=60 * 60 * 24)
-def check_tls_cert_daily() -> None:
-    """Verify TLS certificate after 24 hours, 48 hours, etc."""
-    if conf.get('http.tls_enabled') == False or conf.get('http.tls_use_certbot') == False:
-        return
-    if not hasattr(check_tls_cert_daily, 'call_count'):
-        check_tls_cert_daily.call_count = 1
-        return  # handled by check_tls_cert_at_startup() (on_event("startup") above is required)
-    net.check_tls_cert(conf.get('common.domain'), conf.get('http.port'))
-
-
-@app.on_event("startup")
-@repeat_every(seconds=20, max_repetitions=2)  # run at t+0 and t+20 only
-def check_tls_cert_at_startup() -> None:
-    """Verify TLS certificate 20 seconds after startup"""
-    if conf.get('http.tls_enabled') == False or conf.get('http.tls_use_certbot') == False:
-        return
-    if not hasattr(check_tls_cert_at_startup, 'call_count'):
-        check_tls_cert_at_startup.call_count = 1
-        return  # do nothing on first run (possible race condition)
-    net.check_tls_cert(conf.get('common.domain'), conf.get('http.port'))
-
-
-@app.on_event("startup")
-@repeat_every(seconds=60)
-def monitor_tls_cert_file() -> None:
-    """Automatically restart Uvicorn when TLS cert is updated.
-
-    Check every minute. Don't restart if there are active in-bound network connections.
-    """
-    global restarts_remaining
-    if conf.get('http.tls_enabled') == False or conf.get('http.tls_use_certbot') == False:
-        return
-    if not hasattr(monitor_tls_cert_file, 'call_count'):
-        monitor_tls_cert_file.call_count = 1
-        monitor_tls_cert_file.minutes_waiting = 0
-        return  # do nothing on first run (possible race condition)
-    file_changes = net.has_file_changed(ssl_keyfile, max_items=1)
-    if file_changes:  # our TLS cert file has changed
-        connection_count = len(net.connected_inbound_list(conf.get('http.port')))
-        # if we have no TCP connections (but give up waiting after 24 hours)
-        if connection_count == 0 or monitor_tls_cert_file.minutes_waiting > (60 * 24):
-            # reset 'restart' conditions ...
-            monitor_tls_cert_file.minutes_waiting = 0
-            net.watch_file(ssl_keyfile)
-            del check_tls_cert_daily.call_count
-            del check_tls_cert_at_startup.call_count
-            logger.info(f"B50371 Restarting Uvicorn (TLS cert file has new {file_changes})")
-            time.sleep(1)  # help avoid race condition where ssl_cerfile has not yet been updated
-            restarts_remaining = 1  # so ctrl-C won't exit the 'while' loop around uvicorn.run()
-            us = psutil.Process()
-            children = us.children(recursive=True)
-            # send ctrl-C to our children; seems unnecessary but see https://stackoverflow.com/a/64129180/10590519
-            for child in children:
-                os.kill(child.pid, signal.SIGINT)
-            # send ctrl-C to ourselves to make uvicorn.run() exit
-            os.kill(us.pid, signal.SIGINT)
+async def watch_tls_cert() -> None:
+    """Verify TLS certificate; run at startup"""
+    a_day = 60 * 60 * 24
+    rep_count = 0
+    while True:
+        if rep_count == 0:
+            await asyncio.sleep(20)  # check cert 20 seconds after startup
         else:
-            logger.info(
-                f"B57200 need to restart (TLS cert file has new {file_changes}); waiting for "
-                f"{connection_count} connections to finish"
-            )
-            monitor_tls_cert_file.minutes_waiting += 1
+            iaddr = net.default_listen_address(conf.get('http.address'))
+            internal_site = f'{iaddr}:{conf.get("http.port")}'
+            external_site = f'{conf.get('common.domain')}:{conf.get("http.port")}'
+            # FIXME: above should use http.external_port
+            if conf.get('http.tls_enabled'):  # we use TLS, so a valid cert should be at http.port
+                await net.check_tls_cert(external_site, internal_site)
+            else:  # otherwise, only check the external domain
+                await net.check_tls_cert(external_site)
+            await asyncio.sleep(a_day)  # check again in 24 hours
+        rep_count += 1
+
+
+nicegui.app.on_startup(startup_netif)
+nicegui.app.on_shutdown(shutdown_netif)
+nicegui.app.on_startup(watch_tls_cert)
+
+
+# FIXME: rewrite this to monitor conf.get('http.restart_when_file_changed')
+# @app.on_event("startup")
+# @repeat_every(seconds=60)
+# def monitor_tls_cert_file() -> None:
+#     """Automatically restart Uvicorn when TLS cert is updated.
+#
+#     Check every minute. Don't restart if there are active in-bound network connections.
+#     """
+#     global restarts_remaining
+#     if conf.get('http.tls_enabled') == False or conf.get('http.tls_use_certbot') == False:
+#         return
+#     if not hasattr(monitor_tls_cert_file, 'call_count'):
+#         monitor_tls_cert_file.call_count = 1
+#         monitor_tls_cert_file.minutes_waiting = 0
+#         return  # do nothing on first run (possible race condition)
+#     file_changes = net.has_file_changed(ssl_keyfile, max_items=1)
+#     if file_changes:  # our TLS cert file has changed
+#         connection_count = len(net.connected_inbound_list(conf.get('http.port')))
+#         # if we have no TCP connections (but give up waiting after 24 hours)
+#         if connection_count == 0 or monitor_tls_cert_file.minutes_waiting > (60 * 24):
+#             # reset 'restart' conditions ...
+#             monitor_tls_cert_file.minutes_waiting = 0
+#             net.watch_file(ssl_keyfile)
+#             del check_tls_cert_daily.call_count
+#             del check_tls_cert_at_startup.call_count
+#             logger.info(f"B50371 Restarting Uvicorn (TLS cert file has new {file_changes})")
+#             time.sleep(1)  # help avoid race condition where ssl_cerfile has not yet been updated
+#             restarts_remaining = 1  # so ctrl-C won't exit the 'while' loop around uvicorn.run()
+#             us = psutil.Process()
+#             children = us.children(recursive=True)
+#             # send ctrl-C to our children; seems unnecessary but see https://stackoverflow.com/a/64129180/10590519
+#             for child in children:
+#                 os.kill(child.pid, signal.SIGINT)
+#             # send ctrl-C to ourselves to make uvicorn.run() exit
+#             os.kill(us.pid, signal.SIGINT)
+#         else:
+#             logger.info(
+#                 f"B57200 need to restart (TLS cert file has new {file_changes}); waiting for "
+#                 f"{connection_count} connections to finish"
+#             )
+#             monitor_tls_cert_file.minutes_waiting += 1
 
 
 ###
-### Startup (called from pyproject.toml)
+### bbhub (called from pyproject.toml)
 ###
 
 
 def entry_point():
-    import uvicorn  # https://www.uvicorn.org/
-    import ssl
-
-    global restarts_remaining
-    global ssl_keyfile
     try:
         args = cli()
         if args.command == 'generate-config':
@@ -316,7 +265,16 @@ def entry_point():
             sys.exit(0)
         conf.load(args.config_file)
         set_logging(args)  # requires config file be loaded
-        init(args)
+        if db.engine is None:
+            db_file = conf.get('common.db_file')
+            if db_file == '-':
+                db_file = ':memory:'
+            elif not db_file.startswith("/"):  # if relative, use dir of args.config_file
+                db_file = os.path.join(os.path.dirname(args.config_file), db_file)
+            mkdir_r(os.path.dirname(db_file))
+            migrate_db.migrate(db_file)
+            db.engine = create_engine(f'sqlite:///{db_file}', echo=args.create_engine_echo)
+            SQLModel.metadata.create_all(db.engine)
         if args.command == 'migrate-config':
             conf.save(args.config_file)
             print(f"Config file migrated: {args.config_file}")
@@ -386,35 +344,39 @@ def entry_point():
         logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
         for address in address_list:
             logger.info(f"❚   listening on: {scheme}://{address}:{conf.get('http.port')}")
-        logger.info(f"❚   public URL: {base_url}/welcome")
+        logger.info(f"❚   public URL: {base_url}/")
         # FIXME: logger.info(f"❚   public URL: {base_url}{conf.get('common.site_code')}/welcome")
-        this_python_file = os.path.abspath(inspect.getsourcefile(lambda: 0))
-        logger.info(f"Running {this_python_file}")
     except sqlalchemy.exc.OperationalError as e:
         logger.error(f"B50313 DB error (may need to increase db_schema_version): {e}")
         sys.exit(1)
-    while restarts_remaining > 0:
-        restarts_remaining -= 1
-        try:
-            uvicorn.run(  # https://www.uvicorn.org/deployment/#running-programmatically
-                f'{app_name()}.hub:app',
-                host=conf.get('http.address'),
-                port=conf.get('http.port'),
-                # FIXME: when using `workers=3`, additional workers' messages aren't ...
-                # delivered to api.messages.message_handler()
-                # may be helpful: https://medium.com/cuddle-ai/1bd809916130
-                workers=1,
-                log_level='info',
-                log_config=logs.logging_config(console_log_level=args.console_log_level),
-                ssl_keyfile=ssl_keyfile,
-                ssl_certfile=ssl_certfile,
-                ssl_ciphers=strong_ciphers,
-                # to help avoid being identified, don't use these headers
-                date_header=False,
-                server_header=False,  # default 'uvicorn'
-            )
-        except KeyboardInterrupt:  # I don't think this ever gets triggered
-            logger.info(f"B23324 KeyboardInterrupt")
-        except Exception as e:
-            logger.exception(f"B22237 Uvicorn error: {e}")
-        logger.info(f"B76443 exiting")
+    try:
+        nicegui.ui.run(  # docs: https://nicegui.io/documentation/run
+            host=conf.get('http.address'),
+            port=conf.get('http.port'),
+            title='BitBurrow',
+            reload=False,
+            uvicorn_logging_level=args.uvicorn_log_level,
+            ssl_keyfile=ssl_keyfile,
+            ssl_certfile=ssl_certfile,
+            ssl_ciphers=strong_ciphers,
+            # to help avoid being identified, don't use these headers
+            date_header=False,
+            server_header=False,  # default 'uvicorn'
+            show_welcome_message=False,  # silence "NiceGUI ready to go on ..."
+            show=False,  # don't try to open web browser
+        )
+    except KeyboardInterrupt:
+        logger.info(f"B23324 KeyboardInterrupt")
+        nicegui.app.shutdown()
+    except Exception as e:
+        logger.exception(f"B22237 Uvicorn error: {e}")
+    logger.info(f"B76443 exiting")
+
+
+nicegui.app.docs_url = None  # disable "Docs URLs" to help avoid being identified; see
+nicegui.app.redoc_url = None  # ... https://fastapi.tiangolo.com/tutorial/metadata/#docs-urls
+
+
+@nicegui.ui.page('/')
+def index():
+    nicegui.ui.label('hello, world')

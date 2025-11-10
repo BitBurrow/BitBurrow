@@ -199,38 +199,57 @@ def arg_string(args):
     return joined if len(joined) < 170 else joined[:168] + "…"
 
 
-def check_tls_cert(site, port):
+async def check_tls_cert(external: str, internal: str = None):
     """Check the TLS certificate for the given website; log warnings as needed.
 
-    Return the number of days validity remaining, or -1 for errors.
-    """
-    # based on https://stackoverflow.com/a/52575489
-    context = urllib.request.ssl.create_default_context()
+    external is {host}:{port} for to check, e.g. example.org:443
+    internal is an alternate way to reach the same site to verify it is the same cert"""
     try:
-        with urllib.request.socket.create_connection((site, port)) as sock:
-            with context.wrap_socket(sock, server_hostname=site) as ssock:
-                expires_on = parser.parse(ssock.getpeercert()["notAfter"])
-                remaining = expires_on - DateTime.now(TimeZone.utc)
-                days_remaining = int(remaining.total_seconds()) // (60 * 60 * 24)
-                message = f"B44051 TLS certificate expires in {days_remaining} days"
-                # cert should auto-renew 30 days (https://community.letsencrypt.org/t/-/184567)
-                # before expiration, so under 27 means it has failed multiple times
-                if days_remaining < 27:
-                    logger.warning("B41229 cert failed to renew; see logs in /var/log/letsencrypt/")
-                    logger.warning(message)
-                    # FIXME: alert administrator if < 20 days
-                elif days_remaining < 40:
-                    logger.info(message)
-                    logger.info("B72030 TLS certificate should automatically renew at 30 days")
-                else:
-                    logger.debug(message)
-        return days_remaining
+        e = external.split(':', 1)  # 'example.org:443'
+        ectx = urllib.request.ssl.create_default_context()
+        ereader, ewriter = await asyncio.wait_for(
+            asyncio.open_connection(e[0], e[1], ssl=ectx, server_hostname=e[0]),
+            timeout=5.0,
+        )
+        essock = ewriter.get_extra_info("ssl_object")
+        external_sn = essock.getpeercert()['serialNumber']
+        expires_on = parser.parse(essock.getpeercert()["notAfter"])
+        remaining = expires_on - DateTime.now(TimeZone.utc)
+        days_remaining = int(remaining.total_seconds()) // (60 * 60 * 24)
+        message = f"B44051 TLS certificate expires in {days_remaining} days"
+        # cert should auto-renew 30 days (https://community.letsencrypt.org/t/-/184567)
+        # before expiration, so under 27 means it has failed multiple times
+        if days_remaining < 27:
+            logger.warning("B41229 cert failed to renew; see logs in /var/log/letsencrypt/")
+            logger.warning(message)
+            # FIXME: alert administrator if < 20 days
+        elif days_remaining < 40:
+            logger.info(message)
+            logger.info("B72030 TLS certificate should automatically renew at 30 days")
+        else:
+            logger.debug(message)
+        if internal:
+            try:
+                i = internal.split(':', 1)
+                ictx = urllib.request.ssl.create_default_context()
+                ireader, iwriter = await asyncio.wait_for(
+                    asyncio.open_connection(i[0], i[1], ssl=ictx, server_hostname=e[0]),
+                    timeout=5.0,
+                )
+                issock = iwriter.get_extra_info("ssl_object")
+                internal_sn = issock.getpeercert()['serialNumber']
+                if internal_sn != external_sn:
+                    logger.error(f"B32321 TLS certs at {external} and {internal} are different")
+            except urllib.request.ssl.SSLCertVerificationError:
+                logger.error(f"B25688 TLS certificate at {internal} is not valid for {e[0]}")
+        return
     except TimeoutError as e:
-        return -1  # 'Connection timed out', e.g. after `sudo iptables -A OUTPUT -j DROP`
+        logger.warning("B43166 connection timed out in check_tls_cert()")
+    except urllib.request.ssl.SSLCertVerificationError:
+        logger.error(f"B93900 TLS certificate at {external} is not valid for {e[0]}")
     except Exception as e:
         # socket.gaierror, ConnectionRefusedError, ConnectionResetError, ssl.SSLCertVerificationError, etc.
         logger.error(f"B44182 {str(e)} ({type(e)}) while checking TLS cert")
-        return -1
 
 
 def watch_file(path):
@@ -298,3 +317,13 @@ def connected_inbound_list(local_port):
         for c in conn_list
         if c.status == psutil.CONN_ESTABLISHED and c.laddr.port == local_port
     ]
+
+
+def default_listen_address(ip: str) -> str:
+    if ip == '':
+        return 'localhost'
+    if ip == '0.0.0.0':
+        return '127.0.0.1'
+    if ip == '::0' or ip == '::':
+        return '::1'
+    return ip
