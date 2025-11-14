@@ -1,4 +1,3 @@
-import asyncio
 from fastapi import (
     APIRouter,
     responses,
@@ -9,18 +8,12 @@ from fastapi import (
     HTTPException,
 )
 from sqlmodel import Session, SQLModel, select
-from typing import Dict, List
-import json
 import logging
 import hub.db as db
 import hub.transmutation as transmutation
-import hub.ui as ui
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
-router = APIRouter()
-
-ui.init_ui(router)
 
 
 ###
@@ -59,58 +52,58 @@ ui.init_ui(router)
 # FIXME: to limit brute-force attacks, throttle any IP address with 4 connects in 60 seconds; https://github.com/tiangolo/fastapi/issues/448
 
 
-@router.post('/v1/coupons/{coupon}/managers')
-async def create_manager(request: Request, coupon: str):
-    account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
-    login_key = db.Account.new(db.Account_kind.MANAGER)
-    return responses.JSONResponse(
-        status_code=status.HTTP_201_CREATED,
-        content={'login_key': login_key},
-    )
-    # do not store login_key!
+# @router.post('/v1/coupons/{coupon}/managers')
+# async def create_manager(request: Request, coupon: str):
+#     account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
+#     login_key = db.Account.new(db.Account_kind.MANAGER)
+#     return responses.JSONResponse(
+#         status_code=status.HTTP_201_CREATED,
+#         content={'login_key': login_key},
+#     )
+#     # do not store login_key!
 
 
-# @router.get('/v1/managers/{login_key}/bases')
-@router.get('/v1/managers/bases')
-async def list_bases(request: Request):
-    login_key = request.cookies.get("loginkey")
-    account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    with Session(db.engine) as session:
-        statement = select(db.Base).where(db.Base.account_id == account.id)
-        results = session.exec(statement)
-        return {'bases': [c.pubkey for c in results]}
+# # @router.get('/v1/managers/{login_key}/bases')
+# @router.get('/v1/managers/bases')
+# async def list_bases(request: Request):
+#     login_key = request.cookies.get("loginkey")
+#     account = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
+#     with Session(db.engine) as session:
+#         statement = select(db.Base).where(db.Base.account_id == account.id)
+#         results = session.exec(statement)
+#         return {'bases': [c.pubkey for c in results]}
 
 
-@router.post('/v1/managers/{login_key}/bases')
-async def new_base(request: Request, login_key: str):
-    return responses.JSONResponse(
-        status_code=status.HTTP_201_CREATED,
-        content={},
-    )
-    account = Account.validate_login_key(login_key)
-    with Session(db.engine) as session:
-        statement = select(Client).where(Client.account_id == account.id)
-        results = session.exec(statement)
-        return [c.pubkey for c in results]
+# @router.post('/v1/managers/{login_key}/bases')
+# async def new_base(request: Request, login_key: str):
+#     return responses.JSONResponse(
+#         status_code=status.HTTP_201_CREATED,
+#         content={},
+#     )
+#     account = Account.validate_login_key(login_key)
+#     with Session(db.engine) as session:
+#         statement = select(Client).where(Client.account_id == account.id)
+#         results = session.exec(statement)
+#         return [c.pubkey for c in results]
 
 
-@router.get('/v1/login/{login_key}/')
-async def set_login_cookie(request: Request, response: Response, login_key: str):
-    db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
-    response.status_code = 200
-    response.set_cookie(
-        key='loginkey',
-        value=login_key,
-        httponly=True,
-        secure=True,
-        samesite='Strict',
-        max_age=315360000,  # ten years
-    )
-    return {}
+# @router.get('/v1/login/{login_key}/')
+# async def set_login_cookie(request: Request, response: Response, login_key: str):
+#     db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
+#     response.status_code = 200
+#     response.set_cookie(
+#         key='loginkey',
+#         value=login_key,
+#         httponly=True,
+#         secure=True,
+#         samesite='Strict',
+#         max_age=315360000,  # ten years
+#     )
+#     return {}
 
 
-@router.get("/v1/logout")
-async def logout():
-    redirect = responses.RedirectResponse(url='/login')
-    redirect.delete_cookie('loginkey')
-    return redirect
+# @router.get("/v1/logout")
+# async def logout():
+#     redirect = responses.RedirectResponse(url='/login')
+#     redirect.delete_cookie('loginkey')
+#     return redirect

@@ -18,6 +18,7 @@ import hub.db as db
 import hub.api as api
 import hub.net as net
 import hub.migrate_db as migrate_db
+import hub.ui
 import hub.util as util
 
 Berror = util.Berror
@@ -203,11 +204,6 @@ async def watch_tls_cert() -> None:
         rep_count += 1
 
 
-nicegui.app.on_startup(startup_netif)
-nicegui.app.on_shutdown(shutdown_netif)
-nicegui.app.on_startup(watch_tls_cert)
-
-
 # FIXME: rewrite this to monitor conf.get('http.restart_when_file_changed')
 # @app.on_event("startup")
 # @repeat_every(seconds=60)
@@ -350,6 +346,12 @@ def entry_point():
         logger.error(f"B50313 DB error (may need to increase db_schema_version): {e}")
         sys.exit(1)
     try:
+        nicegui.app.on_startup(startup_netif)
+        nicegui.app.on_shutdown(shutdown_netif)
+        nicegui.app.on_startup(watch_tls_cert)
+        nicegui.app.docs_url = None  # disable "Docs URLs" to help avoid being identified; see
+        nicegui.app.redoc_url = None  # ... https://fastapi.tiangolo.com/tutorial/metadata/
+        hub.ui.register_pages()
         nicegui.ui.run(  # docs: https://nicegui.io/documentation/run
             host=conf.get('http.address'),
             port=conf.get('http.port'),
@@ -371,12 +373,3 @@ def entry_point():
     except Exception as e:
         logger.exception(f"B22237 Uvicorn error: {e}")
     logger.info(f"B76443 exiting")
-
-
-nicegui.app.docs_url = None  # disable "Docs URLs" to help avoid being identified; see
-nicegui.app.redoc_url = None  # ... https://fastapi.tiangolo.com/tutorial/metadata/#docs-urls
-
-
-@nicegui.ui.page('/')
-def index():
-    nicegui.ui.label('hello, world')
