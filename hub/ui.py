@@ -1,11 +1,12 @@
-import jinja2
+import ast
 from nicegui import app, ui
 import os
 import re
 from typing import Dict, List, Tuple
-import shlex
 import logging
+import hub.util as util
 
+Berror = util.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 
@@ -50,188 +51,166 @@ def enable_external_links_new_tab():
 
 
 ###
-### Jinja "shortcode" helpers; emit placeholder markers we can parse later
+### elements that can go in ctags
 ###
 
 
-def attrs(**kw) -> str:
-    parts = list()
-    for k, v in kw.items():
-        if v is None:
-            continue
-        if isinstance(v, bool):
-            v = 'true' if v else 'false'
-        parts.append(f'{k}="{str(v).replace(chr(34), "&quot;")}"')
-    return ' '.join(parts)
+def input(placeholder='', label='', icon=None, icon_position='left'):
+    # docs: https://nicegui.io/documentation/input
+    # icon names: https://quasar.dev/vue-components/icon/#ionicons
+    obj = ui.input(label=label, placeholder=placeholder).classes('w-full')
+    if icon:
+        with obj.add_slot('prepend' if icon_position == 'left' else 'append'):
+            ui.icon(icon).classes('opacity-80')
+    return obj
 
 
-def headline(text: str, align: str = 'left') -> str:
-    return f'<!--NG:headline {attrs(text=text, align=align)}-->'
+def headline(text: str, align='center'):
+    with ui.column().classes(f'w-full items-{align}'):  # left or center (¿right broken?)
+        return ui.markdown(f'### {text}')
 
 
-def image(src: str, align: str = 'left', alt: str = '', width: str = None) -> str:
-    return f'<!--NG:image {attrs(src=f'ui/img/{src}', align=align, alt=alt, width=width)}-->'
-
-
-def input(id: str, icon: str = None, label: str = '', placeholder: str = '') -> str:  # noqa: A001
-    return f'<!--NG:input {attrs(id=id, icon=icon, label=label, placeholder=placeholder)}-->'
-
-
-def checkbox(id: str, label: str, icon: str = None, value: bool = False) -> str:
-    return f'<!--NG:checkbox {attrs(id=id, label=label, icon=icon, value=value)}-->'
-
-
-def button(text: str = 'Submit', id: str = None) -> str:
-    return f'<!--NG:button {attrs(text=text, id=id)}-->'
-
-
-jinja_env = jinja2.Environment(loader=jinja2.BaseLoader(), autoescape=False)
-jinja_env.globals.update(
-    {
-        'headline': headline,
-        'image': image,
-        'input': input,
-        'checkbox': checkbox,
-        'button': button,
-    }
-)
-
-###
-### render Markdown
-###
-
-
-def split_h1(md: str) -> Tuple[str, str]:
-    h1_re = re.compile(r'^\s*#\s+(?P<title>.+?)\s*$', re.M)
-    m = h1_re.search(md)
-    if not m:
-        return '', md
-    page_title = m.group('title').strip()
-    start, end = m.span()
-    rest = md[:start] + md[end:]
-    return page_title, rest.lstrip()
-
-
-def sections_after_h2(md: str) -> Tuple[str, List[Tuple[str, str]]]:
-    """Return (preamble_body, list of (h2_title_md, section_body_md))."""
-    h2_re = re.compile(r'^\s*##\s+(?P<h2>.+?)\s*$', re.M)
-    last_pos = 0
-    for m in h2_re.finditer(md):
-        if last_pos == 0:
-            preamble = md[: m.start()].strip()
+def image(source='', align='left', alt='', width=None):
+    img = ui.image(source if '/' in source else f'ui/img/{source}').props(f'alt={alt}')
+    if width:
+        if width.endswith('%'):
+            img.style(f'width:{width};')
+        elif width.replace('.', '', 1).isdigit():
+            img.style(f'width:{width}px;')
         else:
-            prev = list(h2_re.finditer(md[: m.start()]))[-1]
-        last_pos = m.start()
-    # Collect sections
-    sections = list()
-    matches = list(h2_re.finditer(md))
-    if not matches:
-        return md.strip(), list()
-    preamble = md[: matches[0].start()].strip()
-    for i, m in enumerate(matches):
-        title = m.group('h2').strip()
-        body_start = m.end()
-        body_end = matches[i + 1].start() if i + 1 < len(matches) else len(md)
-        body = md[body_start:body_end].strip()
-        sections.append((f'## {title}', body))
-    return preamble, sections
+            img.style(f'width:{width};')
+    if align == 'center':
+        img.classes('mx-auto block')
+    elif align == 'right':
+        img.classes('ml-auto block')
+    elif align == 'left':
+        img.classes('mr-auto block')
+    return img
 
 
-def parse_attrs(s: str) -> Dict[str, str]:
-    out: Dict[str, str] = dict()
-    for token in shlex.split(s or ''):
-        if '=' in token:
-            k, v = token.split('=', 1)
-            out[k] = v.strip('"').strip("'")
+def button(text=''):
+    return ui.button(text)
+
+
+def checkbox(label='', value=False, icon=None):
+    row = ui.row().classes('items-center gap-2')
+    with row:
+        if icon:
+            ui.icon(icon).classes('opacity-80')
+        return ui.checkbox(label, value=value)
+
+
+elements_available = {
+    'input': input,
+    'headline': headline,
+    'image': image,
+    'button': button,
+    'checkbox': checkbox,
+}
+
+###
+### process ctags in Markdown files
+###
+
+
+def test_split_at_ctags():
+    input = '{{ zero }}{{ one }}{ foo }{{bar}}{{ two }}'
+    assert split_at_ctags(input) == ['{{ zero }}', '{{ one }}', '{ foo }{{bar}}', '{{ two }}']
+    input = 'foo {{ three }} bar{{ four }} }}'  # unmatched close are ignored
+    assert split_at_ctags(input) == ['foo ', '{{ three }}', ' bar', '{{ four }}', ' }}']
+    try:
+        input = '{{ thir{{ teen }}{{ fourteen }}'
+        split_at_ctags(input)
+    except:
+        pass
+    else:
+        assert False, "test_split_at_ctags() did not catch nexted ctag"
+
+
+def parse_kwargs(param_str: str):
+    """Convert a string, e.g. 'length=2, prefix="fo"', into kwargs safely."""
+    tree = ast.parse(f"f({param_str})", mode="exec")
+    call = tree.body[0].value
+    kwargs = dict()
+    for kw in call.keywords:
+        kwargs[kw.arg] = ast.literal_eval(kw.value)
+    return kwargs
+
+
+def split_at_ctags(text: str) -> List[str]:
+    """Split text at '{{ ... }}' ctags.
+
+    Returns a list of strings where each piece either does not contain '{{ ', or
+    it starts with '{{ ' and ends with ' }}'. Raises an exception on unmatched or nested ctags.
+    """
+    ctags: List[str] = list()
+    i = 0
+    len_text = len(text)
+    while i < len_text:
+        start = text.find("{{ ", i)
+        if start == -1:  # no more ctags
+            if i < len_text:
+                ctags.append(text[i:])
+            break
+        if start > i:  # plain text before the ctag
+            ctags.append(text[i:start])
+        end = text.find(" }}", start)
+        if end == -1:
+            raise Berror(f"B04365 unmatched ctag: {text[start:start + 10]}...")
+        nested = text.find("{{ ", start + 3, end)
+        if nested != -1:
+            raise Berror(f"B68301 nested '{{ ... }}' ctags are not allowed: {text[start:end+3]}")
+        ctags.append(text[start : end + 3])
+        i = end + 3
+    return ctags
+
+
+def render_markdown_with_ctags(md: str, scope: Dict[str, object], within=None):
+    splits = split_at_ctags(md)
+    for split in splits:
+        if split.startswith('{{ '):
+            # parse ctag, e.g. 'image(source="abc.png", width="50%")'
+            m = re.fullmatch(r'\s*([^\d\W]\w*)\(([^\)]*)\)\s*', split[3:-3])
+            if not m:
+                raise Berror(f"B75468 syntax error in ctag: {split}")
+            if m.group(1) not in elements_available:
+                raise Berror(f"B50657 unknown element '{m.group(1)}' in: {split}")
+            try:
+                params = parse_kwargs(m.group(2))
+            except (SyntaxError, ValueError, AttributeError, IndexError, TypeError):
+                raise Berror(f"B76131 malformed parameters in: {m.group(0)}")
+            id = params.get('id', None)
+            if id:
+                del params['id']  # don't pass to element
+            try:
+                if within:
+                    with within:
+                        obj = (elements_available[m.group(1)])(**params)
+                else:
+                    obj = (elements_available[m.group(1)])(**params)
+            except TypeError as e:
+                raise Berror(f"B63098 error in '{m.group(0)}': {e}")
+            if id:
+                scope[id] = obj
         else:
-            out[token] = 'true'
-    return out
-
-
-def render_component(kind: str, attrs: Dict[str, str], scope: Dict[str, object]) -> None:
-    if kind == 'headline':
-        align = attrs.get('align', 'left')
-        text = attrs.get('text', '')
-        with ui.column().classes(f'w-full items-{align}'):  # left or center (¿right broken?)
-            ui.markdown(f'### {text}')
-        return
-    if kind == 'image':
-        src = attrs.get('src', '')
-        align = attrs.get('align', 'left')
-        alt = attrs.get('alt', '')
-        width = attrs.get('width')
-        img = ui.image(src).props(f'alt={alt}')
-        if width:
-            if width.endswith('%'):
-                img.style(f'width:{width};')
-            elif width.replace('.', '', 1).isdigit():
-                img.style(f'width:{width}px;')
+            if within:
+                with within:
+                    ui.markdown(split)
             else:
-                img.style(f'width:{width};')
-        if align == 'center':
-            img.classes('mx-auto block')
-        elif align == 'right':
-            img.classes('ml-auto block')
-        elif align == 'left':
-            img.classes('mr-auto block')
-        return
-    if kind == 'input':
-        cid = attrs.get('id', '')
-        label = attrs.get('label', '')
-        placeholder = attrs.get('placeholder', '')
-        row = ui.row().classes('items-center gap-2 w-full')
-        icon_name = attrs.get('icon')
-        with row:
-            if icon_name:
-                ui.icon(icon_name).classes('opacity-80')
-            scope[cid] = ui.input(
-                label=label or cid.replace('_', ' ').title(), placeholder=placeholder
-            ).classes('w-full')
-        return
-    if kind == 'checkbox':
-        cid = attrs.get('id', '')
-        label = attrs.get('label', '')
-        icon_name = attrs.get('icon')
-        value = attrs.get('value', 'false').lower() == 'true'
-        row = ui.row().classes('items-center gap-2')
-        with row:
-            if icon_name:
-                ui.icon(icon_name).classes('opacity-80')
-            scope[cid] = ui.checkbox(label or cid.replace('_', ' ').title(), value=value)
-        return
-    if kind == 'button':
-        text = attrs.get('text', 'Submit')
-        bid = attrs.get('id')
-        b = ui.button(text)
-        if bid:
-            scope[bid] = b
-        return
+                ui.markdown(split)
 
 
-def render_markdown_with_shortcodes(md_text: str, scope: Dict[str, object]) -> None:
-    """Render Markdown interleaved with NG components. 'scope' collects created widgets by id."""
-    pos = 0
-    MARKER_RE = re.compile(r'<!--NG:(?P<kind>[a-zA-Z0-9_-]+)\s*(?P<attrs>[^>]*)-->', re.S)
-    for m in MARKER_RE.finditer(md_text):
-        if m.start() > pos:
-            ui.markdown(md_text[pos : m.start()])
-        kind = m.group('kind')
-        attrs = parse_attrs(m.group('attrs'))
-        render_component(kind, attrs, scope)
-        pos = m.end()
-    if pos < len(md_text):
-        ui.markdown(md_text[pos:])
-
-
-def render_expansions(sections: List[Tuple[str, str]], scope: Dict[str, object]) -> None:
-    for title_md, body_md in sections:
+def render_expansion(title_md: str, within=None):
+    if within:
+        with within:
+            e = ui.expansion(icon='chevron_right').props('dense').classes('rounded-xl shadow-sm')
+    else:
         e = ui.expansion(icon='chevron_right').props('dense').classes('rounded-xl shadow-sm')
-        with e.add_slot('header'):
-            with ui.row().classes('items-center gap-2'):
-                ui.icon('circle').classes('text-xs')
-                ui.markdown(title_md.lstrip('# \t')).classes('!m-0 !p-0 text-sm font-base')
-        with e:
-            render_markdown_with_shortcodes(body_md, scope)
+    with e.add_slot('header'):
+        with ui.row().classes('items-center gap-2'):
+            ui.icon('circle').classes('text-xs')
+            ui.markdown(title_md.lstrip('# \t')).classes('!m-0 !p-0 text-sm font-base')
+    return e
 
 
 ###
@@ -239,28 +218,96 @@ def render_expansions(sections: List[Tuple[str, str]], scope: Dict[str, object])
 ###
 
 
+def parse_markdown_sections(md: str):
+    lines = md.splitlines(keepends=True)
+    root = None
+    stack = list()
+    current_section = None
+    buffer = ''
+    heading_re = re.compile(r'^(#+)\s+(.*)\s*$')
+    for line in lines:
+        m = heading_re.match(line)
+        if m:
+            hashes, title_md = m.groups()
+            level = len(hashes)
+            title = title_md.lstrip('# \t')
+            if buffer and current_section is not None:
+                current_section.append(buffer)
+            buffer = ''
+            if root is None:
+                root = [title]
+                stack = [(level, root)]
+                current_section = root
+                continue
+            if title == '..':  # special end-of-section marker
+                if len(stack) > 1:
+                    stack.pop()
+                current_section = stack[-1][1]
+                continue
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            parent = root if not stack else stack[-1][1]
+            new_node = [title]
+            parent.append(new_node)
+            stack.append((level, new_node))
+            current_section = new_node
+        else:
+            buffer += line
+    if buffer and current_section is not None:
+        current_section.append(buffer)
+    return root
+
+
+def test_parse_markdown_sections():
+    input = (
+        "## one\n\n"
+        + "Text within 'one'.\n\n"
+        + "### two\n\n"
+        + "Text within 'two'.\n\n"
+        + "## ..\n\n"
+        + "Text within 'one' again.\n"
+    )
+    expected_output = [
+        "one",
+        "\nText within 'one'.\n\n",
+        ["two", "\nText within 'two'.\n\n"],
+        "\nText within 'one' again.\n",
+    ]
+    assert parse_markdown_sections(input) == expected_output
+
+
 def register_page(path: str) -> None:
     bname, _ = os.path.splitext(os.path.basename(path))
     url_path = (f'/{bname}').replace('//', '/')
     with open(path, 'r', encoding='utf-8') as f:
-        md = f.read()
-        template = jinja_env.from_string(md)  # expand macros into NG markers
-        rendered = template.render()
-        page_title, rest = split_h1(rendered)  # extract H1 as page title
+        sections = parse_markdown_sections(f.read())
 
-        @ui.page(url_path, title=page_title)
+        @ui.page(url_path, title=sections[0])
         def page():
+            scope: Dict[str, object] = dict()  # collects created widgets by id
+            within = list()  # expansion object stack
+            within.append(None)  # something for the outer-most level to build on
             enable_external_links_new_tab()
             with ui.header().classes('app-header'):
                 ui.label("").classes('text-lg font-medium')
             with ui.column().classes('w-full max-w-screen-sm mx-auto px-3'):
-                scope: Dict[str, object] = dict()
-                preamble, sections = sections_after_h2(rest)
-                if preamble:
-                    render_markdown_with_shortcodes(preamble, scope)
-                if sections:
-                    render_expansions(sections, scope)
-                ui.separator()
+                stack = list()  # the part of the tree that is left to traverse
+                stack.append(sections[1:])  # push the list without title
+                while len(stack):  # depth-first traversal of sections
+                    secs = stack.pop()
+                    for i, sec in enumerate(secs):
+                        if isinstance(sec, str):
+                            w = within[-1]  # current expansion object
+                            render_markdown_with_ctags(sec, scope, w)
+                        else:  # sec is a list representing a section header and sections
+                            assert isinstance(sec[0], str)
+                            w = within[-1]  # current expansion object
+                            within.append(render_expansion(sec[0], w))
+                            stack.append(secs[i + 1 :])  # remainder of current list
+                            stack.append(sec[1:])  # sublist without title
+                            break
+                    else:  # done with secs at this level
+                        within.pop()
 
 
 def register_pages():

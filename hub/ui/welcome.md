@@ -1,8 +1,8 @@
 # BitBurrow: Welcome
 
-{{ headline('**Welcome to BitBurrow**', align='center') }}
+{{ headline(text='**Welcome to BitBurrow**', align='center') }}
 
-{{ image('BitBurrow.png', align='center', width='50%') }}
+{{ image(source='BitBurrow.png', align='center', width='50%') }}
 
 BitBurrow is a set of tools to help you set up and use a VPN "base" anywhere--at your parents' house, an office, or a
 friend's apartment. And you don't have to be good with computers. A BitBurrow base will allow you to securely use the
@@ -41,13 +41,12 @@ router.
 1. If everything works as planned, BitBurrow will configure your router as a VPN server, prompting you if necessary. The process normally takes a few minutes.
 1. You can use the same BitBurrow app to add, edit, and delete VPN client devices (phones, laptops, other routers, etc.) to use the internet through your "VPN home" location.
 
-
-
+# ..
 
 Please enter your coupon code below (if it is not already filled in).
 
-{{ input('coupon_code', icon='tag') }}
+{{ input(id='coupon_code', placeholder='Coupon', icon='confirmation_number') }}
 
-{{ button('Continue') }}
+{{ button(text='Continue') }}
 
 
