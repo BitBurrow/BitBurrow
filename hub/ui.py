@@ -1,14 +1,20 @@
 import ast
-from nicegui import app, ui
+from nicegui import app, ui, Client
 import os
 import re
 from typing import Dict, List, Tuple
 import logging
 import hub.util as util
+import hub.db as db
+import hub.login_key as lk
 
 Berror = util.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
+
+###
+### HTML page set-up
+###
 
 
 def enable_external_links_new_tab():
@@ -130,6 +136,7 @@ elements_available = {
     'checkbox': checkbox,
 }
 
+
 ###
 ### process ctags in Markdown files
 ###
@@ -187,7 +194,7 @@ def split_at_ctags(text: str) -> List[str]:
     return ctags
 
 
-def render_markdown_with_ctags(md: str, scope: Dict[str, object], within=None):
+def render_markdown_with_ctags(md: str, idelem: Dict[str, object], within=None):
     splits = split_at_ctags(md)
     for split in splits:
         if split.startswith('{{ '):
@@ -213,7 +220,7 @@ def render_markdown_with_ctags(md: str, scope: Dict[str, object], within=None):
             except TypeError as e:
                 raise Berror(f"B63098 error in '{m.group(0)}': {e}")
             if id:
-                scope[id] = obj
+                idelem[id] = obj
         else:
             if within:
                 with within:
@@ -229,14 +236,14 @@ def render_expansion(title_md: str, within=None):
     else:
         e = ui.expansion(icon='chevron_right').props('dense').classes('rounded-xl shadow-sm')
     with e.add_slot('header'):
-        with ui.row().classes('items-center gap-2'):
-            ui.icon('circle').classes('text-xs')
-            ui.markdown(title_md.lstrip('# \t')).classes('!m-0 !p-0 text-sm font-base')
+        # using ui.row() with ui.icon() and ui.markdown() split bullet when screen was narrow
+        content = f'■\u2000 {title_md.lstrip("# \t")}'  # EN QUAD to force more space after bullet
+        ui.markdown(content).classes('!m-0 !p-0 text-sm font-base')
     return e
 
 
 ###
-### load pages: 'ui/*.md'
+### parse Markdown files
 ###
 
 
@@ -298,49 +305,93 @@ def test_parse_markdown_sections():
     assert parse_markdown_sections(input) == expected_output
 
 
-def register_page(path: str) -> None:
-    bname, _ = os.path.splitext(os.path.basename(path))
-    url_path = (f'/{bname}').replace('//', '/')
-    with open(path, 'r', encoding='utf-8') as f:
-        sections = parse_markdown_sections(f.read())
+def render_page(sections):
+    idelem: Dict[str, object] = dict()  # map each element ID to its actual object
+    within = list()  # expansion object stack
+    within.append(None)  # something for the outer-most level to build on
+    enable_external_links_new_tab()
+    with ui.header().classes('app-header'):
+        ui.label("").classes('text-lg font-medium')
+    with ui.column().classes('w-full max-w-screen-sm mx-auto px-3'):
+        stack = list()  # the part of the tree that is left to traverse
+        stack.append(sections[1:])  # push the list without title
+        while len(stack):  # depth-first traversal of sections
+            secs = stack.pop()
+            for i, sec in enumerate(secs):
+                if isinstance(sec, str):
+                    w = within[-1]  # current expansion object
+                    render_markdown_with_ctags(sec, idelem, w)
+                else:  # sec is a list representing a section header and sections
+                    assert isinstance(sec[0], str)
+                    w = within[-1]  # current expansion object
+                    within.append(render_expansion(sec[0], w))
+                    stack.append(secs[i + 1 :])  # remainder of current list
+                    stack.append(sec[1:])  # sublist without title
+                    break
+            else:  # done with secs at this level
+                within.pop()
+    return idelem
 
-        @ui.page(url_path, title=sections[0])
-        def page():
-            scope: Dict[str, object] = dict()  # collects created widgets by id
-            within = list()  # expansion object stack
-            within.append(None)  # something for the outer-most level to build on
-            enable_external_links_new_tab()
-            with ui.header().classes('app-header'):
-                ui.label("").classes('text-lg font-medium')
-            with ui.column().classes('w-full max-w-screen-sm mx-auto px-3'):
-                stack = list()  # the part of the tree that is left to traverse
-                stack.append(sections[1:])  # push the list without title
-                while len(stack):  # depth-first traversal of sections
-                    secs = stack.pop()
-                    for i, sec in enumerate(secs):
-                        if isinstance(sec, str):
-                            w = within[-1]  # current expansion object
-                            render_markdown_with_ctags(sec, scope, w)
-                        else:  # sec is a list representing a section header and sections
-                            assert isinstance(sec[0], str)
-                            w = within[-1]  # current expansion object
-                            within.append(render_expansion(sec[0], w))
-                            stack.append(secs[i + 1 :])  # remainder of current list
-                            stack.append(sec[1:])  # sublist without title
-                            break
-                    else:  # done with secs at this level
-                        within.pop()
+
+ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
+
+###
+### page: /welcome
+###
+
+
+@ui.page('/welcome')
+def welcome(client: Client):
+    md_path = os.path.join(ui_path, 'welcome.md')
+    with open(md_path, 'r', encoding='utf-8') as f:
+        sections = parse_markdown_sections(f.read())
+    ui.run_javascript(f"document.title = '{sections[0]}'")
+    qparam_coupon = client.request.query_params.get('coupon')
+    idelem = render_page(sections)
+    if qparam_coupon:
+        idelem['coupon_code'].set_value(qparam_coupon)
+
+    async def on_continue():
+        coupon = lk.strip_login_key(idelem['coupon_code'].value or '')
+        try:
+            account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
+        except db.CredentialsError as e:
+            err_message = str(e).replace(db.lkocc_string, "coupon code")
+            ui.notify(err_message)
+            return
+        ui.navigate.to(f'/confirm?coupon={coupon}')
+
+    idelem['continue'].on_click(callback=on_continue)
+
+
+###
+### page: /confirm
+###
+
+
+@ui.page('/confirm')
+def confirm(client: Client):
+    qparam_coupon = client.request.query_params.get('coupon')
+    if not qparam_coupon:  # coupon code is required
+        ui.navigate.to(f'/welcome?coupon={qparam_coupon}')
+    try:  # validate (no other way to confirm that user came via /welcome)
+        account = db.Account.validate_login_key(qparam_coupon, allowed_kinds=db.coupon)
+    except db.CredentialsError as e:  # send them back to /welcome
+        ui.navigate.to(f'/welcome?coupon={qparam_coupon}')
+    md_path = os.path.join(ui_path, 'confirm.md')
+    with open(md_path, 'r', encoding='utf-8') as f:
+        sections = parse_markdown_sections(f.read())
+    ui.run_javascript(f"document.title = '{sections[0]}'")
+    idelem = render_page(sections)
+    login_key = lk.generate_login_key(lk.login_key_len)  # not in DB yet
+    idelem['login_key'].set_value(lk.dress_login_key(login_key))
+
+    async def on_continue():
+        pass
+
+    idelem['continue'].on_click(callback=on_continue)
 
 
 def register_pages():
-    this_file_dir = os.path.dirname(os.path.abspath(__file__))
-    ui_path = os.path.join(this_file_dir, 'ui')
     app.add_static_files('/ui', ui_path)
     ui.add_css(os.path.join(ui_path, 'theme.css'), shared=True)
-    for file in os.listdir(ui_path):
-        if file.endswith('.md'):
-            md_path = os.path.join(ui_path, file)
-            if os.path.isfile(md_path):
-                register_page(md_path)
-            else:
-                logger.error(f"B95652 'ui/*.md' found that is not a file: {md_path}")

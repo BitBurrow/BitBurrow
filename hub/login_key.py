@@ -30,6 +30,10 @@ def generate_login_key(n):  # create n digits of a new login_key
     return ''.join(secrets.choice(base28_digits) for i in range(n))
 
 
-# def dress_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'
-#    assert len(k) == login_key_len
-#    return f'{k[0:4]}-{k[4:9]}-{k[9:13]}-{k[13:login_key_len]}'
+def strip_login_key(k):
+    return k.replace('-', '')
+
+
+def dress_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'
+    assert len(k) == login_key_len
+    return f'{k[0:4]}-{k[4:9]}-{k[9:13]}-{k[13:login_key_len]}'

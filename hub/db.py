@@ -18,11 +18,8 @@ logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, 
 engine = None
 
 
-class DbException(Exception):
-    def __init__(self, message: str):
-        super().__init__(message)
-        logger.info(message)
-        raise HTTPException(status_code=401, detail=message)
+class CredentialsError(Exception):
+    pass
 
 
 ###
@@ -132,9 +129,9 @@ class Account(SQLModel, table=True):
     @staticmethod
     def validate_login_key(login_key, allowed_kinds=None):
         if len(login_key) != lk.login_key_len:
-            raise DbException(f"B64292 {lkocc_string} length must be {lk.login_key_len}")
+            raise CredentialsError(f"B64292 {lkocc_string} length must be {lk.login_key_len}")
         if not set(lk.base28_digits).issuperset(login_key):
-            raise DbException(f"B51850 invalid {lkocc_string} characters")
+            raise CredentialsError(f"B51850 invalid {lkocc_string} characters")
         with Session(engine) as session:
             statement = select(Account).where(Account.login == Account.login_portion(login_key))
             result = session.exec(statement).one_or_none()
@@ -149,7 +146,7 @@ class Account(SQLModel, table=True):
         try:
             hasher.verify(key_hash_to_test, key)
         except argon2.exceptions.VerifyMismatchError:
-            raise DbException(
+            raise CredentialsError(
                 f"B54441 {lkocc_string} not found; " "make sure it was entered correctly"
             )
         if hasher.check_needs_rehash(key_hash_to_test):
@@ -157,21 +154,21 @@ class Account(SQLModel, table=True):
             result.update()
             logger.info("B74657 rehashed {login_key}")
         if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise DbException(f"B18952 {lkocc_string} expired")
+            raise CredentialsError(f"B18952 {lkocc_string} expired")
         if allowed_kinds is not None:
             if result.kind not in allowed_kinds:
                 if result.kind in admin_or_manager and allowed_kinds == coupon:
-                    raise DbException(
+                    raise CredentialsError(
                         "B10052 this is a login key; please enter a coupon code "
                         "or select 'Sign in' from the ⋮ menu"
                     )
                 elif result.kind in coupon and allowed_kinds == admin_or_manager:
-                    raise DbException(
+                    raise CredentialsError(
                         "B20900 this is a coupon code; please enter a login key "
                         " or seelct 'Enter a coupon code' from the ⋮ menu"
                     )
                 else:
-                    raise DbException("B96593 invalid account kind")
+                    raise CredentialsError("B96593 invalid account kind")
         # FIXME: verify pubkey limit
         return result
 
@@ -340,9 +337,9 @@ class Client(SQLModel, table=True):
     @staticmethod
     def validate_pubkey(k):
         if not (42 <= len(k) < 72):
-            raise DbException("B64879 invalid pubkey length")
+            raise CredentialsError("B64879 invalid pubkey length")
         if re.search(r'[^A-Za-z0-9/+=]', k):
-            raise DbException("B16042 invalid pubkey characters")
+            raise CredentialsError("B16042 invalid pubkey characters")
 
     @staticmethod
     def startup(wgif):
