@@ -66,8 +66,7 @@ def input(placeholder='', label='', icon=None, icon_position='left'):
 
 
 def headline(text: str, align='center'):
-    with ui.column().classes(f'w-full items-{align}'):  # left or center (¿right broken?)
-        return ui.markdown(f'### {text}')
+    return ui.markdown(text).classes(f'w-full text-{align} text-3xl')
 
 
 def image(source='', align='left', alt='', width=None):
