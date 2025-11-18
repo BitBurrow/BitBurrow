@@ -55,13 +55,36 @@ def enable_external_links_new_tab():
 ###
 
 
-def input(placeholder='', label='', icon=None, icon_position='left'):
+def input(
+    placeholder: str = '',
+    label: str = '',
+    icon=None,
+    icon_position: str = 'left',
+    readonly: bool = False,
+    align: str = 'left',
+    font_size=None,  # e.g. '14px', '1rem'
+    copy_button: bool = False,
+):
     # docs: https://nicegui.io/documentation/input
     # icon names: https://quasar.dev/vue-components/icon/#ionicons
-    obj = ui.input(label=label, placeholder=placeholder).classes('w-full')
+    props = [f'input-class="text-{align}"']
+    if readonly:
+        props.append('readonly')  # QInput readonly prop
+    obj = ui.input(label=label, placeholder=placeholder).props(' '.join(props)).classes('w-full')
+    if font_size:
+        obj.style(f'font-size: {font_size}')
     if icon:
         with obj.add_slot('prepend' if icon_position == 'left' else 'append'):
             ui.icon(icon).classes('opacity-80')
+    if copy_button:
+
+        def on_copy(o=obj) -> None:
+            ui.clipboard.write(o.value or '')
+            ui.notify('Copied to clipboard')
+
+        with obj.add_slot('append'):
+            ui.button('Copy', on_click=on_copy).props('flat dense')
+
     return obj
 
 
