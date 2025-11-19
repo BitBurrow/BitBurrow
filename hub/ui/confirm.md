@@ -4,7 +4,7 @@
 
 {{ image(source='padlock-24051.svg', align='center', width='50%') }}
 
-{{ input(id='login_key', readonly=True, align='center', font_size='18px', copy_button=True) }}
+{{ input(id='login_key', readonly=True, align='center', font_size='18px', show_copy=True) }}
 
 Copy this login key to a safe place, such as secure notes or a password manager. If your login
 key is lost, you will loose the ability to make changes to your BitBurrow devices.

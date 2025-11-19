@@ -69,7 +69,7 @@ def input(
     readonly: bool = False,
     align: str = 'left',
     font_size=None,  # e.g. '14px', '1rem'
-    copy_button: bool = False,
+    show_copy: bool = False,
 ):
     # docs: https://nicegui.io/documentation/input
     # icon names: https://quasar.dev/vue-components/icon/#ionicons
@@ -82,15 +82,14 @@ def input(
     if icon:
         with obj.add_slot('prepend' if icon_position == 'left' else 'append'):
             ui.icon(icon).classes('opacity-80')
-    if copy_button:
 
-        def on_copy(o=obj) -> None:
-            ui.clipboard.write(o.value or '')
-            ui.notify('Copied to clipboard')
+    def on_copy(o=obj) -> None:
+        ui.clipboard.write(o.value or '')
+        ui.notify('Copied to clipboard')
 
+    if show_copy:
         with obj.add_slot('append'):
             ui.button('Copy', on_click=on_copy).props('flat dense')
-
     return obj
 
 
@@ -361,7 +360,13 @@ def welcome(client: Client):
             return
         ui.navigate.to(f'/confirm?coupon={coupon}')
 
+    def check_enter(e):
+        if e.args.get('key') == 'Enter':
+            ui.run_javascript('')  # trigger async context
+            ui.timer(0, on_continue, once=True)
+
     idelem['continue'].on_click(callback=on_continue)
+    idelem['coupon_code'].on('keydown', check_enter)  # pressing Enter submits form
 
 
 ###
