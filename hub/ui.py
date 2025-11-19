@@ -360,10 +360,9 @@ def welcome(client: Client):
             return
         ui.navigate.to(f'/confirm?coupon={coupon}')
 
-    def check_enter(e):
+    async def check_enter(e):
         if e.args.get('key') == 'Enter':
-            ui.run_javascript('')  # trigger async context
-            ui.timer(0, on_continue, once=True)
+            await on_continue()
 
     idelem['continue'].on_click(callback=on_continue)
     idelem['coupon_code'].on('keydown', check_enter)  # pressing Enter submits form
