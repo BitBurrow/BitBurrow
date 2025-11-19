@@ -72,7 +72,6 @@ lkocc_string = '__login_key_or_coupon_code__'
 class Account(SQLModel, table=True):
     __table_args__ = (sqlalchemy.UniqueConstraint('login'),)  # must have a unique login
     id: Optional[int] = Field(primary_key=True, default=None)
-    # FIXME: retry or increment on non-unique login
     login: str = Field(  # used like a username
         index=True,
         default_factory=lambda: lk.generate_login_key(lk.login_len),
@@ -85,7 +84,7 @@ class Account(SQLModel, table=True):
     )
     valid_until: DateTime = Field(
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
-        default_factory=lambda: DateTime.now(TimeZone.utc) + TimeDelta(days=3650),
+        default_factory=lambda: DateTime.now(TimeZone.utc) + TimeDelta(days=10950),
     )
     kind: Account_kind = Account_kind.NONE
     netif_id: Optional[int] = Field(foreign_key='netif.id')  # used only if kind == USER
@@ -107,8 +106,20 @@ class Account(SQLModel, table=True):
         if kind == Account_kind.ADMIN:
             account.clients_max = 0  # admins cannot create VPN clients
         account.kind = kind
+        retry_max = 50
+        for attempt in range(retry_max):
+            try:
+                account.update()
+            except sqlalchemy.exc.IntegrityError:
+                if attempt > 20:
+                    logger.warning(f"B09974 duplicate login {account.login} (retry {attempt})")
+                account.login = lk.generate_login_key(lk.login_len)
+                continue
+            else:
+                break
+        else:
+            raise RuntimeError(f"B00995 duplicate login {account.login} after {retry_max} attempts")
         login_key = account.login + key  # avoids: sqlalchemy.orm.exc.DetachedInstanceError
-        account.update()
         logger.info(f"Created new {kind} {login_key}")
         return login_key
 
