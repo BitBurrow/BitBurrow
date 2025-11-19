@@ -221,11 +221,13 @@ def render_markdown_with_ctags(md: str, idelem: Dict[str, object], within=None):
             if id:
                 idelem[id] = obj
         else:
-            if within:
-                with within:
-                    ui.markdown(split)
-            else:
-                ui.markdown(split)
+            split_bare = split.strip(' \t\r\n')
+            if split_bare:  # avoid extra vertical space between elements
+                if within:
+                    with within:
+                        ui.markdown(split_bare)
+                else:
+                    ui.markdown(split_bare)
 
 
 def render_expansion(title_md: str, within=None):
