@@ -1,13 +1,16 @@
 import argon2
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import enum
-from fastapi import HTTPException
+import fastapi
+import hashlib
 import ipaddress
 import logging
 import re
 import secrets
 import sqlalchemy
-from sqlmodel import Field, Session, SQLModel, select, JSON, Column
+import sqlalchemy.engine
+import sqlite3
+from sqlmodel import Field, Session, SQLModel, select, JSON, Column, Relationship
 from typing import Optional
 import hub.login_key as lk
 import hub.net as net
@@ -16,6 +19,15 @@ from pydantic import ConfigDict
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 engine = None
+
+
+@sqlalchemy.event.listens_for(sqlalchemy.engine.Engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    """Set 'PRAGMA foreign_keys=ON' for, e.g. LoginSession.account"""
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        cursor = dbapi_connection.cursor()
+        cursor.execute('PRAGMA foreign_keys=ON')
+        cursor.close()
 
 
 class CredentialsError(Exception):
@@ -54,7 +66,7 @@ class Account_kind(enum.Enum):
             700: "coupon code",
             400: "login key",
             200: "user login key",
-            0: "none",
+            0: "disabled account",
         }
         try:
             return str_map[self.value]
@@ -82,10 +94,7 @@ class Account(SQLModel, table=True):
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
         default_factory=lambda: DateTime.now(TimeZone.utc),
     )
-    valid_until: DateTime = Field(
-        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
-        default_factory=lambda: DateTime.now(TimeZone.utc) + TimeDelta(days=10950),
-    )
+    valid_until: DateTime = None
     kind: Account_kind = Account_kind.NONE
     netif_id: Optional[int] = Field(foreign_key='netif.id')  # used only if kind == USER
     comment: str = ""
@@ -98,7 +107,8 @@ class Account(SQLModel, table=True):
             return session.query(Account).filter(Account.kind == account_kind).count()
 
     @staticmethod
-    def new(kind):  # create a new account and return its login key
+    def new(kind: Account_kind, valid_for=TimeDelta(days=10950)):
+        """Create a new account and return its login key."""
         account = Account()
         key = lk.generate_login_key(lk.key_len)
         hasher = argon2.PasswordHasher()
@@ -106,6 +116,11 @@ class Account(SQLModel, table=True):
         if kind == Account_kind.ADMIN:
             account.clients_max = 0  # admins cannot create VPN clients
         account.kind = kind
+        account.valid_until = Field(
+            sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+            default_factory=lambda: DateTime.now(TimeZone.utc) + valid_for,
+        )
+        account.set_expires_in
         retry_max = 50
         for attempt in range(retry_max):
             try:
@@ -120,7 +135,7 @@ class Account(SQLModel, table=True):
         else:
             raise RuntimeError(f"B00995 duplicate login {account.login} after {retry_max} attempts")
         login_key = account.login + key  # avoids: sqlalchemy.orm.exc.DetachedInstanceError
-        logger.info(f"Created new {kind} {login_key}")
+        logger.info(f"Created new {kind.token_name()} {login_key}")
         return login_key
 
     def update(self):
@@ -128,6 +143,18 @@ class Account(SQLModel, table=True):
             session.add(self)
             session.commit()
             return self.id
+
+    def set_kind(self, kind: Account_kind):
+        self.kind = kind
+        self.update()
+        logger.info(f"Updated account {self.login} to {kind.token_name()}")
+
+    def set_valid_for(self, valid_for):
+        self.valid_until = Field(
+            sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+            default_factory=lambda: DateTime.now(TimeZone.utc) + valid_for,
+        )
+        self.update()
 
     @staticmethod
     def login_portion(login_key):
@@ -182,6 +209,83 @@ class Account(SQLModel, table=True):
                     raise CredentialsError("B96593 invalid account kind")
         # FIXME: verify pubkey limit
         return result
+
+    @staticmethod
+    def get(login: str):
+        with Session(engine) as session:
+            statement = select(Account).where(Account.login == Account.login_portion(login))
+            return session.exec(statement).one_or_none()
+
+
+###
+### DB table 'login_session' - user log-in sessions
+###
+
+
+class LoginSession(SQLModel, table=True):
+    __table_args__ = (
+        sqlalchemy.Index("idx_sessions_expires_at", "expires_at"),
+        sqlalchemy.UniqueConstraint("token_hash", name="uq_sessions_token_hash"),
+    )
+    id: Optional[int] = Field(primary_key=True, default=None)
+    account_id: int = Field(foreign_key='account.id')
+    token_hash: str = ''
+    created_at: DateTime = Field(
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default_factory=lambda: DateTime.now(TimeZone.utc),
+    )
+    last_activity: DateTime = Field(
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default_factory=lambda: DateTime.now(TimeZone.utc),
+    )
+    expires_at: DateTime = Field(
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default_factory=lambda: DateTime.now(TimeZone.utc) + TimeDelta(days=30),
+    )
+    account: Optional[Account] = Relationship(back_populates="login_sessions")
+    ip: str
+    user_agent: str
+
+    @staticmethod
+    def new(
+        account: Account, request: fastapi.Request
+    ) -> str:  # create a new session and return its token
+        # FIXME: here or elsewhere, make certain account is valid, of the correct kind, etc.
+        login = LoginSession()
+        login.account_id = account.id
+        token = secrets.token_urlsafe(32)  # 256-bit random token
+        login.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        login.ip = request.client.host if request.client else '0.0.0.0'
+        login.user_agent = request.headers.get('User-Agent', '')
+        login.update()
+        logger.info(f"Created new login session for {account.login}")
+        return token
+
+    def update(self):
+        with Session(engine) as session:
+            session.add(self)
+            session.commit()
+            return self.id
+
+    @staticmethod
+    def from_token(token: str, log_out=False) -> Optional["LoginSession"]:
+        if not token:
+            return None
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        with Session(engine) as session:
+            row = session.exec(
+                select(LoginSession).where(LoginSession.token_hash == token_hash)
+            ).first()
+            if not row:
+                return None
+            now = DateTime.now(TimeZone.utc)
+            if now >= row.expires_at:
+                return None
+            row.last_activity = now
+            if log_out:
+                row.expires_at = now
+            row.update()
+            return row
 
 
 ###
