@@ -15,11 +15,11 @@ from sqlmodel import SQLModel, create_engine, sql
 import hub.logs as logs
 import hub.config as conf
 import hub.db as db
-import hub.api as api
 import hub.net as net
 import hub.migrate_db as migrate_db
 import hub.ui
 import hub.util as util
+import hub.pages as pages
 
 Berror = util.Berror
 logger = logging.getLogger(__name__)
@@ -351,7 +351,7 @@ def entry_point():
         nicegui.app.on_startup(watch_tls_cert)
         nicegui.app.docs_url = None  # disable "Docs URLs" to help avoid being identified; see
         nicegui.app.redoc_url = None  # ... https://fastapi.tiangolo.com/tutorial/metadata/
-        hub.ui.register_pages()
+        pages.register_pages()
         nicegui.ui.run(  # docs: https://nicegui.io/documentation/run
             host=conf.get('http.address'),
             port=conf.get('http.port'),
