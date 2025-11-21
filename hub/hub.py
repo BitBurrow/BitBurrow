@@ -17,7 +17,6 @@ import hub.config as conf
 import hub.db as db
 import hub.net as net
 import hub.migrate_db as migrate_db
-import hub.ui
 import hub.util as util
 import hub.pages as pages
 

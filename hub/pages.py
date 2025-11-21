@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from nicegui import app, ui, Client
 import os
-import hub.ui
+import hub.uif as uif
 import hub.db as db
 import hub.login_key as lk
 import hub.auth as auth
@@ -18,10 +18,10 @@ ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
 def welcome(client: Client):
     md_path = os.path.join(ui_path, 'welcome.md')
     with open(md_path, 'r', encoding='utf-8') as f:
-        sections = hub.ui.parse_markdown_sections(f.read())
+        sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     qparam_coupon = client.request.query_params.get('coupon')
-    idelem = hub.ui.render_page(sections)
+    idelem = uif.render_page(sections)
     if qparam_coupon:
         idelem['coupon_code'].set_value(qparam_coupon)
 
@@ -59,9 +59,9 @@ def confirm(client: Client):
         ui.navigate.to(f'/welcome?coupon={qparam_coupon}')
     md_path = os.path.join(ui_path, 'confirm.md')
     with open(md_path, 'r', encoding='utf-8') as f:
-        sections = hub.ui.parse_markdown_sections(f.read())
+        sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
-    idelem = hub.ui.render_page(sections)
+    idelem = uif.render_page(sections)
     login_key = db.Account.new(
         kind=db.Account_kind.NONE,  # in DB but disabled until confirmed
         valid_for=TimeDelta(days=1),  # expire in 1 day if not confirmed
