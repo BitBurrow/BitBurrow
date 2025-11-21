@@ -1,4 +1,6 @@
 import ast
+import asyncio
+from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from nicegui import app, ui, Client
 import os
 import re
@@ -7,6 +9,7 @@ import logging
 import hub.util as util
 import hub.db as db
 import hub.login_key as lk
+import hub.auth as auth
 
 Berror = util.Berror
 logger = logging.getLogger(__name__)
@@ -389,13 +392,36 @@ def confirm(client: Client):
         sections = parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     idelem = render_page(sections)
-    login_key = lk.generate_login_key(lk.login_key_len)  # not in DB yet
+    login_key = db.Account.new(
+        kind=db.Account_kind.NONE,  # in DB but disabled until confirmed
+        valid_for=TimeDelta(days=1),  # expire in 1 day if not confirmed
+    )
     idelem['login_key'].set_value(lk.dress_login_key(login_key))
 
     async def on_continue():
-        pass
+        if not idelem['have_written_down'].value:
+            ui.notify("Required input is missing")
+            return
+        idelem['continue'].disable()
+        idelem['login_key'].set_value(lk.dress_login_key('*' * lk.login_key_len))
+        await asyncio.sleep(2)  # let user see the importantce of keeping the login key secret
+        # validate the new account
+        account = db.Account.get(login_key)  # only uses the 'login' portion
+        account.set_kind(db.Account_kind.MANAGER)
+        account.set_valid_for(TimeDelta(days=10950))
+        login_token = db.LoginSession.new(account, client.request)
+        auth.log_in(login_token)
 
     idelem['continue'].on_click(callback=on_continue)
+    # do not store login_key anywhere
+
+
+@ui.page('/home')
+def confirm(client: Client):
+    account = auth.require_login(client)
+    if not account:
+        return
+    ui.markdown("**Base routers**").classes(f'w-full text-center text-3xl')
 
 
 def register_pages():

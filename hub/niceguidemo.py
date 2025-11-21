@@ -8,11 +8,8 @@ import collections
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from typing import Dict, Deque, List, Optional
 import urllib.parse
-from nicegui import ui, app, Client
 from fastapi import Request, Response, Body, APIRouter
-from fastapi.responses import PlainTextResponse, RedirectResponse
 import sqlalchemy.exc
-from sqlmodel import SQLModel, Field, Session, select, create_engine, Column, String, Relationship
 import argon2
 import uvicorn.middleware.proxy_headers
 import fastapi.middleware.trustedhost
@@ -34,7 +31,6 @@ ALLOWED_CHARS_PATTERN = re.compile(r'^[a-zA-Z_.-]*$')
 
 DB_PATH = os.environ.get('DB_PATH', 'sqlite:///./users.db')
 
-COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
 # CSRF
 CSRF_HEADER = 'x-csrf-token'
@@ -48,9 +44,6 @@ PENDING_TTL = 300  # seconds
 PENDING_CAP = 200
 
 # 1 in prod (HTTPS), 0 in local dev (HTTP)
-SECURE_COOKIES = bool(int(os.environ.get('SECURE_COOKIES', '0')))
-SESSION_COOKIE_NAME = '__Host-session' if SECURE_COOKIES else 'session'
-CSRF_COOKIE_NAME = '__Host-csrf' if SECURE_COOKIES else 'csrf'
 
 # Environment
 PROD = os.getenv('ENV', 'dev') == 'prod'
@@ -114,22 +107,46 @@ class Account(SQLModel, table=True):
     login_sessions: List['LoginSession'] = Relationship(back_populates='account')
 
 
+###
+### DB table 'login_session' - user log-in sessions
+###
+
+
 class LoginSession(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: int = Field(foreign_key='account.id', index=True)
-    token_hash: str = Field(index=True, unique=True)
-    user_agent: str
-    ip: str
-    created_at: DateTime = Field(
-        sa_column=Column(EpochUTCDateTime()),
-        default_factory=lambda: DateTime.now(TimeZone.utc),
+    __table_args__ = (
+        sqlalchemy.Index("idx_sessions_expires_at", "expires_at"),
+        sqlalchemy.UniqueConstraint("token_hash", name="uq_sessions_token_hash"),
     )
+    id: Optional[int] = Field(primary_key=True, default=None)
+    account_id: int = Field(foreign_key='account.id')
+    token_hash: str = ''
     last_activity: DateTime = Field(
-        sa_column=Column(EpochUTCDateTime()),
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
         default_factory=lambda: DateTime.now(TimeZone.utc),
     )
-    valid: bool = Field(default=True)
+    expires_at: DateTime = Field(
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default_factory=lambda: DateTime.now(TimeZone.utc) + TimeDelta(days=30),
+    )
     account: Optional[Account] = Relationship(back_populates="login_sessions")
+    ip: str
+    user_agent: str
+
+    @staticmethod
+    def new(account_id: int):  # create a new session and return its token
+        # here or elsewhere, make sure account is valid, of the correct kind, etc.
+        login = LoginSession()
+        login.account_id = account_id
+        token = secrets.token_urlsafe(32)  # 256-bit random token
+        login.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        login.update()
+        return token
+
+    def update(self):
+        with Session(engine) as session:
+            session.add(self)
+            session.commit()
+            return self.id
 
 
 engine = create_engine(DB_PATH, echo=False)
@@ -156,10 +173,6 @@ def ip_from_request(request: Request) -> str:
 def generate_password(length: int = 5) -> str:
     alphabet = string.ascii_lowercase + string.digits
     return ''.join(secrets.choice(alphabet) for _ in range(length))
-
-
-def hash_token(t: str) -> str:
-    return hashlib.sha256(t.encode()).hexdigest()
 
 
 def user_agent_brief(ua: str) -> str:
@@ -377,18 +390,6 @@ async def rate_limit_and_session_middleware(request: Request, call_next):
 ###
 
 
-def set_session_cookie(response: Response, token: str):
-    response.set_cookie(
-        key=SESSION_COOKIE_NAME,
-        value=token,
-        httponly=True,
-        max_age=COOKIE_MAX_AGE,
-        samesite='strict',
-        secure=SECURE_COOKIES,
-        path='/',
-    )
-
-
 def create_login_session_record(account: Account, request: Request) -> str:
     with db_session() as s:
         token = secrets.token_urlsafe(32)
@@ -405,66 +406,6 @@ def create_login_session_record(account: Account, request: Request) -> str:
         s.commit()
         return token
 
-
-def get_current_session_and_account(request: Request):
-    token = request.cookies.get(SESSION_COOKIE_NAME)
-    if not token:
-        return None, None
-    with db_session() as s:
-        row = s.exec(
-            select(LoginSession, Account)
-            .join(Account)
-            .where(LoginSession.token_hash == hash_token(token))
-        ).first()
-        if not row:
-            return None, None
-        session_obj, account_obj = row
-        if not session_obj.valid:
-            return None, None
-        return session_obj, account_obj
-
-
-def require_auth_or_redirect(client: Client) -> Optional[Account]:
-    _, acc = get_current_session_and_account(client.request)
-    if not acc:
-        ui.notify('Please log in first.', color='warning')
-        ui.navigate.to('/login')
-        return None
-    return acc
-
-
-def sanitize_redirect(url: str) -> str:
-    return url if url.startswith('/') and '://' not in url else '/home'
-
-
-router = APIRouter()
-
-
-@router.post('/_set_session')
-def post_set_session(token: str = Body(..., embed=True), redirect: str = Body('/home', embed=True)):
-    response = RedirectResponse(sanitize_redirect(redirect), status_code=303)
-    set_session_cookie(response, token)
-    return response
-
-
-@router.post('/_logout')
-def logout(request: Request, redirect: str = Body('/login', embed=True)):
-    safe_redirect = sanitize_redirect(redirect)
-    token = request.cookies.get(SESSION_COOKIE_NAME)
-    if token:
-        with db_session() as s:
-            h = hash_token(token)
-            ls = s.exec(select(LoginSession).where(LoginSession.token_hash == h)).first()
-            if ls:
-                ls.valid = False
-                s.add(ls)
-                s.commit()
-    resp = RedirectResponse(safe_redirect, status_code=303)
-    resp.delete_cookie(SESSION_COOKIE_NAME, path='/')
-    return resp
-
-
-app.include_router(router)
 
 ###
 ### ephemeral state for confirm page
@@ -503,51 +444,6 @@ def pending_take(nonce: str) -> Optional[Dict[str, str]]:
 ###
 ### pages
 ###
-
-
-def js_fetch_post(path: str, payload: dict) -> str:
-    return f'''
-(async () => {{
-  function getCookie(name) {{
-    const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{{}}()\\[\\]\\\\\\/\\+^])/g, '\\\\$1') + '=([^;]*)'));
-    return m ? decodeURIComponent(m[1]) : null;
-  }}
-
-  async function ensureCsrf() {{
-    if (!getCookie('{CSRF_COOKIE_NAME}')) {{
-      await fetch('/', {{ credentials: 'same-origin' }}); // prime CSRF cookie
-    }}
-  }}
-
-  async function postOnce() {{
-    const csrf = getCookie('{CSRF_COOKIE_NAME}') || '';
-    const res = await fetch('{path}', {{
-      method: 'POST',
-      headers: {{
-        'Content-Type': 'application/json',
-        '{CSRF_HEADER}': csrf
-      }},
-      credentials: 'same-origin',
-      body: JSON.stringify({payload})
-    }});
-    return res;
-  }}
-
-  await ensureCsrf();
-  let r = await postOnce();
-  if (r.status === 403) {{
-    await ensureCsrf();
-    r = await postOnce(); // retry once after priming
-  }}
-  if (r.redirected) {{
-    window.location.href = r.url;
-  }} else {{
-    // Optional: surface errors
-    const t = await r.text();
-    console.log('POST {path} ->', r.status, t);
-  }}
-}})();
-'''
 
 
 @ui.page('/')
@@ -747,7 +643,7 @@ def home_page(client: Client):
     if not account:
         return
     with db_session() as s:
-        these = s.exec(select(LoginSession).where(LoginSession.account_id == account.id)).all()
+        these = s.exec(select(LoginSession)).all()
     current_token = client.request.cookies.get(SESSION_COOKIE_NAME, '')
     current_token_hash = hash_token(current_token) if current_token else ''
     ui.label('You are on the home page').style(
@@ -755,6 +651,8 @@ def home_page(client: Client):
     )
     ui.label(f'Logged in as: {account.username}').style('color: #555; margin-bottom: 16px;')
     columns = [
+        {'name': 'username', 'label': 'User', 'field': 'username'},
+        {'name': 'account_id', 'label': 'account_id', 'field': 'account_id'},
         {'name': 'id', 'label': 'ID', 'field': 'id'},
         {'name': 'device', 'label': 'Device', 'field': 'device'},
         {'name': 'ip', 'label': 'IP', 'field': 'ip'},
@@ -764,8 +662,12 @@ def home_page(client: Client):
     ]
     rows = list()
     for sess in these:
+        with db_session() as s:
+            account = s.exec(select(Account).where(Account.id == sess.account_id)).one()
         rows.append(
             {
+                'username': account.username,
+                'account_id': sess.account_id,
                 'id': sess.id,
                 'device': user_agent_brief(sess.user_agent),
                 'ip': sess.ip,
