@@ -11,7 +11,7 @@ import sqlalchemy
 import sqlalchemy.engine
 import sqlite3
 from sqlmodel import Field, Session, SQLModel, select, JSON, Column, Relationship
-from typing import Optional
+from typing import List, Optional
 import hub.login_key as lk
 import hub.net as net
 from pydantic import ConfigDict
@@ -94,10 +94,14 @@ class Account(SQLModel, table=True):
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
         default_factory=lambda: DateTime.now(TimeZone.utc),
     )
-    valid_until: DateTime = None
+    valid_until: DateTime = Field(
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default=DateTime(1970, 1, 1, tzinfo=TimeZone.utc),  # Unix epoc
+    )
     kind: Account_kind = Account_kind.NONE
     netif_id: Optional[int] = Field(foreign_key='netif.id')  # used only if kind == USER
     comment: str = ""
+    login_sessions: List['LoginSession'] = Relationship(back_populates='account')
 
     @staticmethod
     def count(account_kind=Account_kind.NONE):
@@ -116,11 +120,7 @@ class Account(SQLModel, table=True):
         if kind == Account_kind.ADMIN:
             account.clients_max = 0  # admins cannot create VPN clients
         account.kind = kind
-        account.valid_until = Field(
-            sa_column=Column(sqlalchemy.DateTime(timezone=True)),
-            default_factory=lambda: DateTime.now(TimeZone.utc) + valid_for,
-        )
-        account.set_expires_in
+        account.valid_until = DateTime.now(TimeZone.utc) + valid_for
         retry_max = 50
         for attempt in range(retry_max):
             try:
@@ -150,10 +150,7 @@ class Account(SQLModel, table=True):
         logger.info(f"Updated account {self.login} to {kind.token_name()}")
 
     def set_valid_for(self, valid_for):
-        self.valid_until = Field(
-            sa_column=Column(sqlalchemy.DateTime(timezone=True)),
-            default_factory=lambda: DateTime.now(TimeZone.utc) + valid_for,
-        )
+        self.valid_until = DateTime.now(TimeZone.utc) + valid_for
         self.update()
 
     @staticmethod
@@ -224,7 +221,7 @@ class Account(SQLModel, table=True):
 
 class LoginSession(SQLModel, table=True):
     __table_args__ = (
-        sqlalchemy.Index("idx_sessions_expires_at", "expires_at"),
+        sqlalchemy.Index("idx_sessions_valid_until", "valid_until"),
         sqlalchemy.UniqueConstraint("token_hash", name="uq_sessions_token_hash"),
     )
     id: Optional[int] = Field(primary_key=True, default=None)
@@ -238,7 +235,7 @@ class LoginSession(SQLModel, table=True):
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
         default_factory=lambda: DateTime.now(TimeZone.utc),
     )
-    expires_at: DateTime = Field(
+    valid_until: DateTime = Field(
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
         default_factory=lambda: DateTime.now(TimeZone.utc) + TimeDelta(days=30),
     )
@@ -269,23 +266,25 @@ class LoginSession(SQLModel, table=True):
 
     @staticmethod
     def from_token(token: str, log_out=False) -> Optional["LoginSession"]:
+        """Translate a client token, if valid, into the associated account"""
         if not token:
             return None
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         with Session(engine) as session:
-            row = session.exec(
+            result = session.exec(
                 select(LoginSession).where(LoginSession.token_hash == token_hash)
             ).first()
-            if not row:
+            if not result:
                 return None
             now = DateTime.now(TimeZone.utc)
-            if now >= row.expires_at:
+            if result.valid_until.replace(tzinfo=TimeZone.utc) < now:
                 return None
-            row.last_activity = now
+            result.last_activity = now
             if log_out:
-                row.expires_at = now
-            row.update()
-            return row
+                result.valid_until = now
+            session.add(result)
+            session.commit()
+            return result.account
 
 
 ###
