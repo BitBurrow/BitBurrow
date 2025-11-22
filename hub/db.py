@@ -159,6 +159,8 @@ class Account(SQLModel, table=True):
                 account.kind = kind
             if valid_for != None:
                 account.valid_until = DateTime.now(TimeZone.utc) + valid_for
+            session.add(account)
+            session.commit()
             return account
 
     @staticmethod
