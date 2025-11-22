@@ -28,7 +28,7 @@ def welcome(client: Client):
     async def on_continue():
         coupon = lk.strip_login_key(idelem['coupon_code'].value or '')
         try:
-            account = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
+            aid = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
         except db.CredentialsError as e:
             err_message = str(e).replace(db.lkocc_string, "coupon code")
             ui.notify(err_message)
@@ -54,7 +54,7 @@ def confirm(client: Client):
     if not qparam_coupon:  # coupon code is required
         ui.navigate.to(f'/welcome?coupon={qparam_coupon}')
     try:  # validate (no other way to confirm that user came via /welcome)
-        account = db.Account.validate_login_key(qparam_coupon, allowed_kinds=db.coupon)
+        aid = db.Account.validate_login_key(qparam_coupon, allowed_kinds=db.coupon)
     except db.CredentialsError as e:  # send them back to /welcome
         ui.navigate.to(f'/welcome?coupon={qparam_coupon}')
     md_path = os.path.join(ui_path, 'confirm.md')
@@ -75,12 +75,12 @@ def confirm(client: Client):
         idelem['continue'].disable()
         idelem['login_key'].set_value(lk.dress_login_key('*' * lk.login_key_len))
         await asyncio.sleep(1)  # let user see the importantce of keeping the login key secret
-        account = db.Account.update_account(  # validate the new account
+        aid = db.Account.update_account(  # validate the new account
             login=login_key,  # find account by 'login' portion only
             kind=db.Account_kind.MANAGER,  # it's now a full login key
             valid_for=TimeDelta(days=10950),
         )
-        login_token = db.LoginSession.new(account, client.request)
+        login_token = db.LoginSession.new(aid, client.request)
         auth.log_in(login_token)
 
     idelem['continue'].on_click(callback=on_continue)

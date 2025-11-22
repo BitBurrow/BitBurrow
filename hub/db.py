@@ -148,10 +148,13 @@ class Account(SQLModel, table=True):
         key: str = None,
         kind: Account_kind | None = None,
         valid_for: TimeDelta | None = None,
-    ):
+    ) -> int:
+        """Update specified account fields. Return the account id."""
         with Session(engine) as session:
             statement = select(Account).where(Account.login == Account.login_portion(login))
             account = session.exec(statement).one_or_none()
+            if not account:
+                raise CredentialsError(f"B33092 cannot find account {Account.login_portion(login)}")
             if key != None:
                 hasher = argon2.PasswordHasher()
                 account.key_hash = hasher.hash(key)
@@ -161,7 +164,7 @@ class Account(SQLModel, table=True):
                 account.valid_until = DateTime.now(TimeZone.utc) + valid_for
             session.add(account)
             session.commit()
-            return account
+            return account.id
 
     @staticmethod
     def login_portion(login_key):
@@ -172,50 +175,52 @@ class Account(SQLModel, table=True):
         return login_key[lk.login_len :]
 
     @staticmethod
-    def validate_login_key(login_key, allowed_kinds=None):
+    def validate_login_key(login_key, allowed_kinds=None) -> int:
+        """Verify the login key. Return the account.id or raise CredentialsError."""
         if len(login_key) != lk.login_key_len:
             raise CredentialsError(f"B64292 {lkocc_string} length must be {lk.login_key_len}")
         if not set(lk.base28_digits).issuperset(login_key):
             raise CredentialsError(f"B51850 invalid {lkocc_string} characters")
         with Session(engine) as session:
             statement = select(Account).where(Account.login == Account.login_portion(login_key))
-            result = session.exec(statement).one_or_none()
-        hasher = argon2.PasswordHasher()
-        if result is None:
-            # attempt near constant-time key checking whether login exsists or not
-            # https://chatgpt.com/share/68812be3-5f14-800d-ba89-55d5914881d9
-            key_hash_to_test = '$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-        else:
-            key_hash_to_test = result.key_hash
-        key = Account.key_portion(login_key)
-        try:
-            hasher.verify(key_hash_to_test, key)
-        except argon2.exceptions.VerifyMismatchError:
-            raise CredentialsError(
-                f"B54441 {lkocc_string} not found; " "make sure it was entered correctly"
-            )
-        if hasher.check_needs_rehash(key_hash_to_test):
-            result.key_hash = hasher.hash(key)  # FIXME: untested
-            result.update()
-            logger.info("B74657 rehashed {login_key}")
-        if result.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise CredentialsError(f"B18952 {lkocc_string} expired")
-        if allowed_kinds is not None:
-            if result.kind not in allowed_kinds:
-                if result.kind in admin_or_manager and allowed_kinds == coupon:
-                    raise CredentialsError(
-                        "B10052 this is a login key; please enter a coupon code "
-                        "or select 'Sign in' from the ⋮ menu"
-                    )
-                elif result.kind in coupon and allowed_kinds == admin_or_manager:
-                    raise CredentialsError(
-                        "B20900 this is a coupon code; please enter a login key "
-                        " or seelct 'Enter a coupon code' from the ⋮ menu"
-                    )
-                else:
-                    raise CredentialsError("B96593 invalid account kind")
-        # FIXME: verify pubkey limit
-        return result
+            account = session.exec(statement).one_or_none()
+            if account is None:
+                # attempt near constant-time key checking whether login exsists or not
+                # https://chatgpt.com/share/68812be3-5f14-800d-ba89-55d5914881d9
+                key_hash_to_test = '$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+            else:
+                key_hash_to_test = account.key_hash
+            key = Account.key_portion(login_key)
+            hasher = argon2.PasswordHasher()
+            try:
+                hasher.verify(key_hash_to_test, key)
+            except argon2.exceptions.VerifyMismatchError:
+                raise CredentialsError(
+                    f"B54441 {lkocc_string} not found; " "make sure it was entered correctly"
+                )
+            if hasher.check_needs_rehash(key_hash_to_test):
+                account.key_hash = hasher.hash(key)  # FIXME: untested
+                session.add(account)
+                session.commit()
+                logger.info("B74657 rehashed {login_key}")
+            if account.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
+                raise CredentialsError(f"B18952 {lkocc_string} expired")
+            if allowed_kinds is not None:
+                if account.kind not in allowed_kinds:
+                    if account.kind in admin_or_manager and allowed_kinds == coupon:
+                        raise CredentialsError(
+                            "B10052 this is a login key; please enter a coupon code "
+                            "or select 'Sign in' from the ⋮ menu"
+                        )
+                    elif account.kind in coupon and allowed_kinds == admin_or_manager:
+                        raise CredentialsError(
+                            "B20900 this is a coupon code; please enter a login key "
+                            " or seelct 'Enter a coupon code' from the ⋮ menu"
+                        )
+                    else:
+                        raise CredentialsError("B96593 invalid account kind")
+            # FIXME: verify pubkey limit
+            return account.id
 
     @staticmethod
     def get_by_token(token: str | None, log_out=False) -> tuple[int, int, Account_kind]:
@@ -274,11 +279,9 @@ class LoginSession(SQLModel, table=True):
     user_agent: str
 
     @staticmethod
-    def new(
-        account: Account, request: fastapi.Request
-    ) -> str:  # create a new session and return its token
+    def new(aid: int, request: fastapi.Request) -> str:  # create a new session and return its token
         ls = LoginSession()
-        ls.account_id = account.id
+        ls.account_id = aid  # account.id
         token = secrets.token_urlsafe(32)  # 256-bit random token
         ls.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         ls.ip = request.client.host if request.client else '0.0.0.0'
@@ -286,19 +289,19 @@ class LoginSession(SQLModel, table=True):
         with Session(engine) as session:
             session.add(ls)
             session.commit()
-        logger.info(f"Created new login session for {account.login}")
+        logger.info(f"B81232 created new login session for account {aid}")
         return token
 
     @staticmethod
     def log_out(lsid: int) -> None:
         """Log out (invalidate) the given login session."""
         with Session(engine) as session:
-            result = session.exec(select(LoginSession).where(LoginSession.id == lsid)).first()
-            if result:
+            ls = session.exec(select(LoginSession).where(LoginSession.id == lsid)).first()
+            if ls:
                 now = DateTime.now(TimeZone.utc)
-                result.last_activity = now
-                result.valid_until = now
-                session.add(result)
+                ls.last_activity = now
+                ls.valid_until = now
+                session.add(ls)
                 session.commit()
 
     @staticmethod
