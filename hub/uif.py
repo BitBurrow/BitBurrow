@@ -1,8 +1,10 @@
 import ast
-from nicegui import ui
+from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
+from nicegui import ui, Client
 import re
 from typing import Dict, List, Tuple
 import logging
+import zoneinfo
 import hub.util as util
 
 Berror = util.Berror
@@ -51,6 +53,169 @@ def enable_external_links_new_tab():
             })();
         '''
     )
+
+
+###
+### human display utils
+###
+
+
+async def client_timezone(client: Client) -> str:
+    """Detect and cache browser timezone name in client.storage."""
+    tz_name = client.storage.get('timezone')
+    if tz_name:
+        return tz_name
+    tz_name = await client.run_javascript('return Intl.DateTimeFormat().resolvedOptions().timeZone')
+    client.storage['timezone'] = tz_name
+    return tz_name
+
+
+async def format_time(t: DateTime, client: Client) -> str:
+    if t.tzinfo is None or t.tzinfo.utcoffset(t) is None:
+        t = t.replace(tzinfo=TimeZone.utc)
+    tz_name = await client_timezone(client)
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        local_dt = t
+    else:
+        local_dt = t.astimezone(tz)
+    offset = local_dt.utcoffset() or TimeDelta(0)
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = '+' if total_minutes >= 0 else '-'
+    hours, minutes = divmod(abs(total_minutes), 60)
+    if minutes:
+        utc_part = f'UTC{sign}{hours:02d}:{minutes:02d}'
+    else:
+        utc_part = f'UTC{sign}{hours}'
+    return f'{local_dt:%Y-%m-%d %H:%M} ({utc_part})'
+
+
+def human_duration(delta: TimeDelta, positive_only=False) -> str:
+    """Converts duration into short, human-readable duration, e.g. '30 hours'."""
+    if delta is None:
+        return '–'
+    seconds = int(delta.total_seconds())
+    if positive_only and seconds <= 0:
+        return '–'
+    if seconds < 0:
+        sign = '-'
+        seconds = abs(seconds)
+    else:
+        sign = ''
+    if seconds < 100:
+        value = seconds
+        unit = "second"
+    elif seconds < 6000:  # 100 minutes
+        value = (seconds + 30) // 60  # round to the nearest minute
+        unit = "minute"
+    elif seconds < 180_000:  # 50 hours
+        value = (seconds + 1800) // 3600
+        unit = "hour"
+    elif seconds < 2_592_000:  # 30 days
+        value = (seconds + 43200) // 86400
+        unit = "day"
+    elif seconds < 6_048_000:  # 10 weeks
+        value = (seconds + 302400) // 604800
+        unit = "week"
+    elif seconds < 51_840_000:  # 20 months
+        value = (seconds + 1_296_000) // 2_592_000
+        unit = "month"
+    else:
+        value = (seconds + 15_768_000) // 31_536_000
+        unit = "year"
+    if value != 1:
+        unit += 's'
+    return f'{sign}{value} {unit}'
+
+
+def test_human_duration():
+    assert human_duration(None) == '–'
+    assert human_duration(-TimeDelta(seconds=129)) == "-2 minutes"
+    assert human_duration(TimeDelta(seconds=129)) == "2 minutes"
+    assert human_duration(TimeDelta(seconds=129), positive_only=True) == "2 minutes"
+    assert human_duration(TimeDelta(seconds=129), positive_only=False) == "2 minutes"
+    assert human_duration(-TimeDelta(seconds=129), positive_only=True) == '–'
+    assert human_duration(-TimeDelta(seconds=129), positive_only=False) == "-2 minutes"
+    assert human_duration(-TimeDelta(seconds=0)) == "0 seconds"
+    assert human_duration(TimeDelta(seconds=0)) == "0 seconds"
+    assert human_duration(TimeDelta(seconds=0), positive_only=True) == '–'
+    assert human_duration(-TimeDelta(seconds=2)) == "-2 seconds"
+    assert human_duration(-TimeDelta(seconds=99)) == "-99 seconds"
+    assert human_duration(TimeDelta(seconds=1)) == "1 second"
+    assert human_duration(TimeDelta(seconds=5)) == "5 seconds"
+    assert human_duration(-TimeDelta(seconds=5)) == "-5 seconds"
+    assert human_duration(TimeDelta(seconds=0)) == "0 seconds"
+    assert human_duration(TimeDelta(seconds=100)) == "2 minutes"
+    assert human_duration(TimeDelta(seconds=149)) == "2 minutes"
+    assert human_duration(TimeDelta(seconds=151)) == "3 minutes"  # 150 could go either way
+    assert human_duration(TimeDelta(seconds=152)) == "3 minutes"
+    assert human_duration(TimeDelta(seconds=160)) == "3 minutes"
+    assert human_duration(TimeDelta(minutes=1)) == "60 seconds"
+    assert human_duration(TimeDelta(minutes=2)) == "2 minutes"
+    assert human_duration(-TimeDelta(minutes=2)) == "-2 minutes"
+    assert human_duration(TimeDelta(minutes=99)) == "99 minutes"
+    assert human_duration(TimeDelta(seconds=6000)) == "2 hours"
+    assert human_duration(TimeDelta(hours=1)) == "60 minutes"
+    assert human_duration(-TimeDelta(hours=49)) == "-49 hours"
+    assert human_duration(-TimeDelta(hours=50)) == "-2 days"
+    assert human_duration(TimeDelta(hours=1)) == "60 minutes"
+    assert human_duration(TimeDelta(hours=25)) == "25 hours"
+    assert human_duration(TimeDelta(hours=30)) == "30 hours"
+    assert human_duration(TimeDelta(days=2)) == "48 hours"
+    assert human_duration(TimeDelta(days=29)) == "29 days"
+    assert human_duration(TimeDelta(days=30)) == "4 weeks"
+    assert human_duration(TimeDelta(days=1)) == "24 hours"
+    assert human_duration(TimeDelta(days=29)) == "29 days"
+    assert human_duration(TimeDelta(days=28)) == "28 days"
+    assert human_duration(TimeDelta(weeks=2)) == "14 days"
+    assert human_duration(TimeDelta(weeks=3)) == "21 days"
+    assert human_duration(TimeDelta(weeks=10)) == "2 months"
+    assert human_duration(TimeDelta(weeks=5)) == "5 weeks"
+    assert human_duration(TimeDelta(weeks=3)) == "21 days"
+    assert human_duration(TimeDelta(weeks=8)) == "8 weeks"
+    assert human_duration(TimeDelta(weeks=9)) == "9 weeks"
+    assert human_duration(TimeDelta(days=300)) == "10 months"
+    assert human_duration(TimeDelta(days=600)) == "2 years"
+    assert human_duration(TimeDelta(days=60)) == "9 weeks"
+    assert human_duration(TimeDelta(days=300)) == "10 months"
+    assert human_duration(TimeDelta(days=90)) == "3 months"
+    assert human_duration(TimeDelta(days=365)) == "12 months"
+    assert human_duration(TimeDelta(days=360)) == "12 months"
+    assert human_duration(TimeDelta(days=800)) == "2 years"
+    assert human_duration(TimeDelta(days=2000)) == "5 years"
+    assert human_duration(TimeDelta(days=800)) == "2 years"
+    assert human_duration(TimeDelta(days=365 * 20)) == "20 years"
+
+
+def human_user_agent(ua: str) -> str:
+    if not ua:
+        return "Unknown device"
+    os_name = 'Unknown OS'
+    if 'Windows' in ua:
+        os_name = 'Windows'
+    elif 'Macintosh' in ua or 'Mac OS X' in ua:
+        os_name = 'macOS'
+    elif 'Linux' in ua and 'Android' not in ua:
+        os_name = 'Linux'
+    elif 'Android' in ua:
+        os_name = 'Android'
+    elif 'iPhone' in ua:
+        os_name = 'iPhone iOS'
+    elif 'iPad' in ua:
+        os_name = 'iPad iOS'
+    browser = "Browser"
+    if 'Edg/' in ua or 'Edge/' in ua:
+        browser = 'Edge'
+    elif 'Chrome/' in ua and 'Chromium' not in ua:
+        browser = 'Chrome'
+    elif 'Safari/' in ua and 'Chrome/' not in ua:
+        browser = 'Safari'
+    elif 'Firefox/' in ua:
+        browser = 'Firefox'
+    elif 'Chromium' in ua:
+        browser = 'Chromium'
+    return f'{browser} on {os_name}'
 
 
 ###

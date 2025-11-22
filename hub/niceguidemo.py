@@ -175,36 +175,6 @@ def generate_password(length: int = 5) -> str:
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
-def user_agent_brief(ua: str) -> str:
-    if not ua:
-        return 'Unknown device'
-    os_name = 'Unknown OS'
-    if 'Windows' in ua:
-        os_name = 'Windows'
-    elif 'Macintosh' in ua or 'Mac OS X' in ua:
-        os_name = 'macOS'
-    elif 'Linux' in ua and 'Android' not in ua:
-        os_name = 'Linux'
-    elif 'Android' in ua:
-        os_name = 'Android'
-    elif 'iPhone' in ua:
-        os_name = 'iPhone iOS'
-    elif 'iPad' in ua:
-        os_name = 'iPad iOS'
-    browser = 'Browser'
-    if 'Edg/' in ua or 'Edge/' in ua:
-        browser = 'Edge'
-    elif 'Chrome/' in ua and 'Chromium' not in ua:
-        browser = 'Chrome'
-    elif 'Safari/' in ua and 'Chrome/' not in ua:
-        browser = 'Safari'
-    elif 'Firefox/' in ua:
-        browser = 'Firefox'
-    elif 'Chromium' in ua:
-        browser = 'Chromium'
-    return f'{browser} on {os_name}'
-
-
 ###
 ### CSRF middleware
 ###
@@ -635,82 +605,6 @@ def login_page(client: Client):
         ui.button('Back', on_click=lambda: ui.navigate.to('/'))
         ui.separator()
         error
-
-
-@ui.page('/home')
-def home_page(client: Client):
-    account = require_auth_or_redirect(client)
-    if not account:
-        return
-    with db_session() as s:
-        these = s.exec(select(LoginSession)).all()
-    current_token = client.request.cookies.get(SESSION_COOKIE_NAME, '')
-    current_token_hash = hash_token(current_token) if current_token else ''
-    ui.label('You are on the home page').style(
-        'font-size: 1.6rem; font-weight: 600; margin-bottom: 8px;'
-    )
-    ui.label(f'Logged in as: {account.username}').style('color: #555; margin-bottom: 16px;')
-    columns = [
-        {'name': 'username', 'label': 'User', 'field': 'username'},
-        {'name': 'account_id', 'label': 'account_id', 'field': 'account_id'},
-        {'name': 'id', 'label': 'ID', 'field': 'id'},
-        {'name': 'device', 'label': 'Device', 'field': 'device'},
-        {'name': 'ip', 'label': 'IP', 'field': 'ip'},
-        {'name': 'last', 'label': 'Last activity', 'field': 'last'},
-        {'name': 'status', 'label': 'Status', 'field': 'status'},
-        {'name': 'current', 'label': 'Current', 'field': 'current'},
-    ]
-    rows = list()
-    for sess in these:
-        with db_session() as s:
-            account = s.exec(select(Account).where(Account.id == sess.account_id)).one()
-        rows.append(
-            {
-                'username': account.username,
-                'account_id': sess.account_id,
-                'id': sess.id,
-                'device': user_agent_brief(sess.user_agent),
-                'ip': sess.ip,
-                'last': (
-                    sess.last_activity.astimezone()
-                    if sess.last_activity.tzinfo
-                    else sess.last_activity
-                ).strftime('%Y-%m-%d %H:%M:%S'),
-                'status': 'valid' if sess.valid else 'invalid',
-                'current': 'Yes' if sess.token_hash == current_token_hash else '',
-            }
-        )
-    table = ui.table(columns=columns, rows=rows, row_key='id', selection='multiple')
-    with ui.row().style('gap: 8px; margin-top: 10px;'):
-
-        def select_all():
-            table._props['selected'] = [r['id'] for r in rows]  # NiceGUI hacky selection set
-            table.update()
-
-        async def invalidate_selected():
-            selected_ids = table.selected
-            if not selected_ids:
-                ui.notify('No devices selected.', color='warning')
-                return
-            current_invalidated = False
-            with db_session() as s:
-                for sid in selected_ids:
-                    sess = s.get(LoginSession, sid)
-                    if not sess:
-                        continue
-                    if sess.token_hash == current_token_hash:
-                        current_invalidated = True
-                    sess.valid = False
-                    s.add(sess)
-                s.commit()
-            ui.notify('Selected devices invalidated.', color='positive')
-            if current_invalidated:
-                ui.run_javascript(js_fetch_post('/_logout', {'redirect': '/login'}))
-            else:
-                ui.navigate.reload()
-
-        ui.button('Select all', on_click=select_all)
-        ui.button('Invalidate selected', on_click=invalidate_selected)
 
 
 ###

@@ -288,26 +288,27 @@ class LoginSession(SQLModel, table=True):
         return token
 
     @staticmethod
-    def from_token(token: str, log_out=False) -> Optional["LoginSession"]:
-        """Translate a client token, if valid, into the associated account"""
-        if not token:
-            return None
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
+    def log_out(lsid: int) -> None:
+        """Log out (invalidate) the given login session."""
         with Session(engine) as session:
-            result = session.exec(
-                select(LoginSession).where(LoginSession.token_hash == token_hash)
-            ).first()
-            if not result:
-                return None
-            now = DateTime.now(TimeZone.utc)
-            if result.valid_until.replace(tzinfo=TimeZone.utc) < now:
-                return None
-            result.last_activity = now
-            if log_out:
+            result = session.exec(select(LoginSession).where(LoginSession.id == lsid)).first()
+            if result:
+                now = DateTime.now(TimeZone.utc)
+                result.last_activity = now
                 result.valid_until = now
-            session.add(result)
-            session.commit()
-            return result.account
+                session.add(result)
+                session.commit()
+
+    @staticmethod
+    def iter_get_by_account_id(aid: int | None):
+        """Yield each login_session for account aid."""
+        with Session(engine) as session:
+            if aid is None:
+                statement = select(LoginSession)
+            else:
+                statement = select(LoginSession).where(LoginSession.account_id == aid)
+            for row in session.exec(statement):
+                yield row
 
 
 ###
