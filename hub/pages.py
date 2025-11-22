@@ -33,6 +33,7 @@ def welcome(client: Client):
             err_message = str(e).replace(db.lkocc_string, "coupon code")
             ui.notify(err_message)
             return
+        idelem['continue'].disable()
         ui.navigate.to(f'/confirm?coupon={coupon}')
 
     async def check_enter(e):
@@ -87,13 +88,55 @@ def confirm(client: Client):
     # do not store login_key anywhere
 
 
+###
+### page: /login
+###
+
+
+@ui.page('/login')
+def login(client: Client):
+    md_path = os.path.join(ui_path, 'login.md')
+    with open(md_path, 'r', encoding='utf-8') as f:
+        sections = uif.parse_markdown_sections(f.read())
+    ui.run_javascript(f"document.title = '{sections[0]}'")
+    idelem = uif.render_page(sections)
+
+    async def on_continue():
+        login_key = lk.strip_login_key(idelem['login_key'].value or '')
+        try:
+            aid = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
+        except db.CredentialsError as e:
+            err_message = str(e).replace(db.lkocc_string, "login key")
+            ui.notify(err_message)
+            return
+        login_token = db.LoginSession.new(aid, client.request)
+        auth.log_in(login_token)
+
+    async def check_enter(e):
+        if e.args.get('key') == 'Enter':
+            await on_continue()
+
+    idelem['continue'].on_click(callback=on_continue)
+    idelem['login_key'].on('keydown', check_enter)  # pressing Enter submits form
+
+
+###
+### page: /home
+###
+
+
 @ui.page('/home')
-def confirm(client: Client):
+def home(client: Client):
     try:
         auth.require_login(client)
     except db.CredentialsError:
         return
     ui.markdown("**Base routers**").classes(f'w-full text-center text-3xl')
+
+
+###
+### page: /login_session
+###
 
 
 @ui.page('/login_sessions')
