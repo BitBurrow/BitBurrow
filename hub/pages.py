@@ -74,11 +74,12 @@ def confirm(client: Client):
             return
         idelem['continue'].disable()
         idelem['login_key'].set_value(lk.dress_login_key('*' * lk.login_key_len))
-        await asyncio.sleep(2)  # let user see the importantce of keeping the login key secret
-        # validate the new account
-        account = db.Account.get(login_key)  # only uses the 'login' portion
-        account.set_kind(db.Account_kind.MANAGER)
-        account.set_valid_for(TimeDelta(days=10950))
+        await asyncio.sleep(1)  # let user see the importantce of keeping the login key secret
+        account = db.Account.update_account(  # validate the new account
+            login=login_key,  # find account by 'login' portion only
+            kind=db.Account_kind.MANAGER,  # it's now a full login key
+            valid_for=TimeDelta(days=10950),
+        )
         login_token = db.LoginSession.new(account, client.request)
         auth.log_in(login_token)
 
@@ -88,8 +89,9 @@ def confirm(client: Client):
 
 @ui.page('/home')
 def confirm(client: Client):
-    account = auth.require_login(client)
-    if not account:
+    try:
+        auth.require_login(client)
+    except db.CredentialsError:
         return
     ui.markdown("**Base routers**").classes(f'w-full text-center text-3xl')
 

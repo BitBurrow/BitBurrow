@@ -11,17 +11,16 @@ SESSION_COOKIE_NAME = '__Host-session' if SECURE_COOKIES else 'session'
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
 
-def require_login(client: Client) -> db.Optional[db.Account]:
-    """Verify the client is logged in. If not, redirect to the /login page. Return an account."""
+def require_login(client: Client, redirect: str = '/login') -> tuple[int, int, db.Account_kind]:
+    """If the client is logged, return login_session.id, else None and redirect client browser."""
     token = client.request.cookies.get(SESSION_COOKIE_NAME)
-    if not token:
-        return None
-    account = db.LoginSession.from_token(token)
-    if not account:
+    try:
+        lsid, aid, kind = db.Account.get_by_token(token)
+    except db.CredentialsError:
         ui.notify('Please log in first.', color='warning')
-        ui.navigate.to('/login')
-        return None
-    return account
+        ui.timer(3, lambda: ui.navigate.to(redirect), once=True)
+        raise
+    return lsid, aid, kind  # login_session.id, account.id, kind
 
 
 router = APIRouter()

@@ -122,36 +122,44 @@ class Account(SQLModel, table=True):
         account.kind = kind
         account.valid_until = DateTime.now(TimeZone.utc) + valid_for
         retry_max = 50
-        for attempt in range(retry_max):
-            try:
-                account.update()
-            except sqlalchemy.exc.IntegrityError:
-                if attempt > 20:
-                    logger.warning(f"B09974 duplicate login {account.login} (retry {attempt})")
-                account.login = lk.generate_login_key(lk.login_len)
-                continue
+        with Session(engine) as session:
+            for attempt in range(retry_max):
+                try:
+                    session.add(account)
+                    session.commit()
+                except sqlalchemy.exc.IntegrityError:
+                    if attempt > 20:
+                        logger.warning(f"B09974 duplicate login {account.login} (retry {attempt})")
+                    account.login = lk.generate_login_key(lk.login_len)
+                    continue
+                else:
+                    break
             else:
-                break
-        else:
-            raise RuntimeError(f"B00995 duplicate login {account.login} after {retry_max} attempts")
-        login_key = account.login + key  # avoids: sqlalchemy.orm.exc.DetachedInstanceError
+                raise RuntimeError(
+                    f"B00995 duplicate login {account.login} after {retry_max} attempts"
+                )
+            login_key = account.login + key
         logger.info(f"Created new {kind.token_name()} {login_key}")
         return login_key
 
-    def update(self):
+    @staticmethod
+    def update_account(
+        login: str = None,  # look up account by login
+        key: str = None,
+        kind: Account_kind | None = None,
+        valid_for: TimeDelta | None = None,
+    ):
         with Session(engine) as session:
-            session.add(self)
-            session.commit()
-            return self.id
-
-    def set_kind(self, kind: Account_kind):
-        self.kind = kind
-        self.update()
-        logger.info(f"Updated account {self.login} to {kind.token_name()}")
-
-    def set_valid_for(self, valid_for):
-        self.valid_until = DateTime.now(TimeZone.utc) + valid_for
-        self.update()
+            statement = select(Account).where(Account.login == Account.login_portion(login))
+            account = session.exec(statement).one_or_none()
+            if key != None:
+                hasher = argon2.PasswordHasher()
+                account.key_hash = hasher.hash(key)
+            if kind != None:
+                account.kind = kind
+            if valid_for != None:
+                account.valid_until = DateTime.now(TimeZone.utc) + valid_for
+            return account
 
     @staticmethod
     def login_portion(login_key):
@@ -208,10 +216,30 @@ class Account(SQLModel, table=True):
         return result
 
     @staticmethod
-    def get(login: str):
+    def get_by_token(token: str | None, log_out=False) -> tuple[int, int, Account_kind]:
+        """Validate a client token.
+
+        Optionally invalidate the login session. Return the login_session.id
+        and the account.id and the associated account.kind. Raises CredentialsError
+        if validation fails."""
+        if not token:
+            raise CredentialsError(f"B73962 missing token")
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
         with Session(engine) as session:
-            statement = select(Account).where(Account.login == Account.login_portion(login))
-            return session.exec(statement).one_or_none()
+            login_session = session.exec(
+                select(LoginSession).where(LoginSession.token_hash == token_hash)
+            ).one_or_none()
+            if not login_session:
+                raise CredentialsError(f"B05076 login session not found")
+            now = DateTime.now(TimeZone.utc)
+            if login_session.valid_until.replace(tzinfo=TimeZone.utc) < now:
+                raise CredentialsError(f"B90836 login session no longer valid")
+            login_session.last_activity = now
+            if log_out:
+                login_session.valid_until = now
+            session.add(login_session)
+            session.commit()
+            return login_session.id, login_session.account_id, login_session.account.kind
 
 
 ###
@@ -247,22 +275,17 @@ class LoginSession(SQLModel, table=True):
     def new(
         account: Account, request: fastapi.Request
     ) -> str:  # create a new session and return its token
-        # FIXME: here or elsewhere, make certain account is valid, of the correct kind, etc.
-        login = LoginSession()
-        login.account_id = account.id
+        ls = LoginSession()
+        ls.account_id = account.id
         token = secrets.token_urlsafe(32)  # 256-bit random token
-        login.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        login.ip = request.client.host if request.client else '0.0.0.0'
-        login.user_agent = request.headers.get('User-Agent', '')
-        login.update()
+        ls.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        ls.ip = request.client.host if request.client else '0.0.0.0'
+        ls.user_agent = request.headers.get('User-Agent', '')
+        with Session(engine) as session:
+            session.add(ls)
+            session.commit()
         logger.info(f"Created new login session for {account.login}")
         return token
-
-    def update(self):
-        with Session(engine) as session:
-            session.add(self)
-            session.commit()
-            return self.id
 
     @staticmethod
     def from_token(token: str, log_out=False) -> Optional["LoginSession"]:
@@ -301,15 +324,11 @@ class Base(SQLModel, table=True):
     def new(account_id):  # create a new base and return its id
         base = Base()
         base.account_id = account_id
-        id = base.update()
+        with Session(engine) as session:
+            session.add(base)
+            session.commit()
         logger.info(f"Created new base {id}")
         return id
-
-    def update(self):
-        with Session(engine) as session:
-            session.add(self)
-            session.commit()
-            return self.id
 
 
 ###
