@@ -11,8 +11,18 @@ SESSION_COOKIE_NAME = '__Host-session' if SECURE_COOKIES else 'session'
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
 
+def is_logged_in(client: Client):
+    """If the client is logged in, redirect client browser."""
+    token = client.request.cookies.get(SESSION_COOKIE_NAME)
+    try:
+        lsid, aid, kind = db.Account.get_by_token(token)
+    except db.CredentialsError:
+        return False
+    return True
+
+
 def require_login(client: Client, redirect: str = '/login') -> tuple[int, int, db.Account_kind]:
-    """If the client is logged, return login_session.id, else None and redirect client browser."""
+    """If the client is logged in, return tuple about user, else redirect client browser."""
     token = client.request.cookies.get(SESSION_COOKIE_NAME)
     try:
         lsid, aid, kind = db.Account.get_by_token(token)

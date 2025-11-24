@@ -16,6 +16,9 @@ ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
 
 @ui.page('/welcome')
 def welcome(client: Client):
+    if auth.is_logged_in(client):
+        ui.navigate.to('/home')
+        return
     md_path = os.path.join(ui_path, 'welcome.md')
     with open(md_path, 'r', encoding='utf-8') as f:
         sections = uif.parse_markdown_sections(f.read())
@@ -51,6 +54,9 @@ def welcome(client: Client):
 
 @ui.page('/confirm')
 def confirm(client: Client):
+    if auth.is_logged_in(client):
+        ui.navigate.to('/home')
+        return
     qparam_coupon = client.request.query_params.get('coupon')
     if not qparam_coupon:  # coupon code is required
         ui.navigate.to(f'/welcome?coupon={qparam_coupon}')
@@ -95,6 +101,9 @@ def confirm(client: Client):
 
 @ui.page('/login')
 def login(client: Client):
+    if auth.is_logged_in(client):
+        ui.navigate.to('/home')
+        return
     md_path = os.path.join(ui_path, 'login.md')
     with open(md_path, 'r', encoding='utf-8') as f:
         sections = uif.parse_markdown_sections(f.read())
