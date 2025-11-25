@@ -1,3 +1,4 @@
+from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from fastapi import Request, Response, Body, APIRouter
 from fastapi.responses import RedirectResponse
 from nicegui import ui, app, Client
@@ -8,7 +9,6 @@ SECURE_COOKIES = bool(int(os.environ.get('SECURE_COOKIES', '0')))
 CSRF_COOKIE_NAME = '__Host-csrf' if SECURE_COOKIES else 'csrf'
 CSRF_HEADER = 'x-csrf-token'
 SESSION_COOKIE_NAME = '__Host-session' if SECURE_COOKIES else 'session'
-COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
 
 def is_logged_in(client: Client):
@@ -36,16 +36,19 @@ def require_login(client: Client, redirect: str = '/login') -> tuple[int, int, d
 router = APIRouter()
 
 
-def set_session_cookie(response: Response, token: str):
-    response.set_cookie(
+def set_session_cookie(response: Response, token: str, max_age: int = 0):
+    # docs: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#attributes
+    kwargs = dict(
         key=SESSION_COOKIE_NAME,
         value=token,
         httponly=True,
-        max_age=COOKIE_MAX_AGE,
         samesite='strict',
         secure=SECURE_COOKIES,
         path='/',
     )
+    if max_age > 0:
+        kwargs['max_age'] = max_age
+    response.set_cookie(**kwargs)
 
 
 def sanitize_redirect(url: str) -> str:
@@ -57,9 +60,13 @@ def sanitize_redirect(url: str) -> str:
 
 
 @router.post('/set_session')
-def post_set_session(token: str = Body(..., embed=True), redirect: str = Body('/home', embed=True)):
+def post_set_session(
+    token: str = Body(..., embed=True),
+    redirect: str = Body('/home', embed=True),
+    max_age: int = Body(0, embed=True),
+):
     response = RedirectResponse(sanitize_redirect(redirect), status_code=303)
-    set_session_cookie(response, token)
+    set_session_cookie(response, token, max_age)
     return response
 
 

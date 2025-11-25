@@ -12,7 +12,7 @@ ability to make changes to your BitBurrow devices.
 
 {{ checkbox(id='have_written_down', label="I have written this down*") }}
 
-{{ checkbox(id='keep_me_logged_in', label="Keep me logged in for 1 month") }}
+{{ checkbox(id='keep_me_logged_in', label="Keep me logged in for 30 days") }}
 
 {{ button(id='continue', text="Continue") }}
 

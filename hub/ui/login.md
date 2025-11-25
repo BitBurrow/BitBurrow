@@ -9,6 +9,6 @@ to [create a new login key](/welcome).
 
 {{ input(id='login_key', placeholder='Login key', font_size='18px', icon='key') }}
 
-{{ checkbox(id='keep_me_logged_in', label="Keep me logged in for 1 month") }}
+{{ checkbox(id='keep_me_logged_in', label="Keep me logged in for 30 days") }}
 
 {{ button(id='continue', text="Continue") }}

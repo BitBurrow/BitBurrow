@@ -272,18 +272,20 @@ class LoginSession(SQLModel, table=True):
     )
     valid_until: DateTime = Field(
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
-        default_factory=lambda: DateTime.now(TimeZone.utc) + TimeDelta(days=30),
+        default_factory=lambda: DateTime.now(TimeZone.utc) + TimeDelta(days=1),
     )
     account: Optional[Account] = Relationship(back_populates="login_sessions")
     ip: str
     user_agent: str
 
     @staticmethod
-    def new(aid: int, request: fastapi.Request) -> str:  # create a new session and return its token
+    def new(aid: int, request: fastapi.Request, valid_for: TimeDelta) -> str:
+        """Create a new session and return its token."""
         ls = LoginSession()
         ls.account_id = aid  # account.id
         token = secrets.token_urlsafe(32)  # 256-bit random token
         ls.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        ls.valid_until = DateTime.now(TimeZone.utc) + valid_for
         ls.ip = request.client.host if request.client else '0.0.0.0'
         ls.user_agent = request.headers.get('User-Agent', '')
         with Session(engine) as session:
