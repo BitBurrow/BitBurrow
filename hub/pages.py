@@ -24,7 +24,7 @@ def welcome(client: Client):
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     qparam_coupon = client.request.query_params.get('coupon')
-    idelem = uif.render_page(sections)
+    idelem = uif.render_page(sections, is_logged_in=False)
     if qparam_coupon:
         idelem['coupon_code'].set_value(qparam_coupon)
 
@@ -68,7 +68,7 @@ def confirm(client: Client):
     with open(md_path, 'r', encoding='utf-8') as f:
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
-    idelem = uif.render_page(sections)
+    idelem = uif.render_page(sections, is_logged_in=False)
     login_key = db.Account.new(
         kind=db.Account_kind.NONE,  # in DB but disabled until confirmed
         valid_for=TimeDelta(days=1),  # expire in 1 day if not confirmed
@@ -87,8 +87,7 @@ def confirm(client: Client):
             kind=db.Account_kind.MANAGER,  # it's now a full login key
             valid_for=TimeDelta(days=10950),
         )
-        login_token = db.LoginSession.new(aid, client.request)
-        auth.log_in(login_token)
+        auth.log_in(aid, login_key, idelem['keep_me_logged_in'].value, client.request)
 
     idelem['continue'].on_click(callback=on_continue)
     # do not store login_key anywhere
@@ -108,7 +107,7 @@ def login(client: Client):
     with open(md_path, 'r', encoding='utf-8') as f:
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
-    idelem = uif.render_page(sections)
+    idelem = uif.render_page(sections, is_logged_in=False)
 
     async def on_continue():
         login_key = lk.strip_login_key(idelem['login_key'].value or '')
@@ -118,8 +117,7 @@ def login(client: Client):
             err_message = str(e).replace(db.lkocc_string, "login key")
             ui.notify(err_message)
             return
-        login_token = db.LoginSession.new(aid, client.request)
-        auth.log_in(login_token)
+        auth.log_in(aid, login_key, idelem['keep_me_logged_in'].value, client.request)
 
     async def check_enter(e):
         if e.args.get('key') == 'Enter':
@@ -127,6 +125,22 @@ def login(client: Client):
 
     idelem['continue'].on_click(callback=on_continue)
     idelem['login_key'].on('keydown', check_enter)  # pressing Enter submits form
+
+
+###
+### page: /logout
+###
+
+
+@ui.page('/logout')
+def logout(client: Client):
+    try:
+        lsid, aid, kind = auth.require_login(client)
+    except db.CredentialsError:
+        return
+    db.LoginSession.log_out(lsid)  # invalidate login session in DB
+    auth.clear_login_cookie()
+    ui.navigate.to('/login')
 
 
 ###
@@ -140,7 +154,11 @@ def home(client: Client):
         auth.require_login(client)
     except db.CredentialsError:
         return
-    ui.markdown("**Base routers**").classes(f'w-full text-center text-3xl')
+    md_path = os.path.join(ui_path, 'home.md')
+    with open(md_path, 'r', encoding='utf-8') as f:
+        sections = uif.parse_markdown_sections(f.read())
+    ui.run_javascript(f"document.title = '{sections[0]}'")
+    idelem = uif.render_page(sections, is_logged_in=True)
 
 
 ###
@@ -154,6 +172,11 @@ def login_sessions(client: Client):
         lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
         return
+    md_path = os.path.join(ui_path, 'login_sessions.md')
+    with open(md_path, 'r', encoding='utf-8') as f:
+        sections = uif.parse_markdown_sections(f.read())
+    ui.run_javascript(f"document.title = '{sections[0]}'")
+    idelem = uif.render_page(sections, is_logged_in=True)
     columns = [
         {'name': 'id', 'sortable': True},  # columns[0]
         {'name': 'login', 'sortable': True},  # columns[1]

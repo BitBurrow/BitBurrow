@@ -468,13 +468,27 @@ def test_parse_markdown_sections():
     assert parse_markdown_sections(input) == expected_output
 
 
-def render_page(sections):
+def render_page(sections, is_logged_in: bool):
     idelem: Dict[str, object] = dict()  # map each element ID to its actual object
     within = list()  # expansion object stack
     within.append(None)  # something for the outer-most level to build on
     enable_external_links_new_tab()
     with ui.header().classes('app-header'):
-        ui.label("").classes('text-lg font-medium')
+        with ui.row().classes('w-full items-center'):  # better placement of menu drop-down
+            ui.space()  # right-justify the menu
+            menu_icon = ui.icon('menu').classes(
+                'cursor-pointer text-white'
+                ' scale-175'  # scale menu icon
+                ' leading-none'  # keep small header bar hieght
+            )
+            with ui.menu().props('anchor="top right" self="bottom right"') as menu:
+                if is_logged_in:
+                    ui.menu_item("Home", lambda: ui.navigate.to('/home'))
+                    ui.menu_item("View loggin sessions", lambda: ui.navigate.to('/login_sessions'))
+                    ui.menu_item("Log out", lambda: ui.navigate.to('/logout'))
+                else:
+                    ui.menu_item("Log in", lambda: ui.navigate.to('/login'))
+            menu_icon.on('click', lambda e: menu.open())
     with ui.column().classes('w-full max-w-screen-sm mx-auto px-3'):
         stack = list()  # the part of the tree that is left to traverse
         stack.append(sections[1:])  # push the list without title
