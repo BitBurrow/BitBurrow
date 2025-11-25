@@ -49,7 +49,11 @@ def set_session_cookie(response: Response, token: str):
 
 
 def sanitize_redirect(url: str) -> str:
-    return url if url.startswith('/') and '://' not in url else '/home'
+    if not url or not url.startswith('/'):  # allow: /some_local_path
+        return '/home'
+    if '://' in url or '%2f' in url.lower():  # don't allow redirects to other sites
+        return '/home'
+    return url
 
 
 @router.post('/set_session')
