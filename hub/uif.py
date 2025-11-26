@@ -289,12 +289,17 @@ def checkbox(label='', value=False, icon=None):
         return ui.checkbox(label, value=value)
 
 
+def comment(text=''):  # for adding author comments within the .md file
+    return None
+
+
 elements_available = {
     'input': input,
     'headline': headline,
     'image': image,
     'button': button,
     'checkbox': checkbox,
+    'comment': comment,
 }
 
 

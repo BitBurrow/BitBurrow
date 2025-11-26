@@ -4,6 +4,9 @@
 
 {{ image(source='padlock-24051.svg', align='center', width='50%') }}
 
+{{ comment(text='''Possible alternate to "This is the only ...": For security reasons
+this login key will not be displayed again.''') }}
+
 This is the only time the login key below will be shown. Copy it to a safe place, such
 as secure notes or a password manager. If your login key is lost, you will loose the
 ability to make changes to your BitBurrow devices.
