@@ -72,6 +72,7 @@ def confirm(client: Client):
     login_key = db.Account.new(
         kind=db.Account_kind.NONE,  # in DB but disabled until confirmed
         valid_for=TimeDelta(days=1),  # expire in 1 day if not confirmed
+        parent_account_id=aid,  # coupon code used
     )
     idelem['login_key'].set_value(lk.dress_login_key(login_key))
 

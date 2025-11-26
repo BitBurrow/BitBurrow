@@ -99,7 +99,9 @@ class Account(SQLModel, table=True):
         default=DateTime(1970, 1, 1, tzinfo=TimeZone.utc),  # Unix epoc
     )
     kind: Account_kind = Account_kind.NONE
+    parent_id: int = 0  # id of Account that created this one, e.g. coupon code
     netif_id: Optional[int] = Field(foreign_key='netif.id')  # used only if kind == USER
+    email: str = ""  # optional, allow login key reset
     comment: str = ""
     login_sessions: List['LoginSession'] = Relationship(back_populates='account')
 
@@ -111,7 +113,7 @@ class Account(SQLModel, table=True):
             return session.query(Account).filter(Account.kind == account_kind).count()
 
     @staticmethod
-    def new(kind: Account_kind, valid_for=TimeDelta(days=10950)):
+    def new(kind: Account_kind, valid_for=TimeDelta(days=10950), parent_account_id=0):
         """Create a new account and return its login key."""
         account = Account()
         key = lk.generate_login_key(lk.key_len)
@@ -121,6 +123,7 @@ class Account(SQLModel, table=True):
             account.clients_max = 0  # admins cannot create VPN clients
         account.kind = kind
         account.valid_until = DateTime.now(TimeZone.utc) + valid_for
+        account.parent_id = parent_account_id
         retry_max = 50
         with Session(engine) as session:
             for attempt in range(retry_max):
