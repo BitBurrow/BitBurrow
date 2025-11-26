@@ -339,7 +339,7 @@ def entry_point():
         logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
         for address in address_list:
             logger.info(f"❚   listening on: {scheme}://{address}:{conf.get('http.port')}")
-        logger.info(f"❚   public URL: {base_url}/")
+        logger.info(f"❚   frontend URL: {base_url}/welcome")
         # FIXME: logger.info(f"❚   public URL: {base_url}{conf.get('common.site_code')}/welcome")
     except sqlalchemy.exc.OperationalError as e:
         logger.error(f"B50313 DB error (may need to increase db_schema_version): {e}")
