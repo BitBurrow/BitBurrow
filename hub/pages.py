@@ -160,6 +160,25 @@ def home(client: Client):
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     idelem = uif.render_page(sections, is_logged_in=True)
+    idelem['new_base'].on_click(callback=lambda: ui.navigate.to('/new_base'))
+
+
+###
+### page: /new_base
+###
+
+
+@ui.page('/new_base')
+def new_base(client: Client):
+    try:
+        auth.require_login(client)
+    except db.CredentialsError:
+        return
+    md_path = os.path.join(ui_path, 'new_base.md')
+    with open(md_path, 'r', encoding='utf-8') as f:
+        sections = uif.parse_markdown_sections(f.read())
+    ui.run_javascript(f"document.title = '{sections[0]}'")
+    idelem = uif.render_page(sections, is_logged_in=True)
 
 
 ###

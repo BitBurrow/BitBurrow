@@ -281,6 +281,11 @@ def button(text=''):
     return ui.button(text)
 
 
+def floating_button(icon=''):
+    with ui.page_sticky(x_offset=18, y_offset=18):
+        return ui.button(icon=icon).props('fab color=accent')
+
+
 def checkbox(label='', value=False, icon=None):
     row = ui.row().classes('items-center gap-2')
     with row:
@@ -298,6 +303,7 @@ elements_available = {
     'headline': headline,
     'image': image,
     'button': button,
+    'floating_button': floating_button,
     'checkbox': checkbox,
     'comment': comment,
 }

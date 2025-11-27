@@ -2,6 +2,6 @@
 
 {{ headline(text='**Base routers**', align='center') }}
 
-{{ button(id='add_router', text="Add a router") }}
+{{ floating_button(id='new_base', icon='add') }}
 
 
