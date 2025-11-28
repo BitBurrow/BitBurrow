@@ -140,7 +140,7 @@ def mkdir_r(path):  # like Linux `mkdir --parents`
 
 def set_logging(args):
     if args.verbose is None:  # no CLI args for log level, so use config setting
-        log_index = conf.get('common.log_level')
+        log_index = conf.get('path.log_level')
     else:  # CLI -v and -q override
         log_index = 2 + sum(args.verbose)
     del args.verbose
@@ -152,7 +152,7 @@ def set_logging(args):
         logging.DEBUG,  # 4, -vv
         logging.DEBUG,  # 5, -vvv; sets 'echo=True' in create_engine()
     ]
-    uvicorn_log_level_map = {
+    log_level_uvicorn_map = {
         0: 'critical',
         1: 'error',
         2: 'warning',
@@ -164,7 +164,7 @@ def set_logging(args):
         raise ValueError("B43857 invalid log level")
     args.console_log_level = log_levels[log_index]
     args.create_engine_echo = log_index == 5
-    args.uvicorn_log_level = uvicorn_log_level_map[log_index - 1 if log_index > 0 else 0]
+    args.log_level_uvicorn = log_level_uvicorn_map[conf.get('path.log_level_uvicorn')]
     logging.config.dictConfig(logs.logging_config(console_log_level=args.console_log_level))
 
 
@@ -191,19 +191,18 @@ async def watch_tls_cert() -> None:
         if rep_count == 0:
             await asyncio.sleep(20)  # check cert 20 seconds after startup
         else:
-            iaddr = net.default_listen_address(conf.get('http.address'))
-            internal_site = f'{iaddr}:{conf.get("http.port")}'
-            external_site = f'{conf.get('common.domain')}:{conf.get("http.port")}'
-            # FIXME: above should use http.external_port
-            if conf.get('http.tls_enabled'):  # we use TLS, so a valid cert should be at http.port
-                await net.check_tls_cert(external_site, internal_site)
-            else:  # otherwise, only check the external domain
-                await net.check_tls_cert(external_site)
+            frontend_site = f'{conf.get('frontend.domain')}:{conf.get("frontend.web_port")}'
+            iaddr = net.default_listen_address(conf.get('backend.ip'))
+            backend_site = f'{iaddr}:{conf.get("backend.web_port")}'
+            if conf.get('backend.web_proto') == 'http':  # only check the public-facing domain
+                await net.check_tls_cert(frontend_site)
+            else:  # otherwise, a valid cert should be at backend.web_port too
+                await net.check_tls_cert(frontend_site, backend_site)
             await asyncio.sleep(a_day)  # check again in 24 hours
         rep_count += 1
 
 
-# FIXME: rewrite this to monitor conf.get('http.restart_when_file_changed')
+# FIXME: rewrite this to monitor conf.get('path.restart_on_change')
 # @app.on_event("startup")
 # @repeat_every(seconds=60)
 # def monitor_tls_cert_file() -> None:
@@ -212,15 +211,13 @@ async def watch_tls_cert() -> None:
 #     Check every minute. Don't restart if there are active in-bound network connections.
 #     """
 #     global restarts_remaining
-#     if conf.get('http.tls_enabled') == False or conf.get('http.tls_use_certbot') == False:
-#         return
 #     if not hasattr(monitor_tls_cert_file, 'call_count'):
 #         monitor_tls_cert_file.call_count = 1
 #         monitor_tls_cert_file.minutes_waiting = 0
 #         return  # do nothing on first run (possible race condition)
 #     file_changes = net.has_file_changed(ssl_keyfile, max_items=1)
 #     if file_changes:  # our TLS cert file has changed
-#         connection_count = len(net.connected_inbound_list(conf.get('http.port')))
+#         connection_count = len(net.connected_inbound_list(conf.get('backend.web_port')))
 #         # if we have no TCP connections (but give up waiting after 24 hours)
 #         if connection_count == 0 or monitor_tls_cert_file.minutes_waiting > (60 * 24):
 #             # reset 'restart' conditions ...
@@ -261,7 +258,7 @@ def entry_point():
         conf.load(args.config_file)
         set_logging(args)  # requires config file be loaded
         if db.engine is None:
-            db_file = conf.get('common.db_file')
+            db_file = conf.get('path.db')
             if db_file == '-':
                 db_file = ':memory:'
             elif not db_file.startswith("/"):  # if relative, use dir of args.config_file
@@ -285,10 +282,9 @@ def entry_point():
             del login_key  # do not store!
             sys.exit(0)
         elif args.command == 'test':
-            hub_state = db.Hub.state()
             sys.exit(0 if util.integrity_test_by_id(args.test_name) else 1)
         # args.command == 'serve':
-        if conf.get('http.tls_enabled'):
+        if conf.get('backend.web_proto') == 'https':
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             strong_ciphers = ':'.join(
                 [
@@ -305,20 +301,22 @@ def entry_point():
                     ]
                 ]
             )
-            if conf.get('http.tls_use_certbot'):
-                ssl_keyfile = f'/etc/letsencrypt/live/{conf.get('common.domain')}/privkey.pem'
-                ssl_certfile = f'/etc/letsencrypt/live/{conf.get('common.domain')}/fullchain.pem'
+            if conf.get('path.tls_key') == '':  # empty means "use Certbot"
+                ssl_keyfile = f'/etc/letsencrypt/live/{conf.get('frontend.domain')}/privkey.pem'
+                ssl_certfile = f'/etc/letsencrypt/live/{conf.get('frontend.domain')}/fullchain.pem'
                 if net.watch_file(ssl_keyfile) == None or net.watch_file(ssl_certfile) == None:
                     sys.exit(1)
             else:
-                ssl_keyfile = conf.get('http.tls_key_file')
-                ssl_certfile = conf.get('http.tls_cert_file')
+                ssl_keyfile = conf.get('path.tls_key')
+                ssl_certfile = conf.get('path.tls_cert')
             scheme = 'https'
-        else:
+        elif conf.get('backend.web_proto') == 'http':
             strong_ciphers = ''
             ssl_keyfile = None
             ssl_certfile = None
             scheme = 'http'
+        else:
+            raise Berror(f'B41626 {conf.get('backend.web_proto')=}')
     except Berror as e:
         logger.error(e)
         sys.exit(1)
@@ -327,10 +325,10 @@ def entry_point():
         sys.exit(1)
     try:
         version_string = f"{util.app_version()}_{migrate_db.db_schema_version}_{conf.config_fv}"
-        address_list = net.all_local_ips(conf.get('http.address'), ipv6_enclosure='[]')
-        public_port = conf.get('common.port')
+        address_list = net.all_local_ips(conf.get('backend.ip'), ipv6_enclosure='[]')
+        public_port = conf.get('frontend.web_port')
         port_spec = '' if public_port == 443 else ':' + str(public_port)
-        base_url = f"https://{conf.get('common.domain')}{port_spec}"
+        base_url = f"{conf.get('frontend.web_proto')}://{conf.get('frontend.domain')}{port_spec}"
         logger.info(f"❚ Starting BitBurrow hub")
         logger.info(f"❚   version string: {version_string}")
         logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
@@ -338,9 +336,9 @@ def entry_point():
         logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
         logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
         for address in address_list:
-            logger.info(f"❚   listening on: {scheme}://{address}:{conf.get('http.port')}")
+            logger.info(f"❚   listening on: {scheme}://{address}:{conf.get('backend.web_port')}")
         logger.info(f"❚   frontend URL: {base_url}/welcome")
-        # FIXME: logger.info(f"❚   public URL: {base_url}{conf.get('common.site_code')}/welcome")
+        # FIXME: logger.info(f"❚   public URL: {base_url}{conf.get('frontend.site_code')}/welcome")
     except sqlalchemy.exc.OperationalError as e:
         logger.error(f"B50313 DB error (may need to increase db_schema_version): {e}")
         sys.exit(1)
@@ -352,11 +350,11 @@ def entry_point():
         nicegui.app.redoc_url = None  # ... https://fastapi.tiangolo.com/tutorial/metadata/
         pages.register_pages()
         nicegui.ui.run(  # docs: https://nicegui.io/documentation/run
-            host=conf.get('http.address'),
-            port=conf.get('http.port'),
+            host=conf.get('backend.ip'),
+            port=conf.get('backend.web_port'),
             title='BitBurrow',
             reload=False,
-            uvicorn_logging_level=args.uvicorn_log_level,
+            uvicorn_logging_level=args.log_level_uvicorn,
             ssl_keyfile=ssl_keyfile,
             ssl_certfile=ssl_certfile,
             ssl_ciphers=strong_ciphers,

@@ -101,8 +101,8 @@ integrity_tests = yaml.safe_load(integrity_tests_yaml)
 
 
 def integrity_test(test):
-    domain = conf.get('common.domain')
-    public_ip = conf.get('common.public_ips')[0]
+    domain = conf.get('frontend.domain')
+    public_ip = conf.get('frontend.ips')[0]
     cmd = test['cmd'].format(  # substitute {domain} for the actual domain, etc.
         domain=domain,
         parent_domain=domain.partition('.')[2],

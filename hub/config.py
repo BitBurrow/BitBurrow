@@ -14,13 +14,13 @@ config = None
 
 ### How to make a new version of the config file
 # 1. add an 'if cfv == ...' section near the end of migrate() to transform the config file; finish
-#        the section with the 2 lines `cfv += 1` and `set('advanced.config_file_version', cfv)`.
+#        the section with the 2 lines `cfv += 1` and `set('programmatic_use_only', cfv)`.
 # 2. increment config_fv below
 # 3. test
-config_fv = 5077  # version of the config file key structure
+config_fv = 5079  # version of the config file key structure
 
 
-def get(cpath: str):  # parse config path, e.g. get('common.public_ips')[0]
+def get(cpath: str):  # parse config path, e.g. get('frontend.ips')[0]
     base = config
     try:
         for c in cpath.split('.'):
@@ -89,42 +89,111 @@ def insert_item_before(existing_item: str, new_key: str, new_value: str):
     insert_item_after(existing_item, new_key, new_value, before_not_after=True)
 
 
-def migrate():  # update config data to current format
-    if (cfv := get('advanced.config_file_version')) < 5076:
+def migrate(domain='', public_ip=''):  # update config data to current format
+    if (cfv := get('programmatic_use_only')) < 5078:
         raise Berror(f"B79322 invalid config_file_version: {cfv}")
     if cfv != config_fv:
         logger.debug(f"B93350 migrate() from {cfv} to {config_fv}")
-    if cfv == 5076:  # migrate in-memory to 5077
+    if cfv == 5078:  # migrate in-memory to next version
+        digits = '23456789bcdfghjklmnpqrstvwxz'
+        site_code = ''.join(secrets.choice(digits) for i in range(7))
+        wg_port = net.random_free_port(use_udp=True, avoid=[5353])
         new_branch = yaml.safe_load(
-            textwrap.dedent(
-                '''
-                    address_help: Address to listen on, '' for all, '0.0.0.0' for
-                      IPv4 only, '::0' for IPv6 only, or a specific IP.
-                    address: ''
-                    port_help: TCP port to listen on. If behind a reverse proxy, set this
-                      accordingly, e.g. 8000, and set tls_enabled to false.
-                    port: 8443
-                    tls_enabled: true
-                    tls_use_certbot_help: Set to true to have bbhub manage TLS keys with certbot.
-                    tls_use_certbot: true
-                    tls_key_file_help: TLS key file, e.g. 'privkey.pem'. Ignored if
-                      tls_use_certbot is true.
-                    tls_key_file: ''
-                    tls_cert_file_help: Cert file, e.g. 'fullchain.pem'. Ignored if
-                      tls_use_certbot is true.
-                    tls_cert_file: ''
+            textwrap.dedent(  # section: help
+                f'''
+                    notes:
+                    - This is the BitBurrow configuration file. Edit this file to configure
+                      the BitBurrow hub.
+                    - Yaml comments may be deleted on upgrade, but other changes made
+                      here will persist.
+                    - This 'help:' section at the top is documentation.
+                    - File and directory paths can be absolute (beginning with '/'), relative to
+                      the BitBurrow user home directory (beginning with '~/'), or relative to
+                      the directory of this config file (all others).
+                    - The 'frontend' section is for the public-facing server, which may or may
+                      not be a reverse proxy, while 'backend' refers to bbhub itself.
+                    frontend:
+                      domain: Domain to access hub and for VPN client subdomains, e.g.
+                        "vxm.example.org".
+                      site_code: Optional string prepended to all URL paths to make identification
+                        of BitBurrow hubs more difficult.
+                      web_port: Public-facing TCP port, normally 443.
+                      web_proto: Must be 'http' or 'https'.
+                      wg_port: Frontend Wireguard UDP port.
+                      ips: List of IPv4 and IPv6 addresses that 'domain' should point to.
+                    backend:
+                      web_port: TCP port to listen on.
+                      web_proto: Must be 'http' or 'https'.
+                      wg_port: UDP port used by VPN bases.
+                      ip: Address to listen on, '' for all, '0.0.0.0' for IPv4 only, '::0' for
+                        IPv6 only, or a specific IP.
+                    path:
+                      db: Database file path. Use '-' (YAML requires the quotes) for memory-only.
+                      log: Log files directory.
+                      log_level: Levels are 0 (critical only), 1 (errors), 2 (warnings), 3 (normal),
+                        4 or 5 for debug. Log level can be temporarily overwritten via CLI options.
+                      log_level_uvicorn: Log level to set for Uvicorn.
+                      tls_key: TLS key file, e.g. 'privkey.pem'. Leave empty to have bbhub manage
+                        TLS keys with Certbot.
+                      tls_cert: Cert file, e.g. 'fullchain.pem'.
+                      restart_on_change: If any file listed here, such as a TLS cert file, is
+                        modified, the hub will wait until no connections are active and then
+                        restart.
+                      restart_on_change_interval: The interval, in seconds, to check for changed
+                        files.
+                    programmatic_use_only: Don't change this. It is used internally by bbhub to
+                      update this config file.
                 '''
             ).lstrip()
         )
-        insert_item_after('common', 'http', new_branch)
-        insert_item_after('common.domain', 'port_help', 'Public-facing TCP port, normally 443.')
-        insert_item_after('common.port_help', 'port', 8443)
+        insert_item_before('programmatic_use_only', 'help', new_branch)
+        new_branch = yaml.safe_load(
+            textwrap.dedent(  # section: frontend
+                f'''
+                    domain: {domain}
+                    site_code: {site_code}
+                    web_port: 8443
+                    web_proto: https
+                    wg_port: {wg_port}
+                    ips:
+                    - {public_ip}
+                '''
+            ).lstrip()
+        )
+        insert_item_before('programmatic_use_only', 'frontend', new_branch)
+        new_branch = yaml.safe_load(
+            textwrap.dedent(  # section: backend
+                f'''
+                    web_port: 8443
+                    web_proto: https
+                    wg_port: {wg_port}
+                    ip: ''
+                '''
+            ).lstrip()
+        )
+        insert_item_before('programmatic_use_only', 'backend', new_branch)
+        new_branch = yaml.safe_load(
+            textwrap.dedent(  # section: path
+                f'''
+                    db: data.sqlite
+                    log: ~/.cache/bitburrow/
+                    log_level: 3
+                    log_level_uvicorn: 2
+                    tls_key: ''
+                    tls_cert: ''
+                    restart_on_change:
+                    - config.yaml
+                    restart_on_change_interval: 60
+                '''
+            ).lstrip()
+        )
+        insert_item_before('programmatic_use_only', 'path', new_branch)
         cfv += 1
-        set('advanced.config_file_version', cfv)
-    # if cfv == 5077:  # migrate in-memory to 5078
+        set('programmatic_use_only', cfv)
+    # if cfv == 5079:  # migrate in-memory to next version
     #     ...
     #     cfv += 1
-    #     set('advanced.config_file_version', cfv)
+    #     set('programmatic_use_only', cfv)
     if cfv != config_fv:
         raise Berror(f"B87851 invalid config_file_version: {cfv}")
 
@@ -145,7 +214,7 @@ def load(path: str):
 
 def is_loaded():
     try:
-        return get('advanced.config_file_version') >= 5076
+        return get('programmatic_use_only') >= 5076
     except Exception:
         return False
 
@@ -172,47 +241,14 @@ def save(path: str):
 
 def generate(path, domain, public_ip):
     global config
-    digits = '23456789bcdfghjklmnpqrstvwxz'
-    site_code = ''.join(secrets.choice(digits) for i in range(7))
-    wg_port = net.random_free_port(use_udp=True, avoid=[5353])
-    config_file_template = textwrap.dedent(
-        f'''
-            config_help: This is the BitBurrow configuration file. Edit this file to configure
-              the BitBurrow hub. Yaml comments may be deleted on upgrade, but other changes
-              made here will persist. Items ending in '_help' are documentation.
-            common:
-              db_file_help: Database file path. Can be absolute or relative to the directory
-                of this config file. Use '-' (YAML requires the quotes) for memory-only.
-              db_file: data.sqlite
-              log_path: /var/log/bitburrow
-              log_level_help: Levels are 0 (critical only), 1 (errors), 2 (warnings), 3
-                (normal), 4 or 5 for debug. Log level can be temporarily overwritten via
-                CLI options.
-              log_level: 3
-              site_code: {site_code}
-              domain_help: Domain to access hub and for VPN client subdomains, e.g.
-                vxm.example.org
-              domain: {domain}
-              public_ips_help: Public IP address(es).
-              public_ips:
-              - {public_ip}
-            wireguard:
-              ports_help: UDP port(s) used by VPN bases.
-              ports:
-              - {wg_port}
-            advanced:
-              config_file_version_help: Do not edit this item! It is used in config file
-                upgrade process.
-              config_file_version: 5076 
-        '''
-    ).lstrip()
-    # note we safe_load() and then dump() the YAML so we can migrate() and also so the
-    # ... actual file changes less on next migration
+    config_file_template = 'programmatic_use_only: 5078'
+    # note we safe_load() and then dump() the YAML so we can migrate() and also to
+    # ... minimize the actual file changes on next migration
     try:
         config = yaml.safe_load(config_file_template)
     except (yaml.parser.ParserError, yaml.scanner.ScannerError) as e:
         raise Berror(f"B06494 cannot parse YAML data: {e}")
-    migrate()
+    migrate(domain, public_ip)
     try:
         old_umask = os.umask(0o077)  # create a file with 0600 permissions
         with open(path, "x", encoding="utf-8") as f:
