@@ -15,22 +15,22 @@ def is_logged_in(client: Client):
     """If the client is logged in, redirect client browser."""
     token = client.request.cookies.get(SESSION_COOKIE_NAME)
     try:
-        lsid, aid, kind = db.Account.get_by_token(token)
+        lsid, aid, kind = db.get_account_by_token(token)
     except db.CredentialsError:
         return False
     return True
 
 
-def require_login(client: Client, redirect: str = '/login') -> tuple[int, int, db.Account_kind]:
+def require_login(client: Client, redirect: str = '/login') -> tuple[int, int, db.AccountKind]:
     """If the client is logged in, return tuple about user, else redirect client browser."""
     token = client.request.cookies.get(SESSION_COOKIE_NAME)
     try:
-        lsid, aid, kind = db.Account.get_by_token(token)
+        lsid, aid, kind = db.get_account_by_token(token)
     except db.CredentialsError:
         ui.notify('Please log in first.', color='warning')
         ui.timer(3, lambda: ui.navigate.to(redirect), once=True)
         raise
-    return lsid, aid, kind  # login_session.id, account.id, kind
+    return lsid, aid, kind  # LoginSession.id, Account.id, kind
 
 
 router = APIRouter()
@@ -150,5 +150,5 @@ def log_in(aid, login_key, keep_logged_in: bool, request):
     else:  # keep logged in until client browser is closed (max 24 hours)
         server_token_timedelta = TimeDelta(days=1)
         cookie_seconds = 0
-    login_key = db.LoginSession.new(aid, request, server_token_timedelta)
+    login_key = db.new_login_session(aid, request, server_token_timedelta)
     set_login_cookie(login_key, cookie_seconds)

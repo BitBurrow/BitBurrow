@@ -31,7 +31,7 @@ def welcome(client: Client):
     async def on_continue():
         coupon = lk.strip_login_key(idelem['coupon_code'].value or '')
         try:
-            aid = db.Account.validate_login_key(coupon, allowed_kinds=db.coupon)
+            aid = db.validate_login_key(coupon, allowed_kinds=db.coupon)
         except db.CredentialsError as e:
             err_message = str(e).replace(db.lkocc_string, "coupon code")
             ui.notify(err_message)
@@ -61,7 +61,7 @@ def confirm(client: Client):
     if not qparam_coupon:  # coupon code is required
         ui.navigate.to(f'/welcome?coupon={qparam_coupon}')
     try:  # validate (no other way to confirm that user came via /welcome)
-        aid = db.Account.validate_login_key(qparam_coupon, allowed_kinds=db.coupon)
+        aid = db.validate_login_key(qparam_coupon, allowed_kinds=db.coupon)
     except db.CredentialsError as e:  # send them back to /welcome
         ui.navigate.to(f'/welcome?coupon={qparam_coupon}')
     md_path = os.path.join(ui_path, 'confirm.md')
@@ -69,8 +69,8 @@ def confirm(client: Client):
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     idelem = uif.render_page(sections, is_logged_in=False)
-    login_key = db.Account.new(
-        kind=db.Account_kind.NONE,  # in DB but disabled until confirmed
+    login_key = db.new_account(
+        kind=db.AccountKind.NONE,  # in DB but disabled until confirmed
         valid_for=TimeDelta(days=1),  # expire in 1 day if not confirmed
         parent_account_id=aid,  # coupon code used
     )
@@ -83,9 +83,9 @@ def confirm(client: Client):
         idelem['continue'].disable()
         idelem['login_key'].set_value(lk.dress_login_key('*' * lk.login_key_len))
         await asyncio.sleep(1)  # let user see the importantce of keeping the login key secret
-        aid = db.Account.update_account(  # validate the new account
+        aid = db.update_account(  # validate the new account
             login=login_key,  # find account by 'login' portion only
-            kind=db.Account_kind.MANAGER,  # it's now a full login key
+            kind=db.AccountKind.MANAGER,  # it's now a full login key
             valid_for=TimeDelta(days=10950),
         )
         auth.log_in(aid, login_key, idelem['keep_me_logged_in'].value, client.request)
@@ -113,7 +113,7 @@ def login(client: Client):
     async def on_continue():
         login_key = lk.strip_login_key(idelem['login_key'].value or '')
         try:
-            aid = db.Account.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
+            aid = db.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
         except db.CredentialsError as e:
             err_message = str(e).replace(db.lkocc_string, "login key")
             ui.notify(err_message)
@@ -139,7 +139,7 @@ def logout(client: Client):
         lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
         return
-    db.LoginSession.log_out(lsid)  # invalidate login session in DB
+    db.log_out(lsid)  # invalidate login session in DB
     auth.clear_login_cookie()
     ui.navigate.to('/login')
 
@@ -211,7 +211,7 @@ def login_sessions(client: Client):
     for c in columns:
         c['label'] = c['name'].replace('_', ' ').upper()
         c['field'] = c['name']
-    if kind != db.Account_kind.ADMIN:
+    if kind != db.AccountKind.ADMIN:
         # hide id, login
         columns[0]['classes'] = 'hidden'
         columns[0]['headerClasses'] = 'hidden'
@@ -221,8 +221,8 @@ def login_sessions(client: Client):
     def build_rows(lsid):
         rows = list()
         now = DateTime.now(TimeZone.utc)
-        id_to_query = None if kind == db.Account_kind.ADMIN else aid
-        for s in db.LoginSession.iter_get_by_account_id(aid=id_to_query):
+        id_to_query = None if kind == db.AccountKind.ADMIN else aid
+        for s in db.iter_get_login_session_by_account_id(aid=id_to_query):
             device = uif.human_user_agent(s.user_agent)
             last_activity = uif.human_duration(now - s.last_activity.replace(tzinfo=TimeZone.utc))
             valid = s.valid_until.replace(tzinfo=TimeZone.utc) - now
@@ -274,7 +274,7 @@ def login_sessions(client: Client):
     )
 
     def on_log_out(e):
-        db.LoginSession.log_out(e.args['id'])
+        db.log_out(e.args['id'])
         table.rows = build_rows(lsid)
         table.update()
         if e.args['current']:  # keep this in case we decide to allow 'log out' for current device

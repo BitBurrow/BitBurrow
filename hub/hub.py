@@ -172,15 +172,15 @@ async def startup_netif():
     if not conf.is_loaded():  # sanity check
         raise Berror(f"B62896 invalid config data in startup_netif()")
     try:
-        wgif = db.Netif.startup()  # configure new WireGuard interface
-        db.Client.startup(wgif)  # add peers to WireGuard interface
+        wgif = db.startup_netif()  # configure new WireGuard interface
+        db.startup_client(wgif)  # add peers to WireGuard interface
     except Exception as e:
         shutdown_netif()
         raise e
 
 
 async def shutdown_netif():
-    db.Netif.shutdown()
+    db.shutdown_netif()
 
 
 async def watch_tls_cert() -> None:
@@ -272,13 +272,13 @@ def entry_point():
             print(f"Config file migrated: {args.config_file}")
             sys.exit(0)
         if args.command == 'create-admin-account':
-            login_key = db.Account.new(db.Account_kind.ADMIN)
-            print(f"Login key for your new {db.Account_kind.ADMIN} (KEEP THIS SAFE!): {login_key}")
+            login_key = db.new_account(db.AccountKind.ADMIN)
+            print(f"Login key for your new {db.AccountKind.ADMIN} (KEEP THIS SAFE!): {login_key}")
             del login_key  # do not store!
             sys.exit(0)
         elif args.command == 'create-coupon-code':
-            login_key = db.Account.new(db.Account_kind.COUPON)
-            print(f"Your new {db.Account_kind.COUPON} (KEEP IT SAFE): {login_key}")
+            login_key = db.new_account(db.AccountKind.COUPON)
+            print(f"Your new {db.AccountKind.COUPON} (KEEP IT SAFE): {login_key}")
             del login_key  # do not store!
             sys.exit(0)
         elif args.command == 'test':
@@ -331,10 +331,10 @@ def entry_point():
         base_url = f"{conf.get('frontend.web_proto')}://{conf.get('frontend.domain')}{port_spec}"
         logger.info(f"❚ Starting BitBurrow hub")
         logger.info(f"❚   version string: {version_string}")
-        logger.info(f"❚   admin accounts: {db.Account.count(db.Account_kind.ADMIN)}")
-        logger.info(f"❚   coupons: {db.Account.count(db.Account_kind.COUPON)}")
-        logger.info(f"❚   manager accounts: {db.Account.count(db.Account_kind.MANAGER)}")
-        logger.info(f"❚   user accounts: {db.Account.count(db.Account_kind.USER)}")
+        logger.info(f"❚   admin accounts: {db.account_count(db.AccountKind.ADMIN)}")
+        logger.info(f"❚   coupons: {db.account_count(db.AccountKind.COUPON)}")
+        logger.info(f"❚   manager accounts: {db.account_count(db.AccountKind.MANAGER)}")
+        logger.info(f"❚   user accounts: {db.account_count(db.AccountKind.USER)}")
         for address in address_list:
             logger.info(f"❚   listening on: {scheme}://{address}:{conf.get('backend.web_port')}")
         logger.info(f"❚   frontend URL: {base_url}/welcome")
