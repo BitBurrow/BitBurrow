@@ -75,9 +75,14 @@ def logout(request: Request, redirect: str = Body('/login', embed=True)):
     safe_redirect = sanitize_redirect(redirect)
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
-        ls = db.LoginSession.from_token(token, log_out=True)
+        try:
+            lsid, aid, kind = db.get_account_by_token(token)
+            db.log_out(lsid)  # invalidate login session in DB
+        except db.CredentialsError:
+            pass  # expired or invalid token
     resp = RedirectResponse(safe_redirect, status_code=303)
     resp.delete_cookie(SESSION_COOKIE_NAME, path='/')
+    resp.delete_cookie(CSRF_COOKIE_NAME, path='/')
     return resp
 
 
@@ -85,48 +90,51 @@ app.include_router(router)
 
 
 def js_fetch_post(path: str, payload: dict) -> str:
-    return f'''
-(async () => {{
-  function getCookie(name) {{
-    const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{{}}()\\[\\]\\\\\\/\\+^])/g, '\\\\$1') + '=([^;]*)'));
-    return m ? decodeURIComponent(m[1]) : null;
-  }}
-
-  async function ensureCsrf() {{
-    if (!getCookie('{CSRF_COOKIE_NAME}')) {{
-      await fetch('/', {{ credentials: 'same-origin' }}); // prime CSRF cookie
-    }}
-  }}
-
-  async function postOnce() {{
-    const csrf = getCookie('{CSRF_COOKIE_NAME}') || '';
-    const res = await fetch('{path}', {{
-      method: 'POST',
-      headers: {{
-        'Content-Type': 'application/json',
-        '{CSRF_HEADER}': csrf
-      }},
-      credentials: 'same-origin',
-      body: JSON.stringify({payload})
-    }});
-    return res;
-  }}
-
-  await ensureCsrf();
-  let r = await postOnce();
-  if (r.status === 403) {{
-    await ensureCsrf();
-    r = await postOnce(); // retry once after priming
-  }}
-  if (r.redirected) {{
-    window.location.href = r.url;
-  }} else {{
-    // Optional: surface errors
-    const t = await r.text();
-    console.log('POST {path} ->', r.status, t);
-  }}
-}})();
-'''
+    js = '''
+        (async () => {
+          function getCookie(name) {
+            const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()\\[\\]\\\\\\/\\+^])/g, '\\\\$1') + '=([^;]*)'));
+            return m ? decodeURIComponent(m[1]) : null;
+          }
+          async function ensureCsrf() {
+            if (!getCookie('{CSRF_COOKIE_NAME}')) {
+            await fetch('/', { credentials: 'same-origin' }); // prime CSRF cookie
+            }
+          }
+          async function postOnce() {
+            const csrf = getCookie('{CSRF_COOKIE_NAME}') || '';
+            const res = await fetch('{path}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                '{CSRF_HEADER}': csrf
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({payload})
+            });
+            return res;
+          }
+          await ensureCsrf();
+          let r = await postOnce();
+          if (r.status === 403) {
+            await ensureCsrf();
+            r = await postOnce(); // retry once after priming
+          }
+          if (r.redirected) {
+            window.location.href = r.url;
+          } else {
+            // Optional: surface errors
+            const t = await r.text();
+            console.log('POST {path} ->', r.status, t);
+          }
+        })();
+    '''
+    return (  # f-strings don't like JS
+        js.replace('{path}', path)
+        .replace('{payload}', str(payload))
+        .replace('{CSRF_COOKIE_NAME}', CSRF_COOKIE_NAME)
+        .replace('{CSRF_HEADER}', CSRF_HEADER)
+    )
 
 
 def set_login_cookie(
@@ -139,10 +147,6 @@ def set_login_cookie(
     )
 
 
-def clear_login_cookie():
-    ui.run_javascript(js_fetch_post('/logout', {'redirect': '/login'}))
-
-
 def log_in(aid, login_key, keep_logged_in: bool, request):
     if keep_logged_in:  # keep user logged in for 30 days
         server_token_timedelta = TimeDelta(days=30)
@@ -152,3 +156,7 @@ def log_in(aid, login_key, keep_logged_in: bool, request):
         cookie_seconds = 0
     login_key = db.new_login_session(aid, request, server_token_timedelta)
     set_login_cookie(login_key, cookie_seconds)
+
+
+def log_out(redirect_to: str = '/login'):
+    ui.run_javascript(js_fetch_post('/logout', {'redirect': redirect_to}))

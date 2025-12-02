@@ -5,6 +5,7 @@ import re
 from typing import Dict, List, Tuple
 import logging
 import zoneinfo
+import hub.auth as auth
 import hub.util as util
 
 Berror = util.Berror
@@ -496,7 +497,7 @@ def render_page(sections, is_logged_in: bool):
                 if is_logged_in:
                     ui.menu_item("Home", lambda: ui.navigate.to('/home'))
                     ui.menu_item("View loggin sessions", lambda: ui.navigate.to('/login_sessions'))
-                    ui.menu_item("Log out", lambda: ui.navigate.to('/logout'))
+                    ui.menu_item('Log out', on_click=auth.log_out)
                 else:
                     ui.menu_item("Log in", lambda: ui.navigate.to('/login'))
             menu_icon.on('click', lambda e: menu.open())

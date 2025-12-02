@@ -129,22 +129,6 @@ def login(client: Client):
 
 
 ###
-### page: /logout
-###
-
-
-@ui.page('/logout')
-def logout(client: Client):
-    try:
-        lsid, aid, kind = auth.require_login(client)
-    except db.CredentialsError:
-        return
-    db.log_out(lsid)  # invalidate login session in DB
-    auth.clear_login_cookie()
-    ui.navigate.to('/login')
-
-
-###
 ### page: /home
 ###
 
