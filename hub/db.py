@@ -43,7 +43,7 @@ class AccountKind(enum.Enum):
     ADMIN = 900  # can create, edit, and delete coupon codes; can edit and delete managers and users
     COUPON = 700  # can create managers (that's all)
     MANAGER = 400  # can set up, edit, and delete bases and clients
-    USER = 200  # can set up, edit, and delete clients for a specific netif_id on 1 base
+    USER = 200  # can set up, edit, and delete clients for a specific intf_id on 1 base
     NONE = 0  # not signed in
 
     def __str__(self):
@@ -97,7 +97,7 @@ class Account(SQLModel, table=True):
     )
     kind: AccountKind = AccountKind.NONE
     parent_id: int = 0  # id of Account that created this one, e.g. coupon code
-    netif_id: Optional[int] = Field(foreign_key='netif.id')  # used only if kind == USER
+    intf_id: Optional[int] = Field(foreign_key='intf.id')  # used only if kind == USER
     email: str = ""  # optional, allow login key reset
     comment: str = ""
     login_sessions: List['LoginSession'] = Relationship(back_populates='account')
@@ -317,49 +317,49 @@ def iter_get_login_session_by_account_id(aid: int | None):
 
 
 ###
-### DB table Base - VPN base device
+### DB table Device - VPN device
 ###
 
 
-class Base(SQLModel, table=True):
+class Device(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager
     comment: str = ""
 
 
-def new_base(account_id):  # create a new base and return its id
-    base = Base()
-    base.account_id = account_id
+def new_device(account_id):  # create a new device and return its id
+    device = Device()
+    device.account_id = account_id
     with Session(engine) as session:
-        session.add(base)
+        session.add(device)
         session.commit()
-    logger.info(f"Created new base {id}")
+    logger.info(f"Created new device {id}")
     return id
 
 
 ###
-### DB table Netif - WireGuard network interface
+### DB table Intf - WireGuard network interface
 ###
 
 wgif_prefix = 'fdfb'
 reserved_ips = 38
 
 
-class Netif(SQLModel, table=True):
+class Intf(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
-    base_id: Optional[int] = Field(index=True, foreign_key='base.id')  # base this netif is on
+    device_id: Optional[int] = Field(index=True, foreign_key='device.id')  # device this intf is on
     ipv4_base: str
     ipv6_base: str
     privkey: str
     pubkey: str
     listening_port: int  # on LAN
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
-    public_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
+    public_ports: list[int] = Field(sa_column=Column(JSON))  # on device's public IP
     comment: str = ""
     model_config = ConfigDict(arbitrary_types_allowed=True)  # for Column(JSON)
 
     def __init__(self):
-        self.base_id = None
+        self.device_id = None
         # IPv4 base is 10. + random xx.xx. + 0
         self.ipv4_base = str(ipaddress.ip_address('10.0.0.0') + secrets.randbelow(2**16) * 2**8)
         # IPv6 base is prefix + 2 random groups + 5 0000 groups
@@ -371,30 +371,30 @@ class Netif(SQLModel, table=True):
         self.public_ports = [123]
 
     def iface(self):
-        return f'{wgif_prefix}{self.id}'  # interface name and Netif.id match
+        return f'{wgif_prefix}{self.id}'  # interface name and Intf.id match
 
     def ipv4(self):
         # ending in '/32' feels cleaner but client can't ping, even if client uses
         # `ip address add dev wg0 10.110.169.40 peer 10.110.169.1`
-        # fix seems to be `ip -4 route add .../18 dev wg0` on base or use '/18' below
+        # fix seems to be `ip -4 route add .../18 dev wg0` on device or use '/18' below
         return str(ipaddress.ip_address(self.ipv4_base) + 1) + '/18'  # max 16000 clients
 
     def ipv6(self):
         return str(ipaddress.ip_address(self.ipv6_base) + 1) + '/114'  # max 16000 clients
 
 
-def startup_netif():
+def startup_intf():
     net.sudo_sysctl('net.ipv4.ip_forward=1')
     net.sudo_sysctl('net.ipv6.conf.all.forwarding=1')
     with Session(engine) as session:
-        netif_count = session.query(Netif).count()
-    if netif_count == 0:  # first run--need to define a WireGuard interface
+        intf_count = session.query(Intf).count()
+    if intf_count == 0:  # first run--need to define a WireGuard interface
         with Session(engine) as session:
-            new_if = Netif()
+            new_if = Intf()
             session.add(new_if)
             session.commit()
     with Session(engine) as session:
-        statement = select(Netif)
+        statement = select(Intf)
         i = session.exec(statement).one_or_none()  # for the time being, support 1 wg interface
     delete_our_wgif(isShutdown=False)
     wgif = i.iface()
@@ -432,7 +432,7 @@ def delete_our_wgif(isShutdown):  # clean up wg network interfaces
             net.sudo_ip(['link', 'del', 'dev', if_name])
 
 
-def shutdown_netif():
+def shutdown_intf():
     net.sudo_undo_iptables()
     delete_our_wgif(isShutdown=True)
 
@@ -445,23 +445,23 @@ def shutdown_netif():
 class Client(SQLModel, table=True):
     __table_args__ = (sqlalchemy.UniqueConstraint('pubkey'),)  # no 2 clients may share a key
     id: Optional[int] = Field(primary_key=True, default=None)
-    netif_id: int = Field(foreign_key='netif.id')  # the base interface this client connects to
+    intf_id: int = Field(foreign_key='intf.id')  # the device interface this client connects to
     pubkey: str
     preshared_key: str
     keepalive: int = 23  # 0==disabled
     account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager or user
     comment: str = ""
 
-    def ip_list(self, wgif: Netif = None):  # calculate client's 2 IP addresses for allowed-ips
+    def ip_list(self, wgif: Intf = None):  # calculate client's 2 IP addresses for allowed-ips
         if wgif is None:
             with Session(engine) as session:
-                statement = select(Netif).where(Netif.id == self.netif_id)
+                statement = select(Intf).where(Intf.id == self.intf_id)
                 wgif = session.exec(statement).one_or_none()
         ipv4 = ipaddress.ip_address(wgif.ipv4_base) + (reserved_ips + self.id)
         ipv6 = ipaddress.ip_address(wgif.ipv6_base) + (reserved_ips + self.id)
         return f'{ipv4}/32,{ipv6}/128'
 
-    def set_peer(self, wgif: Netif = None):
+    def set_peer(self, wgif: Intf = None):
         net.sudo_wg(  # see https://www.man7.org/linux/man-pages/man8/wg.8.html
             f'set {self.iface()}'.split(' ')
             + f'peer {self.pubkey}'.split(' ')
@@ -471,7 +471,7 @@ class Client(SQLModel, table=True):
         )
 
     def iface(self):
-        return f'{wgif_prefix}{self.netif_id}'  # interface name and Netif.id match
+        return f'{wgif_prefix}{self.intf_id}'  # interface name and Intf.id match
 
 
 def validate_pubkey(k):
