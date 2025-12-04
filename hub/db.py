@@ -10,12 +10,15 @@ import secrets
 import sqlalchemy
 import sqlalchemy.engine
 import sqlite3
-from sqlmodel import Field, Session, SQLModel, select, JSON, Column, Relationship
-from typing import List, Optional
+from sqlmodel import Field, Session, SQLModel, select, JSON, Column, Relationship, func
+from typing import Optional
 import hub.login_key as lk
 import hub.net as net
 from pydantic import ConfigDict
+import hub.config as conf
+import hub.util as util
 
+Berror = util.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 engine = None
@@ -100,7 +103,7 @@ class Account(SQLModel, table=True):
     intf_id: Optional[int] = Field(foreign_key='intf.id')  # used only if kind == USER
     email: str = ""  # optional, allow login key reset
     comment: str = ""
-    login_sessions: List['LoginSession'] = Relationship(back_populates='account')
+    login_sessions: list['LoginSession'] = Relationship(back_populates='account')
 
 
 def account_count(account_kind=AccountKind.NONE):
@@ -129,13 +132,14 @@ def new_account(kind: AccountKind, valid_for=TimeDelta(days=10950), parent_accou
                 session.add(account)
                 session.commit()
             except sqlalchemy.exc.IntegrityError:
+                session.rollback()
                 if attempt > 20:
                     logger.warning(f"B09974 duplicate login {account.login} (retry {attempt})")
                 continue
             else:
                 break
         else:
-            raise RuntimeError(f"B00995 duplicate login {account.login} after {retry_max} attempts")
+            raise Berror(f"B00995 duplicate login {account.login} after {retry_max} attempts")
         login_key = account.login + key
     logger.info(f"Created new {kind.token_name()} {login_key}")
     return login_key
@@ -323,88 +327,191 @@ def iter_get_login_session_by_account_id(aid: int | None):
 
 class Device(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
-    account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager
+    account_id: Optional[int] = Field(index=True, foreign_key='account.id')  # device admin--manager
+    name: str = ""
+    # hub_peer_id is this device's Intf that connects to the BitBurrow hub, or None if unmanaged
+    hub_peer_id: Optional[int] = Field(index=True, foreign_key='intf.id')
     comment: str = ""
 
 
-def new_device(account_id):  # create a new device and return its id
-    device = Device()
-    device.account_id = account_id
+def device_count(account_id: int) -> int:
+    """Returns the number of devices associated with this account_id."""
+    with Session(engine) as session:
+        statement = select(func.count()).select_from(Device).where(Device.account_id == account_id)
+        return session.exec(statement).one()
+
+
+def new_device(account_id: int) -> int:  # create a new device and return its id
+    total_devices = device_count(account_id) + 1
+    device = Device(account_id=account_id, name=f"Device {total_devices}")
     with Session(engine) as session:
         session.add(device)
         session.commit()
-    logger.info(f"Created new device {id}")
-    return id
+    logger.info(f"Created new device: {device.name}")
+    return device.id
 
 
 ###
-### DB table Intf - WireGuard network interface
+### DB table Intf - WireGuard network interface on a BitBurrow base or client
 ###
 
-wgif_prefix = 'fdfb'
-reserved_ips = 38
+wgif_prefix = 'wgbb'
+
+
+class IntfMethod(enum.Enum):  # method used to configure Wireguard
+    NONE = 0  # disabled
+    LOCAL = 10  # subprocess.run() commands with `sudo` directly on the machine running Python
+    BASH = 20  # create a list of Bash shell commmands
+    UCI = 30  # create a list of `uci` commands for OpenWrt
+    CONF = 40  # create a WireGuard conf file
 
 
 class Intf(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     device_id: Optional[int] = Field(index=True, foreign_key='device.id')  # device this intf is on
-    ipv4_base: str
-    ipv6_base: str
+    ipv4_base: str = ''  # ipaddress.ip_network() but without the subnet prefix
+    ipv6_base: str = ''
+    host_id: int = 0  # host portion of IP address, e.g. 1 for muti-peer; applies to IPv4 and IPv6
+    host_bits: int = 0  # network size in bits; for IPv4, host_bits = 32 - subnet_prefix
+    allowed_ipv4_subnet: int = 32  # our allowed IPs, i.e. AllowedIPs in Peer section of our peer
+    allowed_ipv6_subnet: int = 128
+    # base_intf_id is our peer (server) on single-peer interfaces; otherwise None
+    base_intf_id: Optional[int] = Field(index=True, foreign_key='intf.id')
     privkey: str
     pubkey: str
-    listening_port: int  # on LAN
+    backend_port: int
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
-    public_ports: list[int] = Field(sa_column=Column(JSON))  # on device's public IP
+    frontend_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
+    other: dict[str, any] = Field(sa_column=Column(JSON))  # all other config options
     comment: str = ""
+    default_method: IntfMethod = IntfMethod.NONE
     model_config = ConfigDict(arbitrary_types_allowed=True)  # for Column(JSON)
 
-    def __init__(self):
-        self.device_id = None
-        # IPv4 base is 10. + random xx.xx. + 0
-        self.ipv4_base = str(ipaddress.ip_address('10.0.0.0') + secrets.randbelow(2**16) * 2**8)
-        # IPv6 base is prefix + 2 random groups + 5 0000 groups
-        seven_groups = secrets.randbelow(2**32) * 2**80
-        self.ipv6_base = str(ipaddress.ip_address(f'{wgif_prefix}::') + seven_groups)
-        self.privkey = net.sudo_wg(['genkey'])
-        self.pubkey = net.sudo_wg(['pubkey'], input=self.privkey)
-        self.listening_port = 123
-        self.public_ports = [123]
-
     def iface(self):
-        return f'{wgif_prefix}{self.id}'  # interface name and Intf.id match
+        if self.base_intf_id:  # single-peer, i.e. 'client'
+            return f'{wgif_prefix}{self.base_intf_id}'  # match remote's interface name
+        else:  # multi-peer
+            return f'{wgif_prefix}{self.id}'  # interface name and Intf.id match
 
-    def ipv4(self):
-        # ending in '/32' feels cleaner but client can't ping, even if client uses
-        # `ip address add dev wg0 10.110.169.40 peer 10.110.169.1`
-        # fix seems to be `ip -4 route add .../18 dev wg0` on device or use '/18' below
-        return str(ipaddress.ip_address(self.ipv4_base) + 1) + '/18'  # max 16000 clients
+    def ipv4(self) -> str:  # e.g. 192.168.1.101
+        return str(ipaddress.ip_address(self.ipv4_base) + self.host_id)
 
-    def ipv6(self):
-        return str(ipaddress.ip_address(self.ipv6_base) + 1) + '/114'  # max 16000 clients
+    def ipv4cidr(self) -> str:  # e.g. 192.168.1.101/24
+        return f'{self.ipv4()}/{32-self.host_bits}'
+
+    def ipv6(self) -> str:
+        return str(ipaddress.ip_address(self.ipv6_base) + self.host_id)
+
+    def ipv6cidr(self) -> str:
+        return f'{self.ipv6()}/{128-self.host_bits}'
+
+    def allowed_ips(self) -> str:  # IPv4/subnet,IPv6/subnet
+        return f'{self.ipv4()}/{self.allowed_ipv4_subnet},{self.ipv6()}/{self.allowed_ipv6_subnet}'
 
 
-def startup_intf():
+def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> int:
+    """Create a new intf and return its id. For clients, set base_intf_id."""
+    intf = Intf(device_id=device_id)
+    if base_intf_id:  # single-peer, i.e. new 'client'
+        assert base_is_hub == False
+        with Session(engine) as session:  # copy 'client' network details from base_intf
+            statement = select(Intf).where(Intf.id == base_intf_id)
+            base_intf = session.exec(statement).one_or_none()
+            intf.ipv4_base = base_intf.ipv4_base
+            intf.ipv6_base = base_intf.ipv6_base
+            intf.host_bits = base_intf.host_bits
+        intf.allowed_ipv4_subnet = 32  # for now, don't allow client-to-client
+        intf.allowed_ipv6_subnet = 128
+    else:  # multi-peer
+        intf.host_bits = 12  # default for new Intf rows; FIXME: use conf.get('wireguard.host_bits')
+        if base_is_hub:  # this Intf is the very first one, used for the base connections to the hub
+            intf.ipv4_base = str(  # 172. address will never conflict with 10. used on bases
+                ipaddress.ip_network(
+                    f'172.22.199.111/{32-intf.host_bits}', strict=False
+                ).network_address
+            )
+            intf.ipv6_base = str(  # fc00:: address will never conflict with fd00:: used on bases
+                ipaddress.ip_network(
+                    f'fcbb:ac16:c76f::0/{128-intf.host_bits}', strict=False
+                ).network_address
+            )
+        else:
+            # Reserved IP addresses docs: https://en.wikipedia.org/wiki/Reserved_IP_addresses
+            intf.ipv4_base = str(
+                ipaddress.ip_address('10.0.0.0')
+                + secrets.randbelow(2 ** (32 - 8 - intf.host_bits)) * 2**intf.host_bits
+            )
+            intf.ipv6_base = str(
+                ipaddress.ip_address('fd00::')
+                + secrets.randbelow(2 ** (128 - 96 - 8 - intf.host_bits))
+                * 2 ** (intf.host_bits + 96)
+            )
+        intf.allowed_ipv4_subnet = 0
+        intf.allowed_ipv6_subnet = 0
+    intf.base_intf_id = base_intf_id
+    intf.privkey = net.sudo_wg(['genkey'])
+    intf.pubkey = net.sudo_wg(['pubkey'], input=intf.privkey)
+    if base_is_hub:  # on the hub, use ports from config file
+        intf.backend_port = conf.get('backend.wg_port')
+        intf.frontend_ports = [conf.get('frontend.wg_port')]
+        intf.default_method = IntfMethod.LOCAL
+    else:
+        intf.backend_port = 123
+        intf.frontend_ports = [123]
+        intf.default_method = IntfMethod.UCI
+    # now find an unused host_id in the network
+    host_id_min = 39
+    host_id_limit = 2**intf.host_bits - 1
+    retry_max = 25
+    with Session(engine) as session:
+        if base_intf_id:  # single-peer, i.e. new 'client'
+            for attempt in range(retry_max):
+                try:
+                    statement = select(Intf.host_id).where(
+                        Intf.host_id >= host_id_min,
+                        Intf.host_id < host_id_limit,
+                        Intf.base_intf_id == base_intf_id,
+                    )
+                    used = set(session.exec(statement))
+                    free = min(set(range(host_id_min, host_id_limit)) - used, default=None)
+                    if free is None:
+                        raise Berror(
+                            f"B95195 no free IPs in range [{host_id_min}, {host_id_limit})"
+                        )
+                    intf.host_id = free
+                    session.add(intf)
+                    session.commit()
+                except sqlalchemy.IntegrityError:
+                    session.rollback()
+                    continue
+                else:
+                    break
+            else:
+                raise Berror(f"B73650 failed to allocate unique host_id after {retry_max} retries")
+        else:  # multi-peer
+            intf.host_id = 1
+            session.add(intf)
+            session.commit()
+        return intf.id
+
+
+def apply_intf(i: Intf, method: IntfMethod = None) -> str:
+    if method is None:
+        method = i.default_method
+    assert (
+        method != IntfMethod.LOCAL or i.default_method == IntfMethod.LOCAL
+    ), "B09962 don't run others' configs locally"
     net.sudo_sysctl('net.ipv4.ip_forward=1')
     net.sudo_sysctl('net.ipv6.conf.all.forwarding=1')
-    with Session(engine) as session:
-        intf_count = session.query(Intf).count()
-    if intf_count == 0:  # first run--need to define a WireGuard interface
-        with Session(engine) as session:
-            new_if = Intf()
-            session.add(new_if)
-            session.commit()
-    with Session(engine) as session:
-        statement = select(Intf)
-        i = session.exec(statement).one_or_none()  # for the time being, support 1 wg interface
     delete_our_wgif(isShutdown=False)
     wgif = i.iface()
-    # configure wgif; see `systemctl status wg-quick@wg0.service`
+    # configure WireGuard interface; see `systemctl status wg-quick@wg0.service`
     net.sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
     net.sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wgif])
-    net.sudo_ip(['-4', 'address', 'add', 'dev', wgif, i.ipv4()])
-    net.sudo_ip(['-6', 'address', 'add', 'dev', wgif, i.ipv6()])
+    net.sudo_ip(['-4', 'address', 'add', 'dev', wgif, i.ipv4cidr()])
+    net.sudo_ip(['-6', 'address', 'add', 'dev', wgif, i.ipv6cidr()])
     net.sudo_wg(['set', wgif, 'private-key', f'!FILE!{i.privkey}'])
-    net.sudo_wg(['set', wgif, 'listen-port', str(i.listening_port)])
+    net.sudo_wg(['set', wgif, 'listen-port', str(i.backend_port)])
     net.sudo_iptables(
         '--append FORWARD'.split(' ')
         + f'--in-interface {wgif}'.split(' ')
@@ -416,7 +523,22 @@ def startup_intf():
         + ['--out-interface', net.default_route_interface()]
         + '--jump MASQUERADE'.split(' ')
     )
-    return i
+
+
+def on_startup() -> None:
+    """If the Device table is empty, create our BitBurrow hub device, WireGuard interface."""
+    with Session(engine) as session:
+        hub_device_exists = session.exec(select(sqlalchemy.exists().where(Device.id != None))).one()
+        if not hub_device_exists:  # hub Device
+            hub_device = Device(account_id=None, name="BitBurrow hub", hub_peer_id=None)
+            session.add(hub_device)
+            session.commit()
+            assert hub_device.id == 1, f"B12466 unexpected {hub_device_id=}"
+        if not hub_device_exists:  # hub Intf
+            hub_intf_id = new_intf(hub_device.id, base_is_hub=True)
+            assert hub_intf_id == 1, f"B49296 unexpected {hub_intf_id=}"
+        hub_intf = session.exec(select(Intf).where(Intf.id == 1)).one()
+        apply_intf(hub_intf)
 
 
 def delete_our_wgif(isShutdown):  # clean up wg network interfaces
@@ -432,7 +554,7 @@ def delete_our_wgif(isShutdown):  # clean up wg network interfaces
             net.sudo_ip(['link', 'del', 'dev', if_name])
 
 
-def shutdown_intf():
+def on_shutdown():
     net.sudo_undo_iptables()
     delete_our_wgif(isShutdown=True)
 
@@ -452,15 +574,6 @@ class Client(SQLModel, table=True):
     account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager or user
     comment: str = ""
 
-    def ip_list(self, wgif: Intf = None):  # calculate client's 2 IP addresses for allowed-ips
-        if wgif is None:
-            with Session(engine) as session:
-                statement = select(Intf).where(Intf.id == self.intf_id)
-                wgif = session.exec(statement).one_or_none()
-        ipv4 = ipaddress.ip_address(wgif.ipv4_base) + (reserved_ips + self.id)
-        ipv6 = ipaddress.ip_address(wgif.ipv6_base) + (reserved_ips + self.id)
-        return f'{ipv4}/32,{ipv6}/128'
-
     def set_peer(self, wgif: Intf = None):
         net.sudo_wg(  # see https://www.man7.org/linux/man-pages/man8/wg.8.html
             f'set {self.iface()}'.split(' ')
@@ -469,9 +582,6 @@ class Client(SQLModel, table=True):
             # consider: + f'persistent-keepalive {self.keepalive}'  # see man page
             + f'allowed-ips {self.ip_list(wgif)}'.split(' ')
         )
-
-    def iface(self):
-        return f'{wgif_prefix}{self.intf_id}'  # interface name and Intf.id match
 
 
 def validate_pubkey(k):

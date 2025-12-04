@@ -168,19 +168,18 @@ def set_logging(args):
     logging.config.dictConfig(logs.logging_config(console_log_level=args.console_log_level))
 
 
-async def startup_intf():
+async def on_startup():
     if not conf.is_loaded():  # sanity check
         raise Berror(f"B62896 invalid config data in startup_intf()")
     try:
-        wgif = db.startup_intf()  # configure new WireGuard interface
-        db.startup_client(wgif)  # add peers to WireGuard interface
+        db.on_startup()  # configure WireGuard, etc.
     except Exception as e:
-        shutdown_intf()
+        db.on_shutdown()
         raise e
 
 
-async def shutdown_intf():
-    db.shutdown_intf()
+async def on_shutdown():
+    db.on_shutdown()
 
 
 async def watch_tls_cert() -> None:
@@ -343,8 +342,8 @@ def entry_point():
         logger.error(f"B50313 DB error (may need to increase db_schema_version): {e}")
         sys.exit(1)
     try:
-        nicegui.app.on_startup(startup_intf)
-        nicegui.app.on_shutdown(shutdown_intf)
+        nicegui.app.on_startup(on_startup)
+        nicegui.app.on_shutdown(on_shutdown)
         nicegui.app.on_startup(watch_tls_cert)
         nicegui.app.docs_url = None  # disable "Docs URLs" to help avoid being identified; see
         nicegui.app.redoc_url = None  # ... https://fastapi.tiangolo.com/tutorial/metadata/
