@@ -84,10 +84,7 @@ lkocc_string = '__login_key_or_coupon_code__'
 class Account(SQLModel, table=True):
     __table_args__ = (sqlalchemy.UniqueConstraint('login'),)  # must have a unique login
     id: Optional[int] = Field(primary_key=True, default=None)
-    login: str = Field(  # used like a username
-        index=True,
-        default_factory=lambda: lk.generate_login_key(lk.login_len),
-    )
+    login: str = Field(index=True, default='')  # 'login' field is used like a username
     key_hash: str = ''  # Argon2 hash of key (used like a hashed password)
     clients_max: int = 7
     created_at: DateTime = Field(
@@ -127,13 +124,13 @@ def new_account(kind: AccountKind, valid_for=TimeDelta(days=10950), parent_accou
     retry_max = 50
     with Session(engine) as session:
         for attempt in range(retry_max):
+            account.login = lk.generate_login_key(lk.login_len)
             try:
                 session.add(account)
                 session.commit()
             except sqlalchemy.exc.IntegrityError:
                 if attempt > 20:
                     logger.warning(f"B09974 duplicate login {account.login} (retry {attempt})")
-                account.login = lk.generate_login_key(lk.login_len)
                 continue
             else:
                 break
