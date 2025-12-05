@@ -329,8 +329,6 @@ class Device(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     account_id: Optional[int] = Field(index=True, foreign_key='account.id')  # device admin--manager
     name: str = ""
-    # hub_peer_id is this device's Intf that connects to the BitBurrow hub, or None if unmanaged
-    hub_peer_id: Optional[int] = Field(index=True, foreign_key='intf.id')
     comment: str = ""
 
 
@@ -339,16 +337,6 @@ def device_count(account_id: int) -> int:
     with Session(engine) as session:
         statement = select(func.count()).select_from(Device).where(Device.account_id == account_id)
         return session.exec(statement).one()
-
-
-def new_device(account_id: int) -> int:  # create a new device and return its id
-    total_devices = device_count(account_id) + 1
-    device = Device(account_id=account_id, name=f"Device {total_devices}")
-    with Session(engine) as session:
-        session.add(device)
-        session.commit()
-    logger.info(f"Created new device: {device.name}")
-    return device.id
 
 
 ###
@@ -405,8 +393,11 @@ class Intf(SQLModel, table=True):
     def ipv6cidr(self) -> str:
         return f'{self.ipv6()}/{128-self.host_bits}'
 
-    def allowed_ips(self) -> str:  # IPv4/subnet,IPv6/subnet
-        return f'{self.ipv4()}/{self.allowed_ipv4_subnet},{self.ipv6()}/{self.allowed_ipv6_subnet}'
+    def ipv4allowed(self) -> str:
+        return f'{self.ipv4()}/{self.allowed_ipv4_subnet}'
+
+    def ipv6allowed(self) -> str:
+        return f'{self.ipv6()}/{self.allowed_ipv6_subnet}'
 
 
 def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> int:
@@ -495,23 +486,36 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
         return intf.id
 
 
-def apply_intf(i: Intf, method: IntfMethod = None) -> str:
+def apply_intf_peer(our: Intf, peer: Intf):
+    # docs: https://www.man7.org/linux/man-pages/man8/wg.8.html
+    net.sudo_wg(
+        (
+            f'set {our.iface()}'
+            + f' peer {peer.pubkey}'
+            # consider: + f' preshared-key !FILE!(peer.preshared_key)}'  # see man page
+            # consider: + f' persistent-keepalive {peer.keepalive}'  # see man page
+            + f' allowed-ips {peer.ipv4allowed()},{peer.ipv6allowed()}'
+        ).split(' ')
+    )
+
+
+def apply_intf(our: Intf, session, method: IntfMethod = None):
     if method is None:
-        method = i.default_method
+        method = our.default_method
     assert (
-        method != IntfMethod.LOCAL or i.default_method == IntfMethod.LOCAL
+        method != IntfMethod.LOCAL or our.default_method == IntfMethod.LOCAL
     ), "B09962 don't run others' configs locally"
     net.sudo_sysctl('net.ipv4.ip_forward=1')
     net.sudo_sysctl('net.ipv6.conf.all.forwarding=1')
     delete_our_wgif(isShutdown=False)
-    wgif = i.iface()
+    wgif = our.iface()
     # configure WireGuard interface; see `systemctl status wg-quick@wg0.service`
     net.sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
     net.sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wgif])
-    net.sudo_ip(['-4', 'address', 'add', 'dev', wgif, i.ipv4cidr()])
-    net.sudo_ip(['-6', 'address', 'add', 'dev', wgif, i.ipv6cidr()])
-    net.sudo_wg(['set', wgif, 'private-key', f'!FILE!{i.privkey}'])
-    net.sudo_wg(['set', wgif, 'listen-port', str(i.backend_port)])
+    net.sudo_ip(['-4', 'address', 'add', 'dev', wgif, our.ipv4cidr()])
+    net.sudo_ip(['-6', 'address', 'add', 'dev', wgif, our.ipv6cidr()])
+    net.sudo_wg(['set', wgif, 'private-key', f'!FILE!{our.privkey}'])
+    net.sudo_wg(['set', wgif, 'listen-port', str(our.backend_port)])
     net.sudo_iptables(
         '--append FORWARD'.split(' ')
         + f'--in-interface {wgif}'.split(' ')
@@ -523,6 +527,69 @@ def apply_intf(i: Intf, method: IntfMethod = None) -> str:
         + ['--out-interface', net.default_route_interface()]
         + '--jump MASQUERADE'.split(' ')
     )
+    if our.base_intf_id is None:
+        statement = select(Intf).where(Intf.base_intf_id == our.id)
+        for peer in session.exec(statement):  # allow configured peers to connect to us
+            apply_intf_peer(our, peer)
+
+
+def new_device(account_id, is_base=True) -> int:
+    total_devices = device_count(account_id) + 1
+    with Session(engine) as session:
+        device = Device(
+            account_id=account_id,
+            name=f'{"Base" if is_base else "Device"} {total_devices}',
+        )
+        session.add(device)
+        session.commit()
+        if is_base:  # create WireGuard connection between the new device and the hub
+            hub_peer_id = new_intf(device_id=device.id, base_intf_id=1)
+            hub = session.exec(select(Intf).where(Intf.id == 1)).one()
+            hub_peer = session.exec(select(Intf).where(Intf.id == hub_peer_id)).one()
+            apply_intf_peer(hub, hub_peer)
+    logger.info(f"Created new base: {device.name}")
+    return device.id
+
+
+def config_script(device_id) -> str:
+    script = list()
+    with Session(engine) as session:
+        for intf in session.exec(select(Intf).where(Intf.device_id == device_id)):
+            if intf.base_intf_id:
+                base = session.exec(select(Intf).where(Intf.id == intf.base_intf_id)).one()
+            # script.append(f'sudo apt install -y wireguard')
+            # script.append(f'opkg update')  # don't do if `wg` is already installed
+            # script.append(f'opkg install wireguard-tools')
+            script.append(f'sysctl net.ipv4.ip_forward=1')
+            script.append(f'sysctl net.ipv6.conf.all.forwarding=1')
+            script.append(f'ip link add dev {intf.iface()} type wireguard')
+            # script.append(f'ip link set mtu 1420 up dev {intf.iface()}')
+            script.append(f'ip -4 address add dev {intf.iface()} {intf.ipv4allowed()}')
+            script.append(f'ip -6 address add dev {intf.iface()} {intf.ipv6allowed()}')
+            script.append(f'echo {intf.privkey} >/tmp/privkey_DJBIRE')
+            script.append(f'wg set {intf.iface()}  \\')
+            script.append(f'    private-key /tmp/privkey_DJBIRE  \\')
+            script.append(f'    peer {base.pubkey}  \\')
+            script.append(
+                f'    endpoint {conf.get('frontend.ips')[0]}:{base.frontend_ports[0]}  \\'
+            )
+            aip4 = ipaddress.ip_network(f"{base.ipv4()}/{intf.allowed_ipv4_subnet}", strict=False)
+            aip6 = ipaddress.ip_network(f"{base.ipv6()}/{intf.allowed_ipv6_subnet}", strict=False)
+            script.append(f'    allowed-ips {aip4},{aip6}')
+            # script.append('''LAN_DEV=$(ip route show default |head -1 |awk '{print $5}')''')
+            # script.append(f'iptables -A FORWARD -i {intf.iface()} -j ACCEPT')
+            # script.append('iptables -t nat -A POSTROUTING -o $LAN_DEV -j MASQUERADE')
+            script.append(f'ip link set up dev {intf.iface()}')
+            # from https://www.wireguard.com/netns/#improved-rule-based-routing
+            script.append(f'wg set {intf.iface()} fwmark {intf.id+24274090}')
+            script.append(f'ip route add default dev {intf.iface()} table {intf.id+83726675}')
+            script.append(f'ip rule add not fwmark {intf.id+24274090} table {intf.id+83726675}')
+            script.append(f'ip rule add table main suppress_prefixlength 0')
+            script.append(f'# echo -n "### NEW IP: " && curl ip.websupport.sk')
+            script.append(f'# read -n1 -s -p "Press any key to close the VPN ... " && echo')
+            script.append(f'# ip rule del table main suppress_prefixlength 0')
+            script.append(f'# ip link del dev {intf.iface()}')
+    return '\n'.join(script) + '\n'
 
 
 def on_startup() -> None:
@@ -530,15 +597,15 @@ def on_startup() -> None:
     with Session(engine) as session:
         hub_device_exists = session.exec(select(sqlalchemy.exists().where(Device.id != None))).one()
         if not hub_device_exists:  # hub Device
-            hub_device = Device(account_id=None, name="BitBurrow hub", hub_peer_id=None)
+            hub_device = Device(account_id=None, name="BitBurrow hub")
             session.add(hub_device)
             session.commit()
-            assert hub_device.id == 1, f"B12466 unexpected {hub_device_id=}"
+            assert hub_device.id == 1, f"B12466 unexpected {hub_device.id=}"
         if not hub_device_exists:  # hub Intf
             hub_intf_id = new_intf(hub_device.id, base_is_hub=True)
             assert hub_intf_id == 1, f"B49296 unexpected {hub_intf_id=}"
         hub_intf = session.exec(select(Intf).where(Intf.id == 1)).one()
-        apply_intf(hub_intf)
+        apply_intf(hub_intf, session)
 
 
 def delete_our_wgif(isShutdown):  # clean up wg network interfaces
@@ -557,46 +624,6 @@ def delete_our_wgif(isShutdown):  # clean up wg network interfaces
 def on_shutdown():
     net.sudo_undo_iptables()
     delete_our_wgif(isShutdown=True)
-
-
-###
-### DB table Client - VPN client device
-###
-
-
-class Client(SQLModel, table=True):
-    __table_args__ = (sqlalchemy.UniqueConstraint('pubkey'),)  # no 2 clients may share a key
-    id: Optional[int] = Field(primary_key=True, default=None)
-    intf_id: int = Field(foreign_key='intf.id')  # the device interface this client connects to
-    pubkey: str
-    preshared_key: str
-    keepalive: int = 23  # 0==disabled
-    account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager or user
-    comment: str = ""
-
-    def set_peer(self, wgif: Intf = None):
-        net.sudo_wg(  # see https://www.man7.org/linux/man-pages/man8/wg.8.html
-            f'set {self.iface()}'.split(' ')
-            + f'peer {self.pubkey}'.split(' ')
-            # consider: + f'preshared-key !FILE!(self.preshared_key)}'  # see man page
-            # consider: + f'persistent-keepalive {self.keepalive}'  # see man page
-            + f'allowed-ips {self.ip_list(wgif)}'.split(' ')
-        )
-
-
-def validate_pubkey(k):
-    if not (42 <= len(k) < 72):
-        raise CredentialsError("B64879 invalid pubkey length")
-    if re.search(r'[^A-Za-z0-9/+=]', k):
-        raise CredentialsError("B16042 invalid pubkey characters")
-
-
-def startup_client(wgif):
-    with Session(engine) as session:
-        statement = select(Client)
-        results = session.exec(statement)
-        for c in results:  # let wg know about each valid peer
-            c.set_peer(wgif)
 
 
 ###
