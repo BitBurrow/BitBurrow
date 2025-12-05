@@ -295,6 +295,12 @@ def checkbox(label='', value=False, icon=None):
         return ui.checkbox(label, value=value)
 
 
+def code_block(text='', language='python'):
+    # docs: https://nicegui.io/documentation/code
+    # languages from "Short name(s)" column here: https://pygments.org/languages/
+    return ui.code(content=text, language=language)
+
+
 def comment(text=''):  # for adding author comments within the .md file
     return None
 
@@ -306,6 +312,7 @@ elements_available = {
     'button': button,
     'floating_button': floating_button,
     'checkbox': checkbox,
+    'code_block': code_block,
     'comment': comment,
 }
 
