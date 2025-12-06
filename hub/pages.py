@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from nicegui import app, ui, Client
+import textwrap
 import os
 import hub.uif as uif
 import hub.db as db
@@ -155,7 +156,7 @@ def home(client: Client):
 @ui.page('/new_base')
 def new_base(client: Client):
     try:
-        auth.require_login(client)
+        lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
         return
     md_path = os.path.join(ui_path, 'new_base.md')
@@ -163,6 +164,28 @@ def new_base(client: Client):
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     idelem = uif.render_page(sections, is_logged_in=True)
+    code1 = textwrap.dedent(  # work around overlapping subnets problem
+        # FIXME: change network.lan.ipaddr only if subnets overlap (maybe ping the default gateway)
+        # FIXME: test if we can remove 4 dhcp lines
+        f'''
+            uci set network.lan.ipaddr='192.168.196.1'
+            uci set network.lan.netmask='255.255.255.0'
+            uci set network.lan.proto='static'
+            uci commit network
+            uci set dhcp.lan.start='100'
+            uci set dhcp.lan.limit='150'
+            uci set dhcp.lan.leasetime='12h'
+            uci commit dhcp
+            /etc/init.d/network restart
+            /etc/init.d/dnsmasq restart
+            rm -f /tmp/dhcp.leases
+            killall -HUP dnsmasq
+            #
+        '''
+    ).strip()
+    device_id = db.new_device(account_id=aid)
+    code2 = db.config_script(device_id)
+    idelem['code_for_local_startup'].set_content(code1 + '\n' + code2)
 
 
 ###
