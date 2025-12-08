@@ -363,14 +363,15 @@ class Intf(SQLModel, table=True):
     host_bits: int = 0  # network size in bits; for IPv4, host_bits = 32 - subnet_prefix
     allowed_ipv4_subnet: int = 32  # our allowed IPs, i.e. AllowedIPs in Peer section of our peer
     allowed_ipv6_subnet: int = 128
-    # base_intf_id is our peer (server) on single-peer interfaces; otherwise None
+    # 'base_intf_id' is our peer (server) on single-peer interfaces; otherwise None
     base_intf_id: Optional[int] = Field(index=True, foreign_key='intf.id')
     privkey: str
     pubkey: str
     backend_port: int
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
     frontend_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
-    other: dict[str, any] = Field(sa_column=Column(JSON))  # all other config options
+    # 'other' is a dict of all other config options, official and custom
+    other: dict[str, any] = Field(sa_column=Column(JSON), default_factory=dict)
     comment: str = ""
     default_method: IntfMethod = IntfMethod.NONE
     model_config = ConfigDict(arbitrary_types_allowed=True)  # for Column(JSON)
@@ -499,38 +500,69 @@ def apply_intf_peer(our: Intf, peer: Intf):
     )
 
 
-def apply_intf(our: Intf, session, method: IntfMethod = None):
-    if method is None:
-        method = our.default_method
-    assert (
-        method != IntfMethod.LOCAL or our.default_method == IntfMethod.LOCAL
-    ), "B09962 don't run others' configs locally"
-    net.sudo_sysctl('net.ipv4.ip_forward=1')
-    net.sudo_sysctl('net.ipv6.conf.all.forwarding=1')
-    delete_our_wgif(isShutdown=False)
-    wgif = our.iface()
-    # configure WireGuard interface; see `systemctl status wg-quick@wg0.service`
-    net.sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
-    net.sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wgif])
-    net.sudo_ip(['-4', 'address', 'add', 'dev', wgif, our.ipv4cidr()])
-    net.sudo_ip(['-6', 'address', 'add', 'dev', wgif, our.ipv6cidr()])
-    net.sudo_wg(['set', wgif, 'private-key', f'!FILE!{our.privkey}'])
-    net.sudo_wg(['set', wgif, 'listen-port', str(our.backend_port)])
-    net.sudo_iptables(
-        '--append FORWARD'.split(' ')
-        + f'--in-interface {wgif}'.split(' ')
-        + '--jump ACCEPT'.split(' ')
-    )
-    net.sudo_iptables(
-        '--table nat'.split(' ')
-        + '--append POSTROUTING'.split(' ')
-        + ['--out-interface', net.default_route_interface()]
-        + '--jump MASQUERADE'.split(' ')
-    )
-    if our.base_intf_id is None:
-        statement = select(Intf).where(Intf.base_intf_id == our.id)
-        for peer in session.exec(statement):  # allow configured peers to connect to us
-            apply_intf_peer(our, peer)
+def get_conf(intf_id) -> tuple:
+    """Return config details for one WireGuard interface on one device (a .conf file of data)."""
+    interface = dict()
+    peers = list()
+    with Session(engine) as session:
+        intf = session.exec(select(Intf).where(Intf.id == intf_id)).one()
+        interface['ListenPort'] = str(intf.backend_port)
+        interface['PrivateKey'] = intf.privkey
+        interface['Address'] = f'{intf.ipv4cidr()},{intf.ipv6cidr()}'
+        if intf.other.get('DNS', None):
+            interface['DNS'] = intf.other['DNS']
+        interface['Name'] = intf.iface()  # non-standard conf
+        if intf.base_intf_id:  # single-peer
+            base = session.exec(select(Intf).where(Intf.id == intf.base_intf_id)).one()
+            p = dict()
+            p['PublicKey'] = intf.pubkey
+            aip4 = ipaddress.ip_network(f"{base.ipv4()}/{intf.allowed_ipv4_subnet}", strict=False)
+            aip6 = ipaddress.ip_network(f"{base.ipv6()}/{intf.allowed_ipv6_subnet}", strict=False)
+            p['AllowedIPs'] = f'{aip4},{aip6}'
+            p['Endpoint'] = f'{conf.get('frontend.ips')[0]}:{base.frontend_ports[0]}'
+            peers.append(p)
+        else:  # for multi-peer, loop through them
+            statement = select(Intf).where(Intf.base_intf_id == intf.id)
+            for peer in session.exec(statement):
+                p = dict()
+                p['PublicKey'] = peer.pubkey
+                p['AllowedIPs'] = f'{peer.ipv4allowed()},{peer.ipv6allowed()}'
+                p['Endpoint'] = f'{conf.get('frontend.ips')[0]}:{intf.frontend_ports[0]}'
+                peers.append(p)
+    return (interface, peers)
+
+
+def methodize(conf: tuple[dict, list[dict]], method: IntfMethod = None) -> str:
+    if method == IntfMethod.LOCAL:
+        net.sudo_sysctl('net.ipv4.ip_forward=1')
+        net.sudo_sysctl('net.ipv6.conf.all.forwarding=1')
+        delete_our_wgif(isShutdown=False)
+        wgif = conf[0]['Name']
+        addr = conf[0]['Address'].split(',')
+        assert len(addr) == 2
+        # configure WireGuard interface; see `systemctl status wg-quick@wg0.service`
+        net.sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
+        net.sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wgif])
+        net.sudo_ip(['-4', 'address', 'add', 'dev', wgif, addr[0]])
+        net.sudo_ip(['-6', 'address', 'add', 'dev', wgif, addr[1]])
+        net.sudo_wg(['set', wgif, 'private-key', f'!FILE!{conf[0]['PrivateKey']}'])
+        if listen_port := conf[0].get('ListenPort', None):
+            net.sudo_wg(['set', wgif, 'listen-port', str(listen_port)])
+        net.sudo_iptables(f'--append FORWARD --in-interface {wgif} --jump ACCEPT'.split(' '))
+        net.sudo_iptables(
+            f'--table nat --append POSTROUTING --out-interface'.split(' ')
+            + f'{net.default_route_interface()} --jump MASQUERADE'.split(' ')
+        )
+        for peer in conf[1]:  # configured peers
+            # docs: https://www.man7.org/linux/man-pages/man8/wg.8.html
+            net.sudo_wg(
+                (
+                    f'set {wgif} peer {peer['PublicKey']}'
+                    # consider: + f' preshared-key !FILE!(peer['PresharedKey'])}'
+                    # consider: + f' persistent-keepalive {peer['PersistentKeepalive']}'
+                    + f' allowed-ips {peer['AllowedIPs']}'
+                ).split(' ')
+            )
 
 
 def new_device(account_id, is_base=True) -> int:
@@ -604,8 +636,8 @@ def on_startup() -> None:
         if not hub_device_exists:  # hub Intf
             hub_intf_id = new_intf(hub_device.id, base_is_hub=True)
             assert hub_intf_id == 1, f"B49296 unexpected {hub_intf_id=}"
-        hub_intf = session.exec(select(Intf).where(Intf.id == 1)).one()
-        apply_intf(hub_intf, session)
+    hub_conf = get_conf(intf_id=1)
+    methodize(hub_conf, method=IntfMethod.LOCAL)
 
 
 def delete_our_wgif(isShutdown):  # clean up wg network interfaces
