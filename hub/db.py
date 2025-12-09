@@ -498,6 +498,7 @@ def get_conf(intf_id) -> tuple:
         interface['Address'] = f'{intf.ipv4cidr()},{intf.ipv6cidr()}'
         if intf.other.get('DNS', None):
             interface['DNS'] = intf.other['DNS']
+        interface['FwMark'] = str(intf.id + 24274090)
         interface['Name'] = intf.iface()  # non-standard conf
         if intf.base_intf_id:  # single-peer
             base = session.exec(select(Intf).where(Intf.id == intf.base_intf_id)).one()
@@ -538,10 +539,12 @@ def get_conf_activate_peer(intf_id) -> tuple:
 
 
 def methodize(conf: tuple[dict, list[dict]], method: IntfMethod = None) -> str:
+    i, peers = conf  # interface, peers
+    script = list()
+    wgif = i['Name']
     if method == IntfMethod.LOCAL:
-        wgif = conf[0]['Name']
         # configure WireGuard interface; see `systemctl status wg-quick@wg0.service`
-        if addresses := conf[0].get('Address', None):  # missing when activating peers
+        if addresses := i.get('Address', None):  # missing when activating peers
             net.sudo_sysctl('net.ipv4.ip_forward=1')
             net.sudo_sysctl('net.ipv6.conf.all.forwarding=1')
             delete_our_wgif(isShutdown=False)
@@ -551,24 +554,57 @@ def methodize(conf: tuple[dict, list[dict]], method: IntfMethod = None) -> str:
             net.sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wgif])
             net.sudo_ip(['-4', 'address', 'add', 'dev', wgif, addr[0]])
             net.sudo_ip(['-6', 'address', 'add', 'dev', wgif, addr[1]])
-            net.sudo_wg(['set', wgif, 'private-key', f'!FILE!{conf[0]['PrivateKey']}'])
-            if listen_port := conf[0].get('ListenPort', None):
+            net.sudo_wg(['set', wgif, 'private-key', f'!FILE!{i['PrivateKey']}'])
+            if listen_port := i.get('ListenPort', None):
                 net.sudo_wg(['set', wgif, 'listen-port', str(listen_port)])
             net.sudo_iptables(f'--append FORWARD --in-interface {wgif} --jump ACCEPT'.split(' '))
             net.sudo_iptables(
                 f'--table nat --append POSTROUTING --out-interface'.split(' ')
                 + f'{net.default_route_interface()} --jump MASQUERADE'.split(' ')
             )
-        for peer in conf[1]:  # configured peers
+        for p in peers:  # configured peers
             # docs: https://www.man7.org/linux/man-pages/man8/wg.8.html
             net.sudo_wg(
                 (
-                    f'set {wgif} peer {peer['PublicKey']}'
+                    f'set {wgif} peer {p['PublicKey']}'
                     # consider: + f' preshared-key !FILE!(peer['PresharedKey'])}'
                     # consider: + f' persistent-keepalive {peer['PersistentKeepalive']}'
-                    + f' allowed-ips {peer['AllowedIPs']}'
+                    + f' allowed-ips {p['AllowedIPs']}'
                 ).split(' ')
             )
+    elif method == IntfMethod.BASH:
+        addr = i['Address'].split(',')
+        assert len(addr) == 2
+        # script.append(f'sudo apt install -y wireguard')
+        # script.append(f'opkg update')  # don't do if `wg` is already installed
+        # script.append(f'opkg install wireguard-tools')
+        script.append(f'sysctl net.ipv4.ip_forward=1')
+        script.append(f'sysctl net.ipv6.conf.all.forwarding=1')
+        script.append(f'ip link add dev {wgif} type wireguard')
+        # script.append(f'ip link set mtu 1420 up dev {wgif}')
+        script.append(f'ip -4 address add dev {wgif} {addr[0]}')
+        script.append(f'ip -6 address add dev {wgif} {addr[1]}')
+        script.append(f'echo {i['PrivateKey']} >/tmp/privkey_DJBIRE')
+        script.append(f'wg set {wgif} private-key /tmp/privkey_DJBIRE')
+        for p in peers:  # configured peers
+            script.append(f'wg set {wgif} peer {p['PublicKey']}  \\')
+            script.append(f'    endpoint {p['Endpoint']}  \\')
+            script.append(f'    allowed-ips {p['AllowedIPs']}')
+        # script.append('''LAN_DEV=$(ip route show default |head -1 |awk '{print $5}')''')
+        # script.append(f'iptables -A FORWARD -i {wgif} -j ACCEPT')
+        # script.append('iptables -t nat -A POSTROUTING -o $LAN_DEV -j MASQUERADE')
+        script.append(f'ip link set up dev {wgif}')
+        # from https://www.wireguard.com/netns/#improved-rule-based-routing
+        tableno = str(int(i['FwMark']) + 59452585)
+        script.append(f'wg set {wgif} fwmark {i['FwMark']}')
+        script.append(f'ip route add default dev {wgif} table {tableno}')
+        script.append(f'ip rule add not fwmark {i['FwMark']} table {tableno}')
+        script.append(f'ip rule add table main suppress_prefixlength 0')
+        script.append(f'# echo -n "### NEW IP: " && curl ip.websupport.sk')
+        script.append(f'# read -n1 -s -p "Press any key to close the VPN ... " && echo')
+        script.append(f'# ip rule del table main suppress_prefixlength 0')
+        script.append(f'# ip link del dev {wgif}')
+    return '\n'.join(script) + '\n'
 
 
 def new_device(account_id, is_base=True) -> int:
@@ -588,45 +624,19 @@ def new_device(account_id, is_base=True) -> int:
     return device.id
 
 
-def config_script(device_id) -> str:
-    script = list()
+def hub_peer_id(device_id) -> int | None:
+    """Returns the id of the intf on the device which connects to the hub, or None if unmanaged."""
     with Session(engine) as session:
-        for intf in session.exec(select(Intf).where(Intf.device_id == device_id)):
-            if intf.base_intf_id:
-                base = session.exec(select(Intf).where(Intf.id == intf.base_intf_id)).one()
-            # script.append(f'sudo apt install -y wireguard')
-            # script.append(f'opkg update')  # don't do if `wg` is already installed
-            # script.append(f'opkg install wireguard-tools')
-            script.append(f'sysctl net.ipv4.ip_forward=1')
-            script.append(f'sysctl net.ipv6.conf.all.forwarding=1')
-            script.append(f'ip link add dev {intf.iface()} type wireguard')
-            # script.append(f'ip link set mtu 1420 up dev {intf.iface()}')
-            script.append(f'ip -4 address add dev {intf.iface()} {intf.ipv4allowed()}')
-            script.append(f'ip -6 address add dev {intf.iface()} {intf.ipv6allowed()}')
-            script.append(f'echo {intf.privkey} >/tmp/privkey_DJBIRE')
-            script.append(f'wg set {intf.iface()}  \\')
-            script.append(f'    private-key /tmp/privkey_DJBIRE  \\')
-            script.append(f'    peer {base.pubkey}  \\')
-            script.append(
-                f'    endpoint {conf.get('frontend.ips')[0]}:{base.frontend_ports[0]}  \\'
-            )
-            aip4 = ipaddress.ip_network(f"{base.ipv4()}/{intf.allowed_ipv4_subnet}", strict=False)
-            aip6 = ipaddress.ip_network(f"{base.ipv6()}/{intf.allowed_ipv6_subnet}", strict=False)
-            script.append(f'    allowed-ips {aip4},{aip6}')
-            # script.append('''LAN_DEV=$(ip route show default |head -1 |awk '{print $5}')''')
-            # script.append(f'iptables -A FORWARD -i {intf.iface()} -j ACCEPT')
-            # script.append('iptables -t nat -A POSTROUTING -o $LAN_DEV -j MASQUERADE')
-            script.append(f'ip link set up dev {intf.iface()}')
-            # from https://www.wireguard.com/netns/#improved-rule-based-routing
-            script.append(f'wg set {intf.iface()} fwmark {intf.id+24274090}')
-            script.append(f'ip route add default dev {intf.iface()} table {intf.id+83726675}')
-            script.append(f'ip rule add not fwmark {intf.id+24274090} table {intf.id+83726675}')
-            script.append(f'ip rule add table main suppress_prefixlength 0')
-            script.append(f'# echo -n "### NEW IP: " && curl ip.websupport.sk')
-            script.append(f'# read -n1 -s -p "Press any key to close the VPN ... " && echo')
-            script.append(f'# ip rule del table main suppress_prefixlength 0')
-            script.append(f'# ip link del dev {intf.iface()}')
-    return '\n'.join(script) + '\n'
+        try:
+            intf = session.exec(
+                select(Intf).where(
+                    Intf.device_id == device_id,
+                    Intf.base_intf_id == 1,
+                )
+            ).one()
+            return intf.id
+        except (sqlalchemy.exc.NoResultFound, sqlalchemy.exc.MultipleResultsFound):
+            return None
 
 
 def on_startup() -> None:

@@ -184,7 +184,8 @@ def new_base(client: Client):
         '''
     ).strip()
     device_id = db.new_device(account_id=aid)
-    code2 = db.config_script(device_id)
+    conf = db.get_conf(db.hub_peer_id(device_id))
+    code2 = db.methodize(conf, db.IntfMethod.BASH)
     idelem['code_for_local_startup'].set_content(code1 + '\n' + code2)
 
 
