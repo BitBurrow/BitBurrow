@@ -544,7 +544,16 @@ def methodize(conf: tuple[dict, list[dict]], method: IntfMethod = None) -> str:
     i, peers = conf  # interface, peers
     script = list()
     wgif = i['Name']
-    if method == IntfMethod.LOCAL:
+    if method == IntfMethod.CONF:
+        script.append('[Interface]')
+        for k, v in i.items():
+            script.append(f'{k} = {v}')
+        for p in peers:
+            script.append('')
+            script.append('[Peer]')
+            for k, v in p.items():
+                script.append(f'{k} = {v}')
+    elif method == IntfMethod.LOCAL:
         # configure WireGuard interface; see `systemctl status wg-quick@wg0.service`
         if addresses := i.get('Address', None):  # missing when activating peers
             net.sudo_sysctl('net.ipv4.ip_forward=1')
