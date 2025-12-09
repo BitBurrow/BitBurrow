@@ -487,19 +487,6 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
         return intf.id
 
 
-def apply_intf_peer(our: Intf, peer: Intf):
-    # docs: https://www.man7.org/linux/man-pages/man8/wg.8.html
-    net.sudo_wg(
-        (
-            f'set {our.iface()}'
-            + f' peer {peer.pubkey}'
-            # consider: + f' preshared-key !FILE!(peer.preshared_key)}'  # see man page
-            # consider: + f' persistent-keepalive {peer.keepalive}'  # see man page
-            + f' allowed-ips {peer.ipv4allowed()},{peer.ipv6allowed()}'
-        ).split(' ')
-    )
-
-
 def get_conf(intf_id) -> tuple:
     """Return config details for one WireGuard interface on one device (a .conf file of data)."""
     interface = dict()
@@ -532,27 +519,46 @@ def get_conf(intf_id) -> tuple:
     return (interface, peers)
 
 
+def get_conf_activate_peer(intf_id) -> tuple:
+    """Return config details to update base (intf_id's peer) for connecting to intf_id."""
+    interface = dict()
+    peers = list()
+    with Session(engine) as session:
+        intf = session.exec(select(Intf).where(Intf.id == intf_id)).one()
+        assert intf.base_intf_id is not None
+        base = session.exec(select(Intf).where(Intf.id == intf.base_intf_id)).one()
+        interface['Name'] = base.iface()
+        p = dict()
+        p['PublicKey'] = intf.pubkey
+        aip4 = ipaddress.ip_network(f"{base.ipv4()}/{intf.allowed_ipv4_subnet}", strict=False)
+        aip6 = ipaddress.ip_network(f"{base.ipv6()}/{intf.allowed_ipv6_subnet}", strict=False)
+        p['AllowedIPs'] = f'{aip4},{aip6}'
+        peers.append(p)
+    return (interface, peers)
+
+
 def methodize(conf: tuple[dict, list[dict]], method: IntfMethod = None) -> str:
     if method == IntfMethod.LOCAL:
-        net.sudo_sysctl('net.ipv4.ip_forward=1')
-        net.sudo_sysctl('net.ipv6.conf.all.forwarding=1')
-        delete_our_wgif(isShutdown=False)
         wgif = conf[0]['Name']
-        addr = conf[0]['Address'].split(',')
-        assert len(addr) == 2
         # configure WireGuard interface; see `systemctl status wg-quick@wg0.service`
-        net.sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
-        net.sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wgif])
-        net.sudo_ip(['-4', 'address', 'add', 'dev', wgif, addr[0]])
-        net.sudo_ip(['-6', 'address', 'add', 'dev', wgif, addr[1]])
-        net.sudo_wg(['set', wgif, 'private-key', f'!FILE!{conf[0]['PrivateKey']}'])
-        if listen_port := conf[0].get('ListenPort', None):
-            net.sudo_wg(['set', wgif, 'listen-port', str(listen_port)])
-        net.sudo_iptables(f'--append FORWARD --in-interface {wgif} --jump ACCEPT'.split(' '))
-        net.sudo_iptables(
-            f'--table nat --append POSTROUTING --out-interface'.split(' ')
-            + f'{net.default_route_interface()} --jump MASQUERADE'.split(' ')
-        )
+        if addresses := conf[0].get('Address', None):  # missing when activating peers
+            net.sudo_sysctl('net.ipv4.ip_forward=1')
+            net.sudo_sysctl('net.ipv6.conf.all.forwarding=1')
+            delete_our_wgif(isShutdown=False)
+            addr = addresses.split(',')
+            assert len(addr) == 2
+            net.sudo_ip(['link', 'add', 'dev', wgif, 'type', 'wireguard'])
+            net.sudo_ip(['link', 'set', 'mtu', '1420', 'up', 'dev', wgif])
+            net.sudo_ip(['-4', 'address', 'add', 'dev', wgif, addr[0]])
+            net.sudo_ip(['-6', 'address', 'add', 'dev', wgif, addr[1]])
+            net.sudo_wg(['set', wgif, 'private-key', f'!FILE!{conf[0]['PrivateKey']}'])
+            if listen_port := conf[0].get('ListenPort', None):
+                net.sudo_wg(['set', wgif, 'listen-port', str(listen_port)])
+            net.sudo_iptables(f'--append FORWARD --in-interface {wgif} --jump ACCEPT'.split(' '))
+            net.sudo_iptables(
+                f'--table nat --append POSTROUTING --out-interface'.split(' ')
+                + f'{net.default_route_interface()} --jump MASQUERADE'.split(' ')
+            )
         for peer in conf[1]:  # configured peers
             # docs: https://www.man7.org/linux/man-pages/man8/wg.8.html
             net.sudo_wg(
@@ -576,10 +582,9 @@ def new_device(account_id, is_base=True) -> int:
         session.commit()
         if is_base:  # create WireGuard connection between the new device and the hub
             hub_peer_id = new_intf(device_id=device.id, base_intf_id=1)
-            hub = session.exec(select(Intf).where(Intf.id == 1)).one()
-            hub_peer = session.exec(select(Intf).where(Intf.id == hub_peer_id)).one()
-            apply_intf_peer(hub, hub_peer)
-    logger.info(f"Created new base: {device.name}")
+            hub_peer_conf = get_conf_activate_peer(hub_peer_id)
+            methodize(hub_peer_conf, IntfMethod.LOCAL)
+            logger.info(f"Created new base: {device.name}")
     return device.id
 
 
