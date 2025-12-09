@@ -491,11 +491,15 @@ def get_conf(intf_id) -> tuple:
     """Return config details for one WireGuard interface on one device (a .conf file of data)."""
     interface = dict()
     peers = list()
+    # WireGuard config file docs: https://git.zx2c4.com/wireguard-tools/about/src/man/wg.8
     with Session(engine) as session:
         intf = session.exec(select(Intf).where(Intf.id == intf_id)).one()
         interface['ListenPort'] = str(intf.backend_port)
         interface['PrivateKey'] = intf.privkey
-        interface['Address'] = f'{intf.ipv4cidr()},{intf.ipv6cidr()}'
+        if intf.base_intf_id:  # single-peer
+            interface['Address'] = f'{intf.ipv4allowed()},{intf.ipv6allowed()}'
+        else:
+            interface['Address'] = f'{intf.ipv4cidr()},{intf.ipv6cidr()}'
         if intf.other.get('DNS', None):
             interface['DNS'] = intf.other['DNS']
         interface['FwMark'] = str(intf.id + 24274090)
@@ -503,7 +507,7 @@ def get_conf(intf_id) -> tuple:
         if intf.base_intf_id:  # single-peer
             base = session.exec(select(Intf).where(Intf.id == intf.base_intf_id)).one()
             p = dict()
-            p['PublicKey'] = intf.pubkey
+            p['PublicKey'] = base.pubkey
             aip4 = ipaddress.ip_network(f"{base.ipv4()}/{intf.allowed_ipv4_subnet}", strict=False)
             aip6 = ipaddress.ip_network(f"{base.ipv6()}/{intf.allowed_ipv6_subnet}", strict=False)
             p['AllowedIPs'] = f'{aip4},{aip6}'
@@ -531,9 +535,7 @@ def get_conf_activate_peer(intf_id) -> tuple:
         interface['Name'] = base.iface()
         p = dict()
         p['PublicKey'] = intf.pubkey
-        aip4 = ipaddress.ip_network(f"{base.ipv4()}/{intf.allowed_ipv4_subnet}", strict=False)
-        aip6 = ipaddress.ip_network(f"{base.ipv6()}/{intf.allowed_ipv6_subnet}", strict=False)
-        p['AllowedIPs'] = f'{aip4},{aip6}'
+        p['AllowedIPs'] = f'{intf.ipv4allowed()},{intf.ipv6allowed()}'
         peers.append(p)
     return (interface, peers)
 
