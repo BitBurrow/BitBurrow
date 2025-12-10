@@ -519,7 +519,7 @@ def get_conf(intf_id) -> tuple:
                 p = dict()
                 p['PublicKey'] = peer.pubkey
                 p['AllowedIPs'] = f'{peer.ipv4allowed()},{peer.ipv6allowed()}'
-                p['Endpoint'] = f'{conf.get('frontend.ips')[0]}:{intf.frontend_ports[0]}'
+                # Endpoint not needed on multi-peer end
                 peers.append(p)
     return (interface, peers)
 
@@ -536,6 +536,7 @@ def get_conf_activate_peer(intf_id) -> tuple:
         p = dict()
         p['PublicKey'] = intf.pubkey
         p['AllowedIPs'] = f'{intf.ipv4allowed()},{intf.ipv6allowed()}'
+        # Endpoint not needed on multi-peer end
         peers.append(p)
     return (interface, peers)
 
