@@ -10,6 +10,9 @@ import secrets
 import socket
 import subprocess
 import tempfile
+import hub.util as util
+
+Berror = util.Berror
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -163,8 +166,10 @@ def run_external(args: list[str], input: str | None = None):
         stderr=subprocess.PIPE,
     )
     if proc.returncode != 0:
-        error = proc.stderr.decode().rstrip()
-        raise RuntimeError(error if error else f"{proc.stdout.decode().rstrip()}")
+        error = proc.stderr.decode().rstrip() or proc.stdout.decode().rstrip()
+        if '' in args:
+            raise Berror(f"B74063 {error} probably caused by empty arg in {arg_string(args)}")
+        raise Berror(f"B57012 {arg_string(args)} failed: {error}")
     return proc.stdout.decode().rstrip()
 
 

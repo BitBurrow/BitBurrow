@@ -171,11 +171,7 @@ def set_logging(args):
 async def on_startup():
     if not conf.is_loaded():  # sanity check
         raise Berror(f"B62896 invalid config data in startup_intf()")
-    try:
-        db.on_startup()  # configure WireGuard, etc.
-    except Exception as e:
-        db.on_shutdown()
-        raise e
+    db.on_startup()  # configure WireGuard, etc.
 
 
 async def on_shutdown():
