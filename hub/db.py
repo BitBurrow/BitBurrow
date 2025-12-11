@@ -593,8 +593,8 @@ def methodize(conf: tuple[dict, list[dict]], method: IntfMethod = None) -> str:
             elif cmds[0] == '#':
                 pass
             else:
-                assert False, "B79592 unknown command {cmds[0]}"
-        elif method == IntfMethod.BASH:
+                assert False, f"B79592 unknown command {cmds[0]}"
+        else:
             n = 4  # replace '!FILE!...' args with a temp file (4 is arbitrary)
             for m in re.finditer(r' !FILE!([^\s]+)(?=\s|$)', cmd):
                 output(f'''TMPKEY{n}="$(mktemp)"''')
@@ -616,8 +616,6 @@ def methodize(conf: tuple[dict, list[dict]], method: IntfMethod = None) -> str:
     elif method == IntfMethod.LOCAL or method == IntfMethod.BASH:
         # configure WireGuard interface; see `systemctl status wg-quick@wg0.service`
         # do(f'sudo apt install -y wireguard')
-        # do(f'opkg update')  # don't do if `wg` is already installed
-        # do(f'opkg install wireguard-tools')
         if addresses := i.get('Address', None):  # missing when activating peers
             do(f'sysctl net.ipv4.ip_forward=1')
             do(f'sysctl net.ipv6.conf.all.forwarding=1')
@@ -651,6 +649,39 @@ def methodize(conf: tuple[dict, list[dict]], method: IntfMethod = None) -> str:
                 f'''# DISCONNECT: ip rule del table main suppress_prefixlength 0;'''
                 + f''' ip link del dev {wgif}'''
             )
+    elif method == IntfMethod.UCI:
+        # do(f'opkg update')  # don't do if `wg` is already installed
+        # do(f'opkg install wireguard-tools')
+        if addresses := i.get('Address', None):  # missing when activating peers
+            addr = addresses.split(',')
+            assert len(addr) == 2
+            do(f'uci set network.{wgif}=interface')
+            do(f'uci set network.{wgif}.proto=wireguard')
+            do(f'uci set network.{wgif}.private_key={i['PrivateKey']}')
+            do(f'uci add_list network.{wgif}.addresses="{addr[0]}"')
+            do(f'uci add_list network.{wgif}.addresses="{addr[1]}"')
+            if listen_port := i.get('ListenPort', None):
+                do(f'uci set network.{wgif}.listen_port={listen_port}')
+        for p in peers:  # configured peers
+            do(f'PEER_ID="$(uci add network wireguard_{wgif})"')
+            do(f'uci set network.$PEER_ID.public_key={p['PublicKey']}')
+            do(f'uci add_list network.$PEER_ID.allowed_ips={p['AllowedIPs']}')
+            if endpoint := p.get('Endpoint', None):
+                host, port = endpoint.rsplit(':', 1)
+                do(f'uci set network.$PEER_ID.endpoint_host={host}')
+                do(f'uci set network.$PEER_ID.endpoint_port={port}')
+            if preshared := p.get('PresharedKey', None):
+                do(f'uci set network.$PEER_ID.preshared_key={preshared}')
+            if keepalive := p.get('PersistentKeepalive', None):
+                do(f'uci set network.$PEER_ID.persistent_keepalive={keepalive}')
+        # do('uci commit network')  # no need to write to permanent storage
+        do('/etc/init.d/network reload')
+        # DISCONNECT:
+        # uci delete network.wgbb1
+        # for s in $(uci show network |grep "=wireguard_wgbb1" |cut -d. -f2 |cut -d= -f1); do uci delete network.$s; done
+        # /etc/init.d/network reload
+    else:
+        raise Berror(f"B10323 unknown IntfMethod {method}")
     return '\n'.join(out) + '\n'
 
 
