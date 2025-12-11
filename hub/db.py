@@ -367,7 +367,7 @@ class Intf(SQLModel, table=True):
     base_intf_id: Optional[int] = Field(index=True, foreign_key='intf.id')
     privkey: str
     pubkey: str
-    backend_port: int
+    backend_port: int | None = Field(default=None)
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
     frontend_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
     # 'other' is a dict of all other config options, official and custom
@@ -448,8 +448,9 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
         intf.frontend_ports = [conf.get('frontend.wg_port')]
         intf.default_method = IntfMethod.LOCAL
     else:
-        intf.backend_port = 123
-        intf.frontend_ports = [123]
+        if not base_intf_id:  # in-bound port needed only on multi-peer interfaces
+            intf.backend_port = 123
+            intf.frontend_ports = [123]
         intf.default_method = IntfMethod.UCI
     # now find an unused host_id in the network
     host_id_min = 39
@@ -494,7 +495,8 @@ def get_conf(intf_id) -> tuple:
     # WireGuard config file docs: https://git.zx2c4.com/wireguard-tools/about/src/man/wg-quick.8
     with Session(engine) as session:
         intf = session.exec(select(Intf).where(Intf.id == intf_id)).one()
-        interface['ListenPort'] = str(intf.backend_port)
+        if intf.backend_port:
+            interface['ListenPort'] = str(intf.backend_port)
         interface['PrivateKey'] = intf.privkey
         if intf.base_intf_id:  # single-peer
             interface['Address'] = f'{intf.ipv4allowed()},{intf.ipv6allowed()}'
