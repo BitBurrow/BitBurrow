@@ -49,6 +49,7 @@ def ip_route_get(item: str):  # get default route
 
 
 def default_route_interface():  # network interface of default route
+    # via CLI: ip route get 1.0.0.0 |sed -n 's/.* dev \([^ ]*\).*/\1/p'
     return ip_route_get('dev')
 
 

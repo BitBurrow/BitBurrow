@@ -164,30 +164,12 @@ def new_base(client: Client):
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     idelem = uif.render_page(sections, is_logged_in=True)
-    code1 = textwrap.dedent(  # work around overlapping subnets problem
-        # FIXME: change network.lan.ipaddr only if subnets overlap (maybe ping the default gateway)
-        # FIXME: test if we can remove 4 dhcp lines
-        f'''
-            uci set network.lan.ipaddr='192.168.196.1'
-            uci set network.lan.netmask='255.255.255.0'
-            uci set network.lan.proto='static'
-            uci commit network
-            uci set dhcp.lan.start='100'
-            uci set dhcp.lan.limit='150'
-            uci set dhcp.lan.leasetime='12h'
-            uci commit dhcp
-            /etc/init.d/network restart
-            /etc/init.d/dnsmasq restart
-            rm -f /tmp/dhcp.leases
-            killall -HUP dnsmasq
-            #
-        '''
-    ).strip()
     device_id = db.new_device(account_id=aid)
     conf = db.get_conf(db.hub_peer_id(device_id))
-    code2 = db.methodize(conf, db.IntfMethod.BASH)
-    code3 = db.methodize(conf, db.IntfMethod.CONF)
-    idelem['code_for_local_startup'].set_content(code1 + '\n' + code2 + '\n---\n' + code3)
+    code = db.methodize(conf, 'linux.openwrt')
+    # code3 = db.methodize(conf, db.IntfMethod.CONF)
+    # code4 = db.methodize(conf, db.IntfMethod.UCI)
+    idelem['code_for_local_startup'].set_content(code)
 
 
 ###

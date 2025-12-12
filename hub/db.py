@@ -504,6 +504,8 @@ def get_conf(intf_id) -> tuple:
             interface['Address'] = f'{intf.ipv4cidr()},{intf.ipv6cidr()}'
         if intf.other.get('DNS', None):
             interface['DNS'] = intf.other['DNS']
+        interface['FwMark'] = str(intf.id + 24274090)
+        interface['Table'] = str(intf.id + 83726675)
         interface['Name'] = intf.iface()  # non-standard conf
         if intf.base_intf_id:  # single-peer
             base = session.exec(select(Intf).where(Intf.id == intf.base_intf_id)).one()
@@ -522,24 +524,6 @@ def get_conf(intf_id) -> tuple:
                 p['AllowedIPs'] = f'{peer.ipv4allowed()},{peer.ipv6allowed()}'
                 # Endpoint not needed on multi-peer end
                 peers.append(p)
-        if intf.id == 1:  # routing on the hub
-            # FIXME: consider dict() → defaultdict(list) to allow multiple 'PostUp' entries
-            interface['PostUp'] = (
-                '''iptables --append FORWARD --in-interface %i --jump ACCEPT;'''
-                + ''' iptables --table nat --append POSTROUTING --out-interface'''
-                + r''' $(ip route get 1.0.0.0 |sed -n 's/.* dev \([^ ]*\).*/\1/p')'''
-                + ''' --jump MASQUERADE'''
-            )
-        else:  # routing on Linux clients
-            # from https://www.wireguard.com/netns/#improved-rule-based-routing
-            fwmark = intf.id + 24274090
-            table = fwmark + 59452585
-            interface['PostUp'] = (
-                f'wg set %i fwmark {fwmark};'
-                + f''' ip route add default dev %i table {table};'''
-                + f''' ip rule add not fwmark {fwmark} table {table};'''
-                + f''' ip rule add table main suppress_prefixlength 0'''
-            )
     return (interface, peers)
 
 
@@ -560,7 +544,8 @@ def get_conf_activate_peer(intf_id) -> tuple:
     return (interface, peers)
 
 
-def methodize(conf: tuple[dict, list[dict]], method: IntfMethod = None) -> str:
+def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
+    method = IntfMethod.NONE
     i, peers = conf  # interface, peers
     out = list()
     wgif = i['Name']
@@ -579,10 +564,6 @@ def methodize(conf: tuple[dict, list[dict]], method: IntfMethod = None) -> str:
 
     def do(cmd: str):
         if method == IntfMethod.LOCAL:
-            cmd = cmd.replace(  # I'm sorry for this, but it works
-                r'''$(ip route get 1.0.0.0 |sed -n 's/.* dev \([^ ]*\).*/\1/p')''',
-                net.default_route_interface(),
-            )
             cmds = cmd.split(' ')
             if cmds[0] == 'sysctl':
                 net.sudo_sysctl(cmds[1:])
@@ -606,84 +587,128 @@ def methodize(conf: tuple[dict, list[dict]], method: IntfMethod = None) -> str:
                 n += 1
             output(cmd)
 
-    if method == IntfMethod.CONF:
-        out.append('[Interface]')
-        for k, v in i.items():
-            out.append(f'{k} = {v}')
-        for p in peers:
-            out.append('')
-            out.append('[Peer]')
-            for k, v in p.items():
+    def apply_conf():
+        if method == IntfMethod.CONF:
+            out.append('[Interface]')
+            for k, v in i.items():
                 out.append(f'{k} = {v}')
-    elif method == IntfMethod.LOCAL or method == IntfMethod.BASH:
-        # configure WireGuard interface; see `systemctl status wg-quick@wg0.service`
-        # do(f'sudo apt install -y wireguard')
-        if addresses := i.get('Address', None):  # missing when activating peers
-            do(f'sysctl net.ipv4.ip_forward=1')
-            do(f'sysctl net.ipv6.conf.all.forwarding=1')
-            addr = addresses.split(',')
-            assert len(addr) == 2
-            do(f'ip link add dev {wgif} type wireguard')
-            do(f'ip link set mtu 1420 up dev {wgif}')
-            do(f'ip -4 address add dev {wgif} {addr[0]}')
-            do(f'ip -6 address add dev {wgif} {addr[1]}')
-            do(f'wg set {wgif} private-key !FILE!{i['PrivateKey']}')
-            if listen_port := i.get('ListenPort', None):
-                do(f'wg set {wgif} listen-port {listen_port}')
-            # do('''LAN_DEV=$(ip route show default |head -1 |awk '{print $5}')''')
-            # do(f'iptables -A FORWARD -i {wgif} -j ACCEPT')
-            # do('iptables -t nat -A POSTROUTING -o $LAN_DEV -j MASQUERADE')
-        if postup := i.get('PostUp', None):
-            for cmd in re.findall(r'[^;\s][^;]*', postup):  # split at semicolons
-                # replace each '%i' with wgif
-                do(re.sub(r'( )%i(?=\s|$)', lambda m: m.group(1) + wgif, cmd))
-        for p in peers:  # configured peers
-            # docs: https://www.man7.org/linux/man-pages/man8/wg.8.html
-            # consider: + f' preshared-key !FILE!(peer['PresharedKey'])}'
-            # consider: + f' persistent-keepalive {peer['PersistentKeepalive']}'
-            peer_cmd = f'wg set {wgif} peer {p['PublicKey']} allowed-ips {p['AllowedIPs']}'
-            if endpoint := p.get('Endpoint', None):
-                peer_cmd += f' endpoint {endpoint}'  # 1 space at start, 0 at end
-            do(peer_cmd)
-        if addresses:  # when not just activating peers
-            do(f'ip link set up dev {wgif}')
-            do(
-                f'''# DISCONNECT: ip rule del table main suppress_prefixlength 0;'''
-                + f''' ip link del dev {wgif}'''
-            )
-    elif method == IntfMethod.UCI:
-        # do(f'opkg update')  # don't do if `wg` is already installed
-        # do(f'opkg install wireguard-tools')
-        if addresses := i.get('Address', None):  # missing when activating peers
-            addr = addresses.split(',')
-            assert len(addr) == 2
-            do(f'uci set network.{wgif}=interface')
-            do(f'uci set network.{wgif}.proto=wireguard')
-            do(f'uci set network.{wgif}.private_key={i['PrivateKey']}')
-            do(f'uci add_list network.{wgif}.addresses="{addr[0]}"')
-            do(f'uci add_list network.{wgif}.addresses="{addr[1]}"')
-            if listen_port := i.get('ListenPort', None):
-                do(f'uci set network.{wgif}.listen_port={listen_port}')
-        for p in peers:  # configured peers
-            do(f'PEER_ID="$(uci add network wireguard_{wgif})"')
-            do(f'uci set network.$PEER_ID.public_key={p['PublicKey']}')
-            do(f'uci add_list network.$PEER_ID.allowed_ips={p['AllowedIPs']}')
-            if endpoint := p.get('Endpoint', None):
-                host, port = endpoint.rsplit(':', 1)
-                do(f'uci set network.$PEER_ID.endpoint_host={host}')
-                do(f'uci set network.$PEER_ID.endpoint_port={port}')
-            if preshared := p.get('PresharedKey', None):
-                do(f'uci set network.$PEER_ID.preshared_key={preshared}')
-            if keepalive := p.get('PersistentKeepalive', None):
-                do(f'uci set network.$PEER_ID.persistent_keepalive={keepalive}')
-        # do('uci commit network')  # no need to write to permanent storage
-        do('/etc/init.d/network reload')
-        # DISCONNECT:
-        # uci delete network.wgbb1
-        # for s in $(uci show network |grep "=wireguard_wgbb1" |cut -d. -f2 |cut -d= -f1); do uci delete network.$s; done
-        # /etc/init.d/network reload
-    else:
-        raise Berror(f"B10323 unknown IntfMethod {method}")
+            for p in peers:
+                out.append('')
+                out.append('[Peer]')
+                for k, v in p.items():
+                    out.append(f'{k} = {v}')
+        elif method == IntfMethod.LOCAL or method == IntfMethod.BASH:
+            # configure WireGuard interface; see `systemctl status wg-quick@wg0.service`
+            # do(f'sudo apt install -y wireguard')
+            if addresses := i.get('Address', None):  # missing when activating peers
+                do(f'sysctl net.ipv4.ip_forward=1')
+                do(f'sysctl net.ipv6.conf.all.forwarding=1')
+                addr = addresses.split(',')
+                assert len(addr) == 2
+                do(f'ip link add dev {wgif} type wireguard')
+                do(f'ip link set mtu 1420 up dev {wgif}')
+                do(f'ip -4 address add dev {wgif} {addr[0]}')
+                do(f'ip -6 address add dev {wgif} {addr[1]}')
+                do(f'wg set {wgif} private-key !FILE!{i['PrivateKey']}')
+                if listen_port := i.get('ListenPort', None):
+                    do(f'wg set {wgif} listen-port {listen_port}')
+                # do('''LAN_DEV=$(ip route show default |head -1 |awk '{print $5}')''')
+                # do(f'iptables -A FORWARD -i {wgif} -j ACCEPT')
+                # do('iptables -t nat -A POSTROUTING -o $LAN_DEV -j MASQUERADE')
+            if postup := i.get('PostUp', None):
+                for cmd in re.findall(r'[^;\s][^;]*', postup):  # split at semicolons
+                    # replace each '%i' with wgif
+                    do(re.sub(r'( )%i(?=\s|$)', lambda m: m.group(1) + wgif, cmd))
+            for p in peers:  # configured peers
+                # docs: https://www.man7.org/linux/man-pages/man8/wg.8.html
+                # consider: + f' preshared-key !FILE!(peer['PresharedKey'])}'
+                # consider: + f' persistent-keepalive {peer['PersistentKeepalive']}'
+                peer_cmd = f'wg set {wgif} peer {p['PublicKey']} allowed-ips {p['AllowedIPs']}'
+                if endpoint := p.get('Endpoint', None):
+                    peer_cmd += f' endpoint {endpoint}'  # 1 space at start, 0 at end
+                do(peer_cmd)
+            if addresses:  # when not just activating peers
+                do(f'ip link set up dev {wgif}')
+        elif method == IntfMethod.UCI:
+            # do(f'opkg update')  # don't do if `wg` is already installed
+            # do(f'opkg install wireguard-tools')
+            if addresses := i.get('Address', None):  # missing when activating peers
+                addr = addresses.split(',')
+                assert len(addr) == 2
+                do(f'uci set network.{wgif}=interface')
+                do(f'uci set network.{wgif}.proto=wireguard')
+                do(f'uci set network.{wgif}.private_key={i['PrivateKey']}')
+                do(f'uci add_list network.{wgif}.addresses="{addr[0]}"')
+                do(f'uci add_list network.{wgif}.addresses="{addr[1]}"')
+                if listen_port := i.get('ListenPort', None):
+                    do(f'uci set network.{wgif}.listen_port={listen_port}')
+            for p in peers:  # configured peers
+                do(f'PEER_ID="$(uci add network wireguard_{wgif})"')
+                do(f'uci set network.$PEER_ID.public_key={p['PublicKey']}')
+                do(f'uci add_list network.$PEER_ID.allowed_ips={p['AllowedIPs']}')
+                if endpoint := p.get('Endpoint', None):
+                    host, port = endpoint.rsplit(':', 1)
+                    do(f'uci set network.$PEER_ID.endpoint_host={host}')
+                    do(f'uci set network.$PEER_ID.endpoint_port={port}')
+                if preshared := p.get('PresharedKey', None):
+                    do(f'uci set network.$PEER_ID.preshared_key={preshared}')
+                if keepalive := p.get('PersistentKeepalive', None):
+                    do(f'uci set network.$PEER_ID.persistent_keepalive={keepalive}')
+            # do('uci commit network')  # no need to write to permanent storage
+            do('/etc/init.d/network reload')
+            # DISCONNECT:
+            # uci delete network.wgbb1
+            # for s in $(uci show network |grep "=wireguard_wgbb1" |cut -d. -f2 |cut -d= -f1); do uci delete network.$s; done
+            # /etc/init.d/network reload
+        else:
+            raise Berror(f"B10323 unknown IntfMethod {method}")
+
+    platform_l = platform.split('.')
+    platform_l1 = '.'.join(platform_l[0:1])
+    platform_l2 = '.'.join(platform_l[0:2])
+    if platform_l2 == 'local.linux':
+        method = IntfMethod.LOCAL
+        apply_conf()
+        do(f'''iptables --append FORWARD --in-interface {wgif} --jump ACCEPT''')
+        do(
+            '''iptables --table nat --append POSTROUTING --out-interface'''
+            + f''' {net.default_route_interface()} --jump MASQUERADE'''
+        )
+    elif platform_l2 == 'linux.openwrt':
+        # FIXME: change network.lan.ipaddr only if subnets overlap (maybe ping the default gateway)
+        do('''uci set network.lan.ipaddr=192.168.196.1''')
+        do('''uci set network.lan.netmask=255.255.255.0''')
+        do('''uci set network.lan.proto=static''')
+        do('''uci commit network''')
+        # FIXME: test if we can remove 4 dhcp lines
+        do('''uci set dhcp.lan.start=100''')
+        do('''uci set dhcp.lan.limit=150''')
+        do('''uci set dhcp.lan.leasetime=12h''')
+        do('''uci commit dhcp''')
+        do('''/etc/init.d/network restart''')
+        do('''/etc/init.d/dnsmasq restart''')
+        do('''rm -f /tmp/dhcp.leases''')
+        do('''killall -HUP dnsmasq''')
+        do('''#''')
+        method = IntfMethod.BASH
+        apply_conf()
+        for p in peers:
+            for ip_net in p['AllowedIPs'].split(','):
+                do(f'''ip route add {ip_net} dev {wgif}''')
+        do(f'''# DISCONNECT: ip link del dev {wgif}''')
+    elif platform_l1 == 'linux':
+        method = IntfMethod.BASH
+        # from https://www.wireguard.com/netns/#improved-rule-based-routing
+        fwmark = i['FwMark']
+        table = i['Table']
+        do(f'''wg set {wgif} fwmark {fwmark}''')
+        do(f''' ip route add default dev {wgif} table {table}''')
+        do(f''' ip rule add not fwmark {fwmark} table {table}''')
+        do(f''' ip rule add table main suppress_prefixlength 0''')
+        do(
+            f'''# DISCONNECT: ip rule del table main suppress_prefixlength 0;'''
+            + f''' ip link del dev {wgif}'''
+        )
     return '\n'.join(out) + '\n'
 
 
@@ -699,7 +724,7 @@ def new_device(account_id, is_base=True) -> int:
         if is_base:  # create WireGuard connection between the new device and the hub
             hub_peer_id = new_intf(device_id=device.id, base_intf_id=1)
             hub_peer_conf = get_conf_activate_peer(hub_peer_id)
-            methodize(hub_peer_conf, IntfMethod.LOCAL)
+            methodize(hub_peer_conf, 'local.linux')
             logger.info(f"Created new base: {device.name}")
     return device.id
 
@@ -733,7 +758,7 @@ def on_startup() -> None:
             hub_intf_id = new_intf(hub_device.id, base_is_hub=True)
             assert hub_intf_id == 1, f"B49296 unexpected {hub_intf_id=}"
     hub_conf = get_conf(intf_id=1)
-    methodize(hub_conf, method=IntfMethod.LOCAL)
+    methodize(hub_conf, 'local.linux')
 
 
 def delete_our_wgif(isShutdown):  # clean up wg network interfaces
