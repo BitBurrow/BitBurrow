@@ -675,6 +675,12 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
             + f''' {net.default_route_interface()} --jump MASQUERADE'''
         )
     elif platform_l2 == 'linux.openwrt':
+        # FIXME: IPv6 is disabled by default on some OpenWrt routers, resulting in
+        # `RTNETLINK answers: Permission denied` even as root. A possible
+        # fix is:
+        #     sysctl -w net.ipv6.conf.all.disable_ipv6=0
+        #     sysctl -w net.ipv6.conf.default.disable_ipv6=0
+        #     sysctl -w net.ipv6.conf.wgbb1.disable_ipv6=0
         # FIXME: change network.lan.ipaddr only if subnets overlap (maybe ping the default gateway)
         do('''uci set network.lan.ipaddr=192.168.196.1''')
         do('''uci set network.lan.netmask=255.255.255.0''')
