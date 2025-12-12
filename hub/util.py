@@ -1,5 +1,8 @@
+import base64
+import gzip
 import logging
 import importlib.metadata
+import io
 import os
 import re
 import yaml
@@ -153,3 +156,11 @@ def integrity_test_by_id(test_id):
     else:
         logger.info(f"B28874 {pass_count} of {pass_count + failed_count} tests passed")
     return failed_count == 0
+
+
+def gzip_base64(s: str, wrap: int = 76, prefix: str = '', postfix: str = '\n') -> str:
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=9) as f:
+        f.write(s.encode("utf-8"))
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return ''.join([f'{prefix}{b64[i:i+wrap]}{postfix}' for i in range(0, len(b64), wrap)])

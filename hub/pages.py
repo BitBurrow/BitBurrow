@@ -166,7 +166,7 @@ def new_base(client: Client):
     idelem = uif.render_page(sections, is_logged_in=True)
     device_id = db.new_device(account_id=aid)
     conf = db.get_conf(db.hub_peer_id(device_id))
-    code = db.methodize(conf, 'linux.openwrt')
+    code = db.methodize(conf, 'linux.openwrt.gzb')
     # code3 = db.methodize(conf, db.IntfMethod.CONF)
     # code4 = db.methodize(conf, db.IntfMethod.UCI)
     idelem['code_for_local_startup'].set_content(code)

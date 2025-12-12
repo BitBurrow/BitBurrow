@@ -709,7 +709,15 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
             f'''# DISCONNECT: ip rule del table main suppress_prefixlength 0;'''
             + f''' ip link del dev {wgif}'''
         )
-    return '\n'.join(out) + '\n'
+    if platform.endswith('.gzb'):
+        meta_out = list()
+        meta_out.append('''T=$(mktemp)''')
+        meta_out.append(util.gzip_base64('\n'.join(out) + '\n', 33, 'echo ', '>>$T\n').rstrip())
+        meta_out.append('''sh -c "$(cat $T|openssl base64 -d|gunzip)"''')  # 33 matches this width
+        meta_out.append('''rm -f $T''')
+        return '\n'.join(meta_out) + '\n'
+    else:
+        return '\n'.join(out) + '\n'
 
 
 def new_device(account_id, is_base=True) -> int:
