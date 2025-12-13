@@ -11,7 +11,7 @@ import sqlalchemy
 import sqlalchemy.engine
 import sqlite3
 from sqlmodel import Field, Session, SQLModel, select, JSON, Column, Relationship, func
-from typing import Optional
+from typing import Optional, Any
 import hub.login_key as lk
 import hub.net as net
 from pydantic import ConfigDict
@@ -371,7 +371,7 @@ class Intf(SQLModel, table=True):
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
     frontend_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
     # 'other' is a dict of all other config options, official and custom
-    other: dict[str, any] = Field(sa_column=Column(JSON), default_factory=dict)
+    other: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
     ssh_privkey: str | None = Field(default=None)
     ssh_pubkey: str | None = Field(default=None)
     comment: str = ""
