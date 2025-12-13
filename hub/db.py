@@ -675,27 +675,25 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
             + f''' {net.default_route_interface()} --jump MASQUERADE'''
         )
     elif platform_l2 == 'linux.openwrt':
+        do("""ip -4 addr |awk '/inet /{split($2,a,"/");if(a[2]!=24)next;""")
+        do("""split(a[1],o,".");k=o[1]"."o[2]"."o[3];if(++s[k]==2)h=1}END{exit h?0:1}'""")
+        do("""if [ $? -eq 0 ]; then""")  # if needed, set LAN subnet to not overlap with upstream
+        do("""    OCTET3=$(awk 'BEGIN{srand(); print 110 + int(rand()*131)}')""")  # random 110..240
+        do("""    uci set network.lan.ipaddr=192.168.$OCTET3.1""")  # hoping this subnet is unused
+        do("""    uci set network.lan.netmask=255.255.255.0""")
+        do("""    uci set network.lan.proto=static""")
+        do("""    uci commit network""")
+        do("""    /etc/init.d/network restart""")
+        do("""    /etc/init.d/dnsmasq restart""")
+        do("""    rm -f /tmp/dhcp.leases""")
+        do("""    killall -HUP dnsmasq""")
+        do("""fi""")
         # FIXME: IPv6 is disabled by default on some OpenWrt routers, resulting in
         # `RTNETLINK answers: Permission denied` even as root. A possible
         # fix is:
         #     sysctl -w net.ipv6.conf.all.disable_ipv6=0
         #     sysctl -w net.ipv6.conf.default.disable_ipv6=0
         #     sysctl -w net.ipv6.conf.wgbb1.disable_ipv6=0
-        # FIXME: change network.lan.ipaddr only if subnets overlap (maybe ping the default gateway)
-        do('''uci set network.lan.ipaddr=192.168.196.1''')
-        do('''uci set network.lan.netmask=255.255.255.0''')
-        do('''uci set network.lan.proto=static''')
-        do('''uci commit network''')
-        # FIXME: test if we can remove 4 dhcp lines
-        do('''uci set dhcp.lan.start=100''')
-        do('''uci set dhcp.lan.limit=150''')
-        do('''uci set dhcp.lan.leasetime=12h''')
-        do('''uci commit dhcp''')
-        do('''/etc/init.d/network restart''')
-        do('''/etc/init.d/dnsmasq restart''')
-        do('''rm -f /tmp/dhcp.leases''')
-        do('''killall -HUP dnsmasq''')
-        do('''#''')
         method = IntfMethod.BASH
         apply_conf()
         for p in peers:
