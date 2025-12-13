@@ -18,7 +18,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 22
+db_schema_version = 23
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -96,6 +96,10 @@ def migrate(db_path: str) -> None:
     if current_version >= db_schema_version:
         return
     logger.info(f"B49255 migrating database from version {current_version} to {db_schema_version}")
+    if current_version == 22:  # version 22 → 23 renamed 2 data fields
+        with sqlite_conn(db_path) as conn:
+            conn.execute('''ALTER TABLE "Intf" RENAME COLUMN "privkey" TO "wg_privkey";''')
+            conn.execute('''ALTER TABLE "Intf" RENAME COLUMN "pubkey" TO "wg_pubkey";''')
     with tempfile.NamedTemporaryFile(
         dir=os.path.dirname(db_path),  # in the same directory
         prefix='data-',

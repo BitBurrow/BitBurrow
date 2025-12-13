@@ -365,13 +365,15 @@ class Intf(SQLModel, table=True):
     allowed_ipv6_subnet: int = 128
     # 'base_intf_id' is our peer (server) on single-peer interfaces; otherwise None
     base_intf_id: Optional[int] = Field(index=True, foreign_key='intf.id')
-    privkey: str
-    pubkey: str
+    wg_privkey: str
+    wg_pubkey: str
     backend_port: int | None = Field(default=None)
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
     frontend_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
     # 'other' is a dict of all other config options, official and custom
     other: dict[str, any] = Field(sa_column=Column(JSON), default_factory=dict)
+    ssh_privkey: str | None = Field(default=None)
+    ssh_pubkey: str | None = Field(default=None)
     comment: str = ""
     default_method: IntfMethod = IntfMethod.NONE
     model_config = ConfigDict(arbitrary_types_allowed=True)  # for Column(JSON)
@@ -441,8 +443,8 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
         intf.allowed_ipv4_subnet = 0
         intf.allowed_ipv6_subnet = 0
     intf.base_intf_id = base_intf_id
-    intf.privkey = net.sudo_wg(['genkey'])
-    intf.pubkey = net.sudo_wg(['pubkey'], input=intf.privkey)
+    intf.wg_privkey = net.sudo_wg(['genkey'])
+    intf.wg_pubkey = net.sudo_wg(['pubkey'], input=intf.wg_privkey)
     if base_is_hub:  # on the hub, use ports from config file
         intf.backend_port = conf.get('backend.wg_port')
         intf.frontend_ports = [conf.get('frontend.wg_port')]
@@ -452,13 +454,15 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
             intf.backend_port = 123
             intf.frontend_ports = [123]
         intf.default_method = IntfMethod.UCI
-    # now find an unused host_id in the network
+    if intf.base_intf_id == 1:  # a managed router
+        # ed25519 keys may not be supported: https://www.dwarmstrong.org/remote-unlock-dropbear/
+        intf.ssh_privkey, intf.ssh_pubkey = net.ssh_keygen(key_type='rsa')
     host_id_min = 39
     host_id_limit = 2**intf.host_bits - 1
     retry_max = 25
     with Session(engine) as session:
         if base_intf_id:  # single-peer, i.e. new 'client'
-            for attempt in range(retry_max):
+            for attempt in range(retry_max):  # find an unused host_id in the network
                 try:
                     statement = select(Intf.host_id).where(
                         Intf.host_id >= host_id_min,
@@ -497,7 +501,7 @@ def get_conf(intf_id) -> tuple:
         intf = session.exec(select(Intf).where(Intf.id == intf_id)).one()
         if intf.backend_port:
             interface['ListenPort'] = str(intf.backend_port)
-        interface['PrivateKey'] = intf.privkey
+        interface['PrivateKey'] = intf.wg_privkey
         if intf.base_intf_id:  # single-peer
             interface['Address'] = f'{intf.ipv4allowed()},{intf.ipv6allowed()}'
         else:
@@ -510,17 +514,20 @@ def get_conf(intf_id) -> tuple:
         if intf.base_intf_id:  # single-peer
             base = session.exec(select(Intf).where(Intf.id == intf.base_intf_id)).one()
             p = dict()
-            p['PublicKey'] = base.pubkey
+            p['PublicKey'] = base.wg_pubkey
             aip4 = ipaddress.ip_network(f"{base.ipv4()}/{intf.allowed_ipv4_subnet}", strict=False)
             aip6 = ipaddress.ip_network(f"{base.ipv6()}/{intf.allowed_ipv6_subnet}", strict=False)
             p['AllowedIPs'] = f'{aip4},{aip6}'
             p['Endpoint'] = f'{conf.get('frontend.ips')[0]}:{base.frontend_ports[0]}'
             peers.append(p)
+            if intf.base_intf_id == 1:  # a managed router
+                interface['SshPrivateKey'] = intf.ssh_privkey  # non-standard conf
+                interface['SshPublicKey'] = intf.ssh_pubkey  # non-standard conf
         else:  # for multi-peer, loop through them
             statement = select(Intf).where(Intf.base_intf_id == intf.id)
             for peer in session.exec(statement):
                 p = dict()
-                p['PublicKey'] = peer.pubkey
+                p['PublicKey'] = peer.wg_pubkey
                 p['AllowedIPs'] = f'{peer.ipv4allowed()},{peer.ipv6allowed()}'
                 # Endpoint not needed on multi-peer end
                 peers.append(p)
@@ -537,7 +544,7 @@ def get_conf_activate_peer(intf_id) -> tuple:
         base = session.exec(select(Intf).where(Intf.id == intf.base_intf_id)).one()
         interface['Name'] = base.iface()
         p = dict()
-        p['PublicKey'] = intf.pubkey
+        p['PublicKey'] = intf.wg_pubkey
         p['AllowedIPs'] = f'{intf.ipv4allowed()},{intf.ipv6allowed()}'
         # Endpoint not needed on multi-peer end
         peers.append(p)
@@ -553,8 +560,8 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
     def output(cmd):  # add to 'out' after line-wrapping long lines
         line_prefix = ''
         next_prefix = '#   ' if cmd[0] == '#' else '    '  # full-line comments
-        while cmd:  # line-wrap lines over 50 characters where possible
-            m = re.match(r'(.{5,50})(?=\s|$)', cmd)
+        while cmd:  # line-wrap lines over 76 characters where possible
+            m = re.match(r'(.{5,76})(?=\s|$)', cmd)
             if not m:
                 m = re.match(r'(.+?)(?=\s|$)', cmd)
             cpart = m.group(1)
@@ -698,8 +705,18 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
         apply_conf()
         for p in peers:
             for ip_net in p['AllowedIPs'].split(','):
-                do(f'''ip route add {ip_net} dev {wgif}''')
-        do(f'''# DISCONNECT: ip link del dev {wgif}''')
+                do(f"""ip route add {ip_net} dev {wgif}""")
+        do(f"""# DISCONNECT: ip link del dev {wgif}""")
+        if ssh_pubkey := i['SshPublicKey']:  # a managed router
+            do(f"""AK=/etc/dropbear/authorized_keys""")
+            do(f"""if ! grep -q ' {wgif}$' $AK; then""")  # our ssh pubkey is not in the file yet
+            # OpenWrt seems to limit lines to 510 characters; use 51 to avoid 76 max line width
+            for p in range(0, len(ssh_pubkey), 51):
+                do(f"""    printf '%s' "{ssh_pubkey[p:p+51]}" >>$AK""")
+            do(f"""    printf ' {wgif}\\n' >>$AK""")
+            do(f"""    chmod 600 $AK""")
+            do(f"""    /etc/init.d/dropbear restart""")
+            do(f"""fi""")
     elif platform_l1 == 'linux':
         method = IntfMethod.BASH
         # from https://www.wireguard.com/netns/#improved-rule-based-routing

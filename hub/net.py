@@ -148,6 +148,26 @@ def sudo_wg(args=[], input=None):
     return r
 
 
+def ssh_keygen(key_type: str, passphrase: str = '', comment: str = '') -> tuple[str, str]:
+    with tempfile.TemporaryDirectory(prefix='ssh-keygen_') as td:
+        priv_path = os.path.join(td, 'id_' + key_type)
+        args = (
+            ['ssh-keygen', '-q']
+            + ['-t', key_type]
+            + ['-N', passphrase]
+            + ['-C', comment]  # without '-C', adds: user@hostname
+            + ['-f', priv_path]
+        )
+        run_external(args)
+        with open(priv_path, 'r', encoding='utf-8') as f:
+            privkey = f.read().rstrip('\n')
+        with open(f'{priv_path}.pub', 'r', encoding='utf-8') as f:
+            pubkey = f.read().rstrip('\n')
+        if not privkey or not pubkey or len(privkey) < 10 or len(pubkey) < 10:
+            raise Berror('B84487 ssh-keygen unexpected key values')
+        return privkey, pubkey
+
+
 def run_external(args: list[str], input: str | None = None):
     """Run an external executable, capturing output. Searches standard system directories.
 
