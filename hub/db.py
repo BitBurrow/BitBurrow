@@ -371,6 +371,7 @@ class Intf(SQLModel, table=True):
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
     frontend_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
     # 'other' is a dict of all other config options, official and custom
+    keepalive: int | None = Field(default=None)
     other: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
     ssh_privkey: str | None = Field(default=None)
     ssh_pubkey: str | None = Field(default=None)
@@ -455,6 +456,7 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
             intf.frontend_ports = [123]
         intf.default_method = IntfMethod.UCI
     if intf.base_intf_id == 1:  # a managed router
+        intf.keepalive = 25  # so hub can track IP and initiate a connection to router
         # ed25519 keys may not be supported: https://www.dwarmstrong.org/remote-unlock-dropbear/
         intf.ssh_privkey, intf.ssh_pubkey = net.ssh_keygen(key_type='rsa')
     host_id_min = 39
@@ -517,8 +519,11 @@ def get_conf(intf_id) -> tuple:
             p['PublicKey'] = base.wg_pubkey
             aip4 = ipaddress.ip_network(f"{base.ipv4()}/{intf.allowed_ipv4_subnet}", strict=False)
             aip6 = ipaddress.ip_network(f"{base.ipv6()}/{intf.allowed_ipv6_subnet}", strict=False)
-            p['AllowedIPs'] = f'{aip4},{aip6}'
+            # p['PresharedKey'] = ...
             p['Endpoint'] = f'{conf.get('frontend.ips')[0]}:{base.frontend_ports[0]}'
+            if intf.keepalive:
+                p['PersistentKeepalive'] = intf.keepalive
+            p['AllowedIPs'] = f'{aip4},{aip6}'
             peers.append(p)
             if intf.base_intf_id == 1:  # a managed router
                 interface['SshPrivateKey'] = intf.ssh_privkey  # non-standard conf
@@ -628,11 +633,16 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
                     do(re.sub(r'( )%i(?=\s|$)', lambda m: m.group(1) + wgif, cmd))
             for p in peers:  # configured peers
                 # docs: https://www.man7.org/linux/man-pages/man8/wg.8.html
-                # consider: + f' preshared-key !FILE!(peer['PresharedKey'])}'
-                # consider: + f' persistent-keepalive {peer['PersistentKeepalive']}'
-                peer_cmd = f'wg set {wgif} peer {p['PublicKey']} allowed-ips {p['AllowedIPs']}'
+                peer_cmd = f'wg set {wgif} peer {p['PublicKey']}'
+                # be careful about spacing for these '+=' items: 1 space at start, 0 at end
+                if preshared_key := p.get('PresharedKey', None):
+                    peer_cmd += f' preshared-key !FILE!{preshared_key}'
                 if endpoint := p.get('Endpoint', None):
-                    peer_cmd += f' endpoint {endpoint}'  # 1 space at start, 0 at end
+                    peer_cmd += f' endpoint {endpoint}'
+                if persistent_keepalive := p.get('PersistentKeepalive', None):
+                    peer_cmd += f' persistent-keepalive {persistent_keepalive}'
+                if allowed_ips := p.get('AllowedIPs', None):
+                    peer_cmd += f' allowed-ips {allowed_ips}'
                 do(peer_cmd)
             if addresses:  # when not just activating peers
                 do(f'ip link set up dev {wgif}')
@@ -657,10 +667,10 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
                     host, port = endpoint.rsplit(':', 1)
                     do(f'uci set network.$PEER_ID.endpoint_host={host}')
                     do(f'uci set network.$PEER_ID.endpoint_port={port}')
-                if preshared := p.get('PresharedKey', None):
-                    do(f'uci set network.$PEER_ID.preshared_key={preshared}')
-                if keepalive := p.get('PersistentKeepalive', None):
-                    do(f'uci set network.$PEER_ID.persistent_keepalive={keepalive}')
+                if preshared_key := p.get('PresharedKey', None):
+                    do(f'uci set network.$PEER_ID.preshared_key={preshared_key}')
+                if persistent_keepalive := p.get('PersistentKeepalive', None):
+                    do(f'uci set network.$PEER_ID.persistent_keepalive={persistent_keepalive}')
             # do('uci commit network')  # no need to write to permanent storage
             do('/etc/init.d/network reload')
             # DISCONNECT:
