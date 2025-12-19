@@ -725,6 +725,11 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
             do(f"""    chmod 600 $AK""")
             do(f"""    /etc/init.d/dropbear restart""")
             do(f"""fi""")
+            # if addresses := i.get('Address', None):
+            #     addr = addresses.split(',')
+            #     ip = ipaddress.ip_interface(addr[0]).ip
+            #     ssh -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa \
+            #         -i <({i['SshPrivateKey']}) root@{ip}
     elif platform_l1 == 'linux':
         method = IntfMethod.BASH
         # from https://www.wireguard.com/netns/#improved-rule-based-routing
