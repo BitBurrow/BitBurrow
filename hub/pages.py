@@ -137,7 +137,7 @@ def login(client: Client):
 @ui.page('/home')
 def home(client: Client):
     try:
-        auth.require_login(client)
+        lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
         return
     md_path = os.path.join(ui_path, 'home.md')
@@ -145,30 +145,40 @@ def home(client: Client):
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     idelem = uif.render_page(sections, is_logged_in=True)
-    idelem['new_base'].on_click(callback=lambda: ui.navigate.to('/new_base'))
+
+    async def new_base():
+        device_slug = db.new_device(account_id=aid, is_base=True)
+        ui.navigate.to(f'/manage/{device_slug}')
+
+    idelem['new_base'].on_click(callback=new_base)
 
 
 ###
-### page: /new_base
+### page: /manage
 ###
 
 
-@ui.page('/new_base')
-def new_base(client: Client):
+@ui.page('/manage/{device_slug}')
+def manage(client: Client, device_slug: str):
     try:
         lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
         return
-    md_path = os.path.join(ui_path, 'new_base.md')
+    if not (device_id := db.get_device_by_slug(device_slug, aid)):
+        md_path = os.path.join(ui_path, 'device-not-found.md')
+        with open(md_path, 'r', encoding='utf-8') as f:
+            md = f.read().replace('{device_slug}', device_slug)
+            sections = uif.parse_markdown_sections(md)
+        ui.run_javascript(f"document.title = '{sections[0]}'")
+        idelem = uif.render_page(sections, is_logged_in=True)
+        return
+    md_path = os.path.join(ui_path, 'manage.md')
     with open(md_path, 'r', encoding='utf-8') as f:
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     idelem = uif.render_page(sections, is_logged_in=True)
-    device_id = db.new_device(account_id=aid)
     conf = db.get_conf(db.hub_peer_id(device_id))
-    code = db.methodize(conf, 'linux.openwrt.gzb')
-    # code3 = db.methodize(conf, db.IntfMethod.CONF)
-    # code4 = db.methodize(conf, db.IntfMethod.UCI)
+    code = db.methodize(conf, 'linux.openwrt')
     idelem['code_for_local_startup'].set_content(code)
 
 

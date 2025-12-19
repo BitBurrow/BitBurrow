@@ -326,17 +326,15 @@ def iter_get_login_session_by_account_id(aid: int | None):
 
 
 class Device(SQLModel, table=True):
+    __table_args__ = (  # name_slug must be unique for this user
+        sqlalchemy.UniqueConstraint("account_id", "name_slug", name="uq_device_account_slug"),
+        sqlalchemy.Index("ix_device_account_slug", "account_id", "name_slug"),
+    )
     id: Optional[int] = Field(primary_key=True, default=None)
     account_id: Optional[int] = Field(index=True, foreign_key='account.id')  # device admin--manager
-    name: str = ""
+    name: str = ''  # e.g. "Base SPWL" but user can modify
+    name_slug: Optional[str] = Field(default=None, index=True)  # URL-safe version of name
     comment: str = ""
-
-
-def device_count(account_id: int) -> int:
-    """Returns the number of devices associated with this account_id."""
-    with Session(engine) as session:
-        statement = select(func.count()).select_from(Device).where(Device.account_id == account_id)
-        return session.exec(statement).one()
 
 
 ###
@@ -751,25 +749,51 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
         return '\n'.join(out) + '\n'
 
 
-def new_device(account_id, is_base=True) -> int:
-    total_devices = device_count(account_id) + 1
+def new_device(account_id, is_base: bool) -> str:
+    """Create a new device and return it's name_slug. For bases, set up WireGuard on the hub."""
+    device = Device(account_id=account_id)
+    retry_max = 50
     with Session(engine) as session:
-        device = Device(
-            account_id=account_id,
-            name=f'{"Base" if is_base else "Device"} {total_devices}',
-        )
-        session.add(device)
-        session.commit()
+        for attempt in range(retry_max):  # find a unique (for this user) name_slug
+            device.name = f'{"Base" if is_base else "Device"} {lk.generate_login_key(3)}'
+            name_slug = util.slugify(device.name)
+            device.name_slug = name_slug
+            try:
+                session.add(device)
+                session.commit()
+            except sqlalchemy.exc.IntegrityError:
+                session.rollback()
+                if attempt > 20:
+                    logger.warning(f"B94707 duplicate slug {device.name_slug} (retry {attempt})")
+                continue
+            else:
+                break
+        else:
+            raise Berror(f"B38798 duplicate slug {device.name_slug} after {retry_max} attempts")
         if is_base:  # create WireGuard connection between the new device and the hub
             hub_peer_id = new_intf(device_id=device.id, base_intf_id=1)
             hub_peer_conf = get_conf_activate_peer(hub_peer_id)
             methodize(hub_peer_conf, 'local.linux')
-            logger.info(f"Created new base: {device.name}")
-    return device.id
+    return name_slug
+
+
+def get_device_by_slug(device_slug: str, account_id: int) -> int | None:
+    """Return the device_id for the slug, or None if it doesn't exist for that user."""
+    with Session(engine) as session:
+        try:
+            device = session.exec(
+                select(Device).where(
+                    Device.account_id == account_id,
+                    Device.name_slug == device_slug,
+                )
+            ).one()
+        except sqlalchemy.exc.NoResultFound:
+            return None
+        return device.id
 
 
 def hub_peer_id(device_id) -> int | None:
-    """Returns the id of the intf on the device which connects to the hub, or None if unmanaged."""
+    """Return the id of the intf on the device which connects to the hub, or None if unmanaged."""
     with Session(engine) as session:
         try:
             intf = session.exec(

@@ -1,6 +1,6 @@
-# BitBurrow: New base router
+# BitBurrow: Manage base router
 
-{{ headline(text='**New base router**', align='center') }}
+{{ headline(text='**Set up a base router**', align='center') }}
 
 **Notes:**
 

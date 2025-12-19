@@ -164,3 +164,10 @@ def gzip_base64(s: str, wrap: int = 76, prefix: str = '', postfix: str = '\n') -
         f.write(s.encode("utf-8"))
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return ''.join([f'{prefix}{b64[i:i+wrap]}{postfix}' for i in range(0, len(b64), wrap)])
+
+
+def slugify(s: str, *, max_len: int = 32) -> str:
+    s = re.sub(r'[&+@]', lambda m: {'&': ' and ', '+': ' plus ', '@': ' at '}[m[0]], s)
+    s = re.sub(r'[^a-z0-9]+', '-', s.lower())
+    s = re.sub(r'-{2,}', '-', s)
+    return s[:max_len].strip('-')
