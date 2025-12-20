@@ -283,8 +283,9 @@ def button(text=''):
 
 
 def floating_button(icon=''):
+    ui.add_head_html('''<style>html, body { overflow-x: hidden; }</style>''')
     with ui.page_sticky(x_offset=18, y_offset=18):
-        return ui.button(icon=icon).props('fab color=accent')
+        return ui.button(icon=icon).props('round fab color=primary')
 
 
 def checkbox(label='', value=False, icon=None):
