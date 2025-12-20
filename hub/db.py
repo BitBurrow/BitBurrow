@@ -363,14 +363,16 @@ class Intf(SQLModel, table=True):
     allowed_ipv6_subnet: int = 128
     # 'base_intf_id' is our peer (server) on single-peer interfaces; otherwise None
     base_intf_id: Optional[int] = Field(index=True, foreign_key='intf.id')
-    wg_privkey: str
-    wg_pubkey: str
+    wg_privkey: str = Field(index=True, unique=True, nullable=False)
+    wg_pubkey: str = Field(index=True, unique=True, nullable=False)
     backend_port: int | None = Field(default=None)
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
     frontend_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
     # 'other' is a dict of all other config options, official and custom
     keepalive: int | None = Field(default=None)
     other: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
+    last_endpoint: str | None = Field(default=None)
+    last_handshake: int | None = Field(default=None)  # seconds past Unix epoch
     ssh_privkey: str | None = Field(default=None)
     ssh_pubkey: str | None = Field(default=None)
     comment: str = ""
@@ -490,6 +492,28 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
             session.add(intf)
             session.commit()
         return intf.id
+
+
+def update_wg_show():
+    now = DateTime.now(TimeZone.utc)
+    last = getattr(update_wg_show, "last_update", None)  # FIXME: is this thread-safe?
+    if last and now < last + TimeDelta(minutes=2):  # no need to update yet
+        return
+    update_wg_show.last_update = now
+    lines = net.sudo_wg(['show', f'{wgif_prefix}1', 'dump'])
+    with Session(engine) as session:
+        for line in lines.splitlines()[1:]:
+            elements = line.split('\t')
+            intf = session.exec(select(Intf).where(Intf.wg_pubkey == elements[0])).one_or_none()
+            if intf:
+                endpoint = elements[2]
+                if endpoint != '(none)':
+                    intf.last_endpoint = endpoint
+                    intf.last_handshake = elements[4]
+                    session.add(intf)
+                    session.commit()
+            else:
+                logger.warning(f"B87408 peer {elements[0]} not in intf table")
 
 
 def get_conf(intf_id) -> tuple:
@@ -804,8 +828,9 @@ def iter_get_device_by_account_id(aid: int | None):
             statement = select(Device)
         else:
             statement = select(Device).where(Device.account_id == aid)
-        for row in session.exec(statement):
-            yield row
+        for dev in session.exec(statement):
+            inf = session.exec(select(Intf).where(Intf.device_id == dev.id)).one_or_none()
+            yield dev, inf
 
 
 def delete_device(id: int) -> None:

@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from nicegui import app, ui, Client
-import textwrap
 import os
 import hub.uif as uif
 import hub.db as db
@@ -163,19 +162,22 @@ def home(client: Client):
         columns[0]['headerClasses'] = 'hidden'
 
     def build_rows(lsid):
+        db.update_wg_show()
         rows = list()
         now = DateTime.now(TimeZone.utc)
         id_to_query = None if kind == db.AccountKind.ADMIN else aid
-        for s in db.iter_get_device_by_account_id(aid=id_to_query):
-            rows.append(
-                {
-                    'id': s.id,
-                    'name': s.name,
-                    'slug': s.name_slug,
-                    'last_ip': 'xx.xx.xx.xx',
-                    'last_seen': uif.human_duration(TimeDelta(days=s.id), positive_only=True),
-                }
-            )
+        for dev, inf in db.iter_get_device_by_account_id(aid=id_to_query):
+            new_row = {'id': dev.id, 'name': dev.name, 'slug': dev.name_slug}
+            if inf and inf.last_endpoint:
+                new_row['last_ip'] = inf.last_endpoint
+                new_row['last_seen'] = uif.human_duration(
+                    now - DateTime.fromtimestamp(inf.last_handshake, TimeZone.utc),
+                    positive_only=True,
+                )
+            else:
+                new_row['last_ip'] = '-'
+                new_row['last_seen'] = '-'
+            rows.append(new_row)
         return rows
 
     rows = build_rows(lsid)
