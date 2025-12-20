@@ -797,6 +797,33 @@ def get_device_by_slug(device_slug: str, account_id: int) -> int | None:
         return device.id
 
 
+def iter_get_device_by_account_id(aid: int | None):
+    """Yield each device for account aid."""
+    with Session(engine) as session:
+        if aid is None:
+            statement = select(Device)
+        else:
+            statement = select(Device).where(Device.account_id == aid)
+        for row in session.exec(statement):
+            yield row
+
+
+def delete_device(id: int) -> None:
+    with Session(engine) as session:
+        try:
+            device = session.exec(select(Device).where(Device.id == id)).one()
+        except sqlalchemy.exc.NoResultFound:
+            logger.error(f"B54609 cannot find device {id} in delete_device()")
+            return
+        for row in session.exec(select(Intf).where(Intf.device_id == id)):
+            logger.info(f"B75179 deleting Intf {row.id}")
+            session.delete(row)
+        session.commit()
+        logger.info(f"B74506 deleting Device {id}")
+        session.delete(device)
+        session.commit()
+
+
 def hub_peer_id(device_id) -> int | None:
     """Return the id of the intf on the device which connects to the hub, or None if unmanaged."""
     with Session(engine) as session:

@@ -145,12 +145,88 @@ def home(client: Client):
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     idelem = uif.render_page(sections, is_logged_in=True)
+    columns = [
+        {'name': 'id', 'sortable': True},  # columns[0]
+        {'name': 'name', 'sortable': True},
+        {'name': 'slug', 'classes': 'hidden', 'headerClasses': 'hidden'},
+        {'name': 'last_ip', 'sortable': True},
+        {'name': 'last_seen', 'sortable': True},
+        {'name': 'more', 'align': 'center'},  # 'manage' button
+        {'name': 'action', 'align': 'center'},  # 'delete' button
+    ]
+    for c in columns:
+        c['label'] = c['name'].replace('_', ' ').upper()
+        c['field'] = c['name']
+    if kind != db.AccountKind.ADMIN:
+        # hide id
+        columns[0]['classes'] = 'hidden'
+        columns[0]['headerClasses'] = 'hidden'
 
-    async def new_base():
+    def build_rows(lsid):
+        rows = list()
+        now = DateTime.now(TimeZone.utc)
+        id_to_query = None if kind == db.AccountKind.ADMIN else aid
+        for s in db.iter_get_device_by_account_id(aid=id_to_query):
+            rows.append(
+                {
+                    'id': s.id,
+                    'name': s.name,
+                    'slug': s.name_slug,
+                    'last_ip': 'xx.xx.xx.xx',
+                    'last_seen': uif.human_duration(TimeDelta(days=s.id), positive_only=True),
+                }
+            )
+        return rows
+
+    rows = build_rows(lsid)
+    table = ui.table(
+        columns=columns,
+        rows=rows,
+        row_key='id',
+        column_defaults={'align': 'left'},
+    )
+    table.add_slot(  # 'manage' button
+        'body-cell-more',
+        '''
+            <q-td :props="props">
+                <q-btn
+                  label="Manage"
+                  color="black"
+                  @click="() => $parent.$emit('manage', props.row)"
+                  flat
+                />
+            </q-td>
+        ''',
+    )
+    table.add_slot(  # 'delete' button
+        'body-cell-action',
+        '''
+            <q-td :props="props">
+                <q-btn
+                  label="Delete"
+                  color="red"
+                  @click="() => $parent.$emit('delete', props.row)"
+                  flat
+                />
+            </q-td>
+        ''',
+    )
+
+    def on_manage(e):
+        ui.navigate.to(f'/manage/{e.args['slug']}')
+
+    async def on_delete(e):
+        db.delete_device(e.args['id'])
+        table.rows = build_rows(lsid)
+        table.update()
+
+    async def on_add_item():
         device_slug = db.new_device(account_id=aid, is_base=True)
         ui.navigate.to(f'/manage/{device_slug}')
 
-    idelem['new_base'].on_click(callback=new_base)
+    table.on('manage', on_manage)
+    table.on('delete', on_delete)
+    idelem['new_base'].on_click(callback=on_add_item)
 
 
 ###
@@ -183,7 +259,7 @@ def manage(client: Client, device_slug: str):
 
 
 ###
-### page: /login_session
+### page: /login_sessions
 ###
 
 
