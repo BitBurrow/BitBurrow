@@ -12,6 +12,7 @@ import sqlalchemy.engine
 import sqlite3
 from sqlmodel import Field, Session, SQLModel, select, JSON, Column, Relationship, func
 from typing import Optional, Any
+import urllib.parse
 import hub.login_key as lk
 import hub.net as net
 from pydantic import ConfigDict
@@ -506,7 +507,8 @@ def update_wg_show():
             if intf:
                 endpoint = elements[2]
                 if endpoint != '(none)':
-                    intf.last_endpoint = endpoint
+                    addr = urllib.parse.urlsplit(f'//{endpoint}').hostname  # strip port (IPv6-safe)
+                    intf.last_endpoint = addr
                     intf.last_handshake = elements[4]
                     session.add(intf)
                     session.commit()
