@@ -170,10 +170,11 @@ def home(client: Client):
             new_row = {'id': dev.id, 'name': dev.name, 'slug': dev.name_slug}
             if inf and inf.last_endpoint:
                 new_row['last_ip'] = inf.last_endpoint
-                new_row['last_seen'] = uif.human_duration(
-                    now - DateTime.fromtimestamp(inf.last_handshake, TimeZone.utc),
-                    positive_only=True,
-                )
+                last_seen = now - DateTime.fromtimestamp(inf.last_handshake, TimeZone.utc)
+                if last_seen > TimeDelta(minutes=10):
+                    new_row['last_seen'] = uif.human_duration(last_seen, positive_only=True)
+                else:
+                    new_row['last_seen'] = "just now"  # values below 7 minutes are somewhat random
             else:
                 new_row['last_ip'] = '-'
                 new_row['last_seen'] = '-'
