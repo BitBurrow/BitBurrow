@@ -21,6 +21,7 @@ import hub.util as util
 Berror = util.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
+hub_id = 1  # Intf.id of BitBurrow hub interface; also Device.id of hub device
 engine = None
 
 
@@ -46,7 +47,7 @@ class AccountKind(enum.Enum):
     ADMIN = 900  # can create, edit, and delete coupon codes; can edit and delete managers and users
     COUPON = 700  # can create managers (that's all)
     MANAGER = 400  # can set up, edit, and delete bases and clients
-    USER = 200  # can set up, edit, and delete clients for a specific intf_id on 1 base
+    USER = 200  # can set up, edit, and delete clients for a specific intf_id on one base
     NONE = 0  # not signed in
 
     def __str__(self):
@@ -457,7 +458,7 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
             intf.backend_port = 123
             intf.frontend_ports = [123]
         intf.default_method = IntfMethod.UCI
-    if intf.base_intf_id == 1:  # a managed router
+    if intf.base_intf_id == hub_id:  # a managed router
         intf.keepalive = 25  # so hub can track IP and initiate a connection to router
         # ed25519 keys may not be supported: https://www.dwarmstrong.org/remote-unlock-dropbear/
         intf.ssh_privkey, intf.ssh_pubkey = net.ssh_keygen(key_type='rsa')
@@ -490,7 +491,7 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
             else:
                 raise Berror(f"B73650 failed to allocate unique host_id after {retry_max} retries")
         else:  # multi-peer
-            intf.host_id = 1
+            intf.host_id = hub_id
             session.add(intf)
             session.commit()
         return intf.id
@@ -502,7 +503,7 @@ def update_wg_show():
     if last and now < last + TimeDelta(minutes=2):  # no need to update yet
         return
     update_wg_show.last_update = now
-    lines = net.sudo_wg(['show', f'{wgif_prefix}1', 'dump'])
+    lines = net.sudo_wg(['show', f'{wgif_prefix}{hub_id}', 'dump'])
     with Session(engine) as session:
         for line in lines.splitlines()[1:]:
             elements = line.split('\t')
@@ -549,7 +550,7 @@ def get_conf(intf_id) -> tuple:
                 p['PersistentKeepalive'] = intf.keepalive
             p['AllowedIPs'] = f'{aip4},{aip6}'
             peers.append(p)
-            if intf.base_intf_id == 1:  # a managed router
+            if intf.base_intf_id == hub_id:  # a managed router
                 interface['SshPrivateKey'] = intf.ssh_privkey  # non-standard conf
                 interface['SshPublicKey'] = intf.ssh_pubkey  # non-standard conf
         else:  # for multi-peer, loop through them
@@ -802,7 +803,7 @@ def new_device(account_id, is_base: bool) -> str:
         else:
             raise Berror(f"B38798 duplicate slug {device.name_slug} after {retry_max} attempts")
         if is_base:  # create WireGuard connection between the new device and the hub
-            hub_peer_id = new_intf(device_id=device.id, base_intf_id=1)
+            hub_peer_id = new_intf(device_id=device.id, base_intf_id=hub_id)
             hub_peer_conf = get_conf_activate_peer(hub_peer_id)
             methodize(hub_peer_conf, 'local.linux')
     return name_slug
@@ -830,7 +831,7 @@ def iter_get_device_by_account_id(aid: int | None):
     """Yield each device for account aid."""
     with Session(engine) as session:
         if aid is None:
-            statement = select(Device).where(Device.id != 1)  # don't show hub device
+            statement = select(Device).where(Device.id != hub_id)  # don't show hub device
         else:
             statement = select(Device).where(Device.account_id == aid)
         for dev in session.exec(statement):
@@ -861,7 +862,7 @@ def hub_peer_id(device_id) -> int | None:
             intf = session.exec(
                 select(Intf).where(
                     Intf.device_id == device_id,
-                    Intf.base_intf_id == 1,
+                    Intf.base_intf_id == hub_id,
                 )
             ).one()
             return intf.id
@@ -878,11 +879,11 @@ def on_startup() -> None:
             hub_device = Device(account_id=None, name="BitBurrow hub")
             session.add(hub_device)
             session.commit()
-            assert hub_device.id == 1, f"B12466 unexpected {hub_device.id=}"
+            assert hub_device.id == hub_id, f"B12466 unexpected {hub_device.id=}"
         if not hub_device_exists:  # hub Intf
             hub_intf_id = new_intf(hub_device.id, base_is_hub=True)
-            assert hub_intf_id == 1, f"B49296 unexpected {hub_intf_id=}"
-    hub_conf = get_conf(intf_id=1)
+            assert hub_intf_id == hub_id, f"B49296 unexpected {hub_intf_id=}"
+    hub_conf = get_conf(intf_id=hub_id)
     methodize(hub_conf, 'local.linux')
 
 
