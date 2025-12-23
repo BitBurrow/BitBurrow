@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
+import logging
 from nicegui import app, ui, Client
 import os
 import hub.uif as uif
@@ -7,6 +8,8 @@ import hub.db as db
 import hub.login_key as lk
 import hub.auth as auth
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
 
 ###
@@ -145,7 +148,8 @@ def home(client: Client):
     ui.run_javascript(f"document.title = '{sections[0]}'")
     idelem = uif.render_page(sections, is_logged_in=True)
     columns = [
-        {'name': 'id', 'sortable': True},  # columns[0]
+        {'name': 'id', 'sortable': True},  # columns[0] visible only for admin
+        {'name': 'login', 'sortable': True},  # columns[1] visible only for admin
         {'name': 'name', 'sortable': True},
         {'name': 'slug', 'classes': 'hidden', 'headerClasses': 'hidden'},
         {'name': 'last_ip', 'sortable': True},
@@ -156,18 +160,24 @@ def home(client: Client):
     for c in columns:
         c['label'] = c['name'].replace('_', ' ').upper()
         c['field'] = c['name']
-    if kind != db.AccountKind.ADMIN:
-        # hide id
+    if kind != db.AccountKind.ADMIN:  # hide id, login if we're not admin
         columns[0]['classes'] = 'hidden'
         columns[0]['headerClasses'] = 'hidden'
+        columns[1]['classes'] = 'hidden'
+        columns[1]['headerClasses'] = 'hidden'
 
-    def build_rows(lsid):
+    def build_rows():
         db.update_wg_show()
         rows = list()
         now = DateTime.now(TimeZone.utc)
         id_to_query = None if kind == db.AccountKind.ADMIN else aid
         for dev, inf in db.iter_get_device_by_account_id(aid=id_to_query):
-            new_row = {'id': dev.id, 'name': dev.name, 'slug': dev.name_slug}
+            new_row = {
+                'id': dev.id,
+                'login': dev.account.login,
+                'name': dev.name,
+                'slug': dev.name_slug,
+            }
             if inf and inf.last_endpoint:
                 new_row['last_ip'] = inf.last_endpoint
                 last_seen = now - DateTime.fromtimestamp(inf.last_handshake, TimeZone.utc)
@@ -181,7 +191,7 @@ def home(client: Client):
             rows.append(new_row)
         return rows
 
-    rows = build_rows(lsid)
+    rows = build_rows()
     table = ui.table(
         columns=columns,
         rows=rows,

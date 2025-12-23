@@ -104,6 +104,7 @@ class Account(SQLModel, table=True):
     email: str = ""  # optional, allow login key reset
     comment: str = ""
     login_sessions: list['LoginSession'] = Relationship(back_populates='account')
+    devices: list['Device'] = Relationship(back_populates='account')
 
 
 def account_count(account_kind=AccountKind.NONE):
@@ -334,6 +335,7 @@ class Device(SQLModel, table=True):
     account_id: Optional[int] = Field(index=True, foreign_key='account.id')  # device admin--manager
     name: str = ''  # e.g. "Base SPWL" but user can modify
     name_slug: Optional[str] = Field(default=None, index=True)  # URL-safe version of name
+    account: Optional[Account] = Relationship(back_populates="devices")
     comment: str = ""
 
 
@@ -809,13 +811,16 @@ def new_device(account_id, is_base: bool) -> str:
 def get_device_by_slug(device_slug: str, account_id: int) -> int | None:
     """Return the device_id for the slug, or None if it doesn't exist for that user."""
     with Session(engine) as session:
+        account = session.exec(select(Account).where(Account.id == account_id)).one()
+        if account.kind == AccountKind.ADMIN:  # allow admins to manage everything
+            statement = select(Device).where(Device.name_slug == device_slug)
+        else:
+            statement = select(Device).where(
+                Device.name_slug == device_slug,
+                Device.account_id == account_id,
+            )
         try:
-            device = session.exec(
-                select(Device).where(
-                    Device.account_id == account_id,
-                    Device.name_slug == device_slug,
-                )
-            ).one()
+            device = session.exec(statement).one()
         except sqlalchemy.exc.NoResultFound:
             return None
         return device.id
@@ -825,7 +830,7 @@ def iter_get_device_by_account_id(aid: int | None):
     """Yield each device for account aid."""
     with Session(engine) as session:
         if aid is None:
-            statement = select(Device)
+            statement = select(Device).where(Device.id != 1)  # don't show hub device
         else:
             statement = select(Device).where(Device.account_id == aid)
         for dev in session.exec(statement):
