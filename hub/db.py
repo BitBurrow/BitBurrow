@@ -86,9 +86,8 @@ lkocc_string = '__login_key_or_coupon_code__'
 
 
 class Account(SQLModel, table=True):
-    __table_args__ = (sqlalchemy.UniqueConstraint('login'),)  # must have a unique login
     id: Optional[int] = Field(primary_key=True, default=None)
-    login: str = Field(index=True, default='')  # 'login' field is used like a username
+    login: str = Field(index=True, unique=True)  # 'login' field is used like a username
     key_hash: str = ''  # Argon2 hash of key (used like a hashed password)
     clients_max: int = 7
     created_at: DateTime = Field(
@@ -259,13 +258,9 @@ def get_account_by_token(token: str | None, log_out=False) -> tuple[int, int, Ac
 
 
 class LoginSession(SQLModel, table=True):
-    __table_args__ = (
-        sqlalchemy.Index("idx_sessions_valid_until", "valid_until"),
-        sqlalchemy.UniqueConstraint("token_hash", name="uq_sessions_token_hash"),
-    )
     id: Optional[int] = Field(primary_key=True, default=None)
     account_id: int = Field(foreign_key='account.id')
-    token_hash: str = ''
+    token_hash: str = Field(index=True, unique=True)
     created_at: DateTime = Field(
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
         default_factory=lambda: DateTime.now(TimeZone.utc),
@@ -275,7 +270,7 @@ class LoginSession(SQLModel, table=True):
         default_factory=lambda: DateTime.now(TimeZone.utc),
     )
     valid_until: DateTime = Field(
-        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        sa_column=Column(sqlalchemy.DateTime(timezone=True), index=True),
         default_factory=lambda: DateTime.now(TimeZone.utc) + TimeDelta(days=1),
     )
     account: Optional[Account] = Relationship(back_populates="login_sessions")
@@ -328,7 +323,7 @@ def iter_get_login_session_by_account_id(aid: int | None):
 
 
 class Device(SQLModel, table=True):
-    __table_args__ = (  # name_slug must be unique for this user
+    __table_args__ = (  # name_slug must be unique *for this user*
         sqlalchemy.UniqueConstraint("account_id", "name_slug", name="uq_device_account_slug"),
         sqlalchemy.Index("ix_device_account_slug", "account_id", "name_slug"),
     )
