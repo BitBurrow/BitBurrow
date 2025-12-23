@@ -68,7 +68,7 @@ def cli(return_help_text=False):
         action='append_const',
         const=-1,
         dest="verbose",  # see log_levels for mapping
-        help="Silence warning messages.",
+        help="Decrease verbosity. Can be used multiple times.",
     )
     parser.add_argument(
         "-v",
@@ -77,7 +77,7 @@ def cli(return_help_text=False):
         const=1,
         help="Increase verbosity. Can be used multiple times.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
     p_generate_config = subparsers.add_parser(
         "generate-config",
         help="Create a new config file with specified domain and public IP address",
@@ -114,7 +114,7 @@ def cli(return_help_text=False):
     )
     subparsers.add_parser(
         "serve",
-        help="Listen on specified port(s).",
+        help="Listen on port(s) specified in the config file.",
     )
     if return_help_text:  # used by README.py
         return parser.format_help()
