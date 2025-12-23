@@ -267,7 +267,7 @@ def manage(client: Client, device_slug: str):
     ui.run_javascript(f"document.title = '{sections[0]}'")
     idelem = uif.render_page(sections, is_logged_in=True)
     conf = db.get_conf(db.hub_peer_id(device_id))
-    code = db.methodize(conf, 'linux.openwrt')
+    code = db.methodize(conf, 'linux.openwrt.gzb')
     idelem['code_for_local_startup'].set_content(code)
 
 
