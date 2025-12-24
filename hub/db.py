@@ -5,12 +5,15 @@ import fastapi
 import hashlib
 import ipaddress
 import logging
+import os
 import re
 import secrets
 import sqlalchemy
 import sqlalchemy.engine
 import sqlite3
 from sqlmodel import Field, Session, SQLModel, select, JSON, Column, Relationship, func
+import subprocess
+import tempfile
 from typing import Optional, Any
 import urllib.parse
 import hub.login_key as lk
@@ -749,11 +752,6 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
             do(f"""    chmod 600 $AK""")
             do(f"""    /etc/init.d/dropbear restart""")
             do(f"""fi""")
-            # if addresses := i.get('Address', None):
-            #     addr = addresses.split(',')
-            #     ip = ipaddress.ip_interface(addr[0]).ip
-            #     ssh -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa \
-            #         -i <({i['SshPrivateKey']}) root@{ip}
     elif platform_l1 == 'linux':
         method = IntfMethod.BASH
         # from https://www.wireguard.com/netns/#improved-rule-based-routing
@@ -804,6 +802,37 @@ def new_device(account_id, is_base: bool) -> str:
             hub_peer_conf = get_conf_activate_peer(hub_peer_id)
             methodize(hub_peer_conf, 'local.linux')
     return name_slug
+
+
+def shell_to_device(device_id: int):
+    with Session(engine) as session:
+        to_delete = list()
+        r = -1
+        try:
+            device = session.exec(select(Device).where(Device.id == device_id)).one()
+            intf = session.exec(select(Intf).where(Intf.device_id == device_id)).one()
+            temp_key_file = tempfile.NamedTemporaryFile(delete=False, mode='w')
+            os.chmod(temp_key_file.name, 0o600)
+            temp_key_file.write(intf.ssh_privkey + '\n')
+            temp_key_file.close()
+            to_delete.append(temp_key_file.name)
+            args = (
+                f'ssh -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa'
+                + f' -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no'
+                + f' -i {temp_key_file.name} root@{intf.ipv4()}'
+            ).split(' ')
+            net.prepend_path_to_prog(args)
+            logger.info(f"connecting to \"{device.name}\"")
+            logger.debug(f"running: {net.arg_string(args)}")
+            # DEVNULL hides known hosts warning (WireGuard makes StrictHostKeyChecking=no safe-ish)
+            r = subprocess.run(args, stderr=subprocess.DEVNULL).returncode
+        except Exception as e:
+            logger.error(f"B75819 {e}")
+        finally:
+            for f in to_delete:
+                os.unlink(f)
+        print(f"Exiting device shell.")
+        return r
 
 
 def get_device_by_slug(device_slug: str, account_id: int) -> int | None:

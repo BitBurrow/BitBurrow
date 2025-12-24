@@ -168,18 +168,22 @@ def ssh_keygen(key_type: str, passphrase: str = '', comment: str = '') -> tuple[
         return privkey, pubkey
 
 
-def run_external(args: list[str], input: str | None = None):
-    """Run an external executable, capturing output. Searches standard system directories.
-
-    Return stdout or raises RuntimeError, depending on the return code."""
-    logger.debug(f"running: {arg_string(args)}")
+def prepend_path_to_prog(args):  # e.g. expand 'sudo wg' to 'sudo /usr/bin/wg'
     exec_count = 2 if args[0] == 'sudo' else 1
-    for i, a in enumerate(args[:exec_count]):  # e.g. expand 'wg' to '/usr/bin/wg'
+    for i, a in enumerate(args[:exec_count]):
         for p in '/usr/sbin:/usr/bin:/sbin:/bin:~/.local/bin'.split(':'):
             joined = os.path.join(p.replace('~', os.path.expanduser('~')), a)
             if os.path.isfile(joined):
                 args[i] = joined
                 break
+
+
+def run_external(args: list[str], input: str | None = None):
+    """Run an external executable, capturing output. Searches standard system directories.
+
+    Return stdout or raises RuntimeError, depending on the return code."""
+    logger.debug(f"running: {arg_string(args)}")
+    prepend_path_to_prog(args)
     proc = subprocess.run(
         args,
         input=None if input is None else input.encode(),

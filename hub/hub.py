@@ -103,6 +103,16 @@ def cli(return_help_text=False):
         "create-coupon-code",
         help="Create a new coupon and display it. KEEP THIS SAFE!",
     )
+    p_shell = subparsers.add_parser(
+        "shell-to-device",
+        help="Launch an ssh shell to DEVICE_ID",
+    )
+    p_shell.add_argument(
+        "device_id",
+        type=int,
+        metavar="DEVICE_ID",
+        help="ID from '/home' page as an admin",
+    )
     p_test = subparsers.add_parser(
         "test",
         help="Run internal test TEST.",
@@ -275,6 +285,9 @@ def entry_point():
             login_key = db.new_account(db.AccountKind.COUPON)
             print(f"Your new {db.AccountKind.COUPON} (KEEP IT SAFE): {login_key}")
             del login_key  # do not store!
+            sys.exit(0)
+        elif args.command == 'shell-to-device':
+            db.shell_to_device(args.device_id)
             sys.exit(0)
         elif args.command == 'test':
             sys.exit(0 if util.integrity_test_by_id(args.test_name) else 1)
