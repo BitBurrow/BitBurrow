@@ -5,6 +5,7 @@ import importlib.metadata
 import io
 import os
 import re
+import textwrap
 import yaml
 import hub.config as conf
 import hub.net as net
@@ -171,3 +172,52 @@ def slugify(s: str, *, max_len: int = 32) -> str:
     s = re.sub(r'[^a-z0-9]+', '-', s.lower())
     s = re.sub(r'-{2,}', '-', s)
     return s[:max_len].strip('-')
+
+
+def port_forward_script():  # called from preinstall.sh
+    using_tls_proxy = (
+        conf.get('frontend.web_proto') == 'https' and conf.get('backend.web_proto') == 'http'
+    )
+    script = f'''
+        #!/bin/bash
+        ##
+        vmname={net.run_external('hostname', '--short')}
+        using_tls_proxy={'true' if using_tls_proxy else 'false'}
+        ##
+        ## Configure port forwarding from host to container for BitBurrow hub
+        ##
+        if [[ $using_tls_proxy != true ]]; do
+            lxc config device add $vmname web_port proxy \\
+                listen=tcp:0.0.0.0:{conf.get('frontend.web_port')} \\
+                connect=tcp:127.0.0.1:{conf.get('backend.web_port')}
+        fi
+        lxc config device add $vmname wgport proxy \\
+            listen=udp:0.0.0.0:{conf.get('frontend.wg_port')} \\
+            connect=udp:127.0.0.1:{conf.get('backend.wg_port')}
+        lxc config device add $vmname udpdns proxy \\
+            listen=udp:{conf.get('frontend.ips')[0]}:53 connect=udp:127.0.0.1:53
+        lxc config device add $vmname tcpdns proxy \\
+            listen=tcp:{conf.get('frontend.ips')[0]}:53 connect=tcp:127.0.0.1:53
+        ##
+        ## Allow tracking of WireGuard connection IPs for DDNS (also logging of client IP
+        ## addresses; otherwise all connections appear to be from 127.0.0.1
+        ##
+        # from https://discuss.linuxcontainers.org/t/making-sure-that-ips-connected-to-the-containers-gameserver-proxy-shows-users-real-ip/8032/5
+        vmip=$(lxc list $vmname -c4 --format=csv |grep -o '^\S*')
+        lxc stop $vmname
+        lxc config device override $vmname eth0 ipv4.address=$vmip
+        if [[ $using_tls_proxy != true ]]; do
+            lxc config device set $vmname web_port nat=true \\
+                listen=tcp:{conf.get('frontend.ips')[0]}:{conf.get('frontend.web_port')} \\
+                connect=tcp:0.0.0.0:{conf.get('backend.web_port')}
+        fi
+        lxc config device set $vmname wg_port nat=true \\
+            listen=udp:{conf.get('frontend.ips')[0]}:{conf.get('frontend.wg_port')} \\
+            connect=tcp:0.0.0.0:{conf.get('backend.wg_port')}
+        lxc start $vmname
+        ##
+        ## Configure port forwarding from host to container for BIND
+        ##
+        ##
+    '''
+    print(textwrap.dedent(script).strip())

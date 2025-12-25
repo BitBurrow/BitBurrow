@@ -113,6 +113,10 @@ def cli(return_help_text=False):
         metavar="DEVICE_ID",
         help="ID from '/home' page as an admin",
     )
+    p_port_forward_script = subparsers.add_parser(
+        "port-forward-script",
+        help="Print a Bash script for forwarding ports to LXC container",
+    )
     p_test = subparsers.add_parser(
         "test",
         help="Run internal test TEST.",
@@ -288,6 +292,9 @@ def entry_point():
             sys.exit(0)
         elif args.command == 'shell-to-device':
             db.shell_to_device(args.device_id)
+            sys.exit(0)
+        elif args.command == 'port-forward-script':
+            util.port_forward_script()
             sys.exit(0)
         elif args.command == 'test':
             sys.exit(0 if util.integrity_test_by_id(args.test_name) else 1)

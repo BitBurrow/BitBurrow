@@ -169,38 +169,6 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
     changed_when: false
     become_user: bitburrow
 
-  - name: Create port forward script
-    copy:
-      content: |
-        #!/bin/bash
-        ##
-        VMNAME={{ hostname.stdout }}
-        bbhub() { lxc exec $VMNAME -- sudo -u bitburrow {{ bbhub }} "$1"; }
-        ##
-        ## Configure port forwarding from host to container for BitBurrow hub
-        ##
-        APIPORT=8443  # hard-coded in app
-        WGPORT=$(bbhub --get-wg-port)
-        lxc config device add $VMNAME apiport proxy listen=tcp:0.0.0.0:$APIPORT connect=tcp:127.0.0.1:$APIPORT
-        lxc config device add $VMNAME wgport proxy listen=udp:0.0.0.0:$WGPORT connect=udp:127.0.0.1:$WGPORT
-        ##
-        ## Allow logging of client IP addresses (otherwise all connections appear to be from 127.0.0.1)
-        ##
-        # from https://discuss.linuxcontainers.org/t/making-sure-that-ips-connected-to-the-containers-gameserver-proxy-shows-users-real-ip/8032/5
-        VMIP=$(lxc list $VMNAME -c4 --format=csv |grep -o '^\S*')
-        lxc stop $VMNAME
-        lxc config device override $VMNAME eth0 ipv4.address=$VMIP
-        lxc config device set $VMNAME apiport nat=true listen=tcp:{{ get_ip.stdout }}:$APIPORT connect=tcp:0.0.0.0:$APIPORT
-        lxc start $VMNAME
-        ##
-        ## Configure port forwarding from host to container for BIND
-        ##
-        lxc config device add $VMNAME udpdns proxy listen=udp:{{ get_ip.stdout }}:53 connect=udp:127.0.0.1:53
-        lxc config device add $VMNAME tcpdns proxy listen=tcp:{{ get_ip.stdout }}:53 connect=tcp:127.0.0.1:53
-        ##
-      dest: /home/bitburrow/set_port_forwarding.sh
-      mode: '0755'
-    become_user: bitburrow
 
   - name: Create systemd service file
     copy:
