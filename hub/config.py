@@ -255,7 +255,7 @@ def generate(path, domain, public_ip):
         with open(path, "x", encoding="utf-8") as f:
             yaml.dump(config, f, sort_keys=False, allow_unicode=True)
     except FileExistsError:
-        raise Berror(f"B88926 file already exists: {path}")
+        logger.warning(f"B88926 not modifying existing file: {path}")
     except Exception:
         raise Berror(f"B26104 cannot create: {path}")
     finally:

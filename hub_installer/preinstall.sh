@@ -3,29 +3,14 @@
 
 set -e # exit script if anything fails
 
-## install dependencies
-sudo apt update
-sudo apt install -y wget ansible
-
 ## verify $SUDO_USER
 test "x$SUDO_USER" != "x" || (echo "Run this script as a normal user using 'sudo'."; false)
 test "x$SUDO_USER" != "xroot" || (echo "Run this script as a normal user using 'sudo'."; false)
 SUDO_USER_HOME=$(eval echo "~$SUDO_USER")
 
-## enable `ssh localhost` for $SUDO_USER
-cat <<"_EOF6471_" |sudo --user $SUDO_USER bash
-mkdir -p ~/.ssh/
-if test ! -f ~/.ssh/id_ed25519; then
-    ssh-keygen -q -f ~/.ssh/id_ed25519 -N '' -t ed25519
-fi
-if ! (grep $(cat ~/.ssh/id_ed25519.pub |awk '{print $2}') ~/.ssh/authorized_keys); then
-    cat ~/.ssh/id_ed25519.pub >>~/.ssh/authorized_keys
-    echo "* $(cat /etc/ssh/ssh_host_ecdsa_key.pub)" >>~/.ssh/known_hosts
-fi
-chmod go-w ~ ~/.ssh
-chmod ugo-x,go-w ~/.ssh/authorized_keys
-mkdir -p ~/hub/
-_EOF6471_
+## install dependencies
+sudo apt update
+sudo apt install -y wget ansible
 
 ## create Ansible script that does most of the installing
 cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
@@ -33,14 +18,6 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
 - hosts: localhost
   become: true
   tasks:
-
-  - name: Ensure remote_tmp directory exists with correct permissions
-    file:
-      path: /home/bitburrow/.ansible/tmp
-      state: directory
-      mode: '0755'
-      owner: bitburrow
-      group: bitburrow
 
   - name: Run apt upgrade
     apt:
@@ -136,39 +113,11 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
       bbhub: /home/bitburrow/bitburrow/.venv/bin/bbhub
     changed_when: false
 
-  - name: Set domain
+  - name: Create config file with given domain, ip
     command:
-      cmd: "{{ bbhub }} --set-domain {{ domain }}"
+      cmd: "{{ bbhub }} generate-config {{ domain }} {{ ip }}"
     become_user: bitburrow
     when: domain is defined
-
-  - name: Define get_domain
-    command:
-      cmd: "{{ bbhub }} --get-domain"
-    register: get_domain
-    changed_when: false
-    become_user: bitburrow
-
-  - name: Set ip
-    command:
-      cmd: "{{ bbhub }} --set-ip {{ ip }}"
-    become_user: bitburrow
-    when: ip is defined
-
-  - name: Define get_ip
-    command:
-      cmd: "{{ bbhub }} --get-ip"
-    register: get_ip
-    changed_when: false
-    become_user: bitburrow
-
-  - name: Define hostname
-    command:
-      cmd: hostname --short
-    register: hostname
-    changed_when: false
-    become_user: bitburrow
-
 
   - name: Create systemd service file
     copy:
@@ -184,7 +133,7 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
         User=bitburrow
         Group=bitburrow
         WorkingDirectory=/home/bitburrow/bitburrow
-        ExecStart={{ poetry }} run python3 {{ bbhub }} --daemon
+        ExecStart={{ poetry }} run python3 {{ bbhub }} serve
         Restart=always
         PrivateTmp=true
         PrivateDevices=false
@@ -232,9 +181,9 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
   - name: Install BIND 🦶3--add zone config
     blockinfile:
       block: |
-        zone "{{ get_domain.stdout }}" {
+        zone "{{ domain }}" {
           type master;
-          file "/var/cache/bind/db.{{ get_domain.stdout }}";
+          file "/var/cache/bind/db.{{ domain }}";
           allow-transfer { none; };
           update-policy local;
         };
@@ -247,20 +196,20 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
     copy:
       content: |
         ;
-        ; BIND data file for {{ get_domain.stdout }}
+        ; BIND data file for {{ domain }}
         ;
         $TTL  500
-        @ IN  SOA  {{ get_domain.stdout }}. root.localhost. (
+        @ IN  SOA  {{ domain }}. root.localhost. (
                     5    ; Serial
                604800    ; Refresh
                 86400    ; Retry
               2419200    ; Expire
                   500 )  ; Negative Cache TTL
         ;
-        @ IN  NS   {{ get_domain.stdout }}.
-        @ IN  A    {{ get_ip.stdout }}
+        @ IN  NS   {{ domain }}.
+        @ IN  A    {{ ip }}
         @ IN  CAA  0 issue "letsencrypt.org"
-      dest: /var/cache/bind/db.{{ get_domain.stdout }}
+      dest: /var/cache/bind/db.{{ domain }}
       force: false  # do not overwrite if file exists (BIND rewrites this file)
       mode: '0644'
       owner: bind
@@ -277,12 +226,6 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
       state: restarted
     when: bind_options.changed or bind_zone_config.changed or bind_zone_file.changed
   
-  - name: Test BIND and DNS config
-    command:
-      cmd: "{{ bbhub }} --test dig"
-    become_user: bitburrow
-    changed_when: false
-
   - name: Wildcard TLS cert 🦶1--install certbot
     # same as: sudo snap install --classic certbot
     snap:
@@ -295,7 +238,7 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
     copy:
       content: |
         #!/bin/bash
-        DNS_ZONE={{ get_domain.stdout }}
+        DNS_ZONE={{ domain }}
         HOST='_acme-challenge'
         sudo -u bind /usr/bin/nsupdate -l << EOM
         zone ${DNS_ZONE}
@@ -316,7 +259,7 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
         --manual --manual-auth-hook=/opt/certbot_hook.sh
         --preferred-challenge=dns
         --register-unsafely-without-email
-        -d '*.'{{ get_domain.stdout }} -d {{ get_domain.stdout }}
+        -d '*.'{{ domain }} -d {{ domain }}
         --server https://acme-v02.api.letsencrypt.org/directory
         && touch /etc/letsencrypt/.registered
       creates: /etc/letsencrypt/.registered  # once it completes successfully, never run again
@@ -328,22 +271,18 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
 
 _EOF3703_
 
-## display a message
-echo
-echo "The script '$0' completed successfully."
-echo
-echo "You could use one of these (or something entirely different) as a prefix for your domain name:"
-echo
-echo -n "    "
-for i in $(seq 1 24); do
-    LC_ALL=C tr -dc a-z </dev/urandom |head -c 1
-    LC_ALL=C tr -dc a-z0-9 </dev/urandom |head -c 2
-    echo -n " "
-done
-echo
-echo
-echo "Your public IP address appears to be:"
-echo
-echo -n "    "
-wget -q -O- api.bigdatacloud.net/data/client-ip |grep ipString |grep -Eo [0-9\.]+
-echo
+## enable `ssh localhost` and run Ansible script
+cat <<"_EOF6471_" |sudo --user $SUDO_USER bash -s -- "$1" "$2"
+mkdir -p ~/.ssh/
+if test ! -f ~/.ssh/id_ed25519; then
+    ssh-keygen -q -f ~/.ssh/id_ed25519 -N '' -t ed25519
+fi
+if ! (grep $(cat ~/.ssh/id_ed25519.pub |awk '{print $2}') ~/.ssh/authorized_keys); then
+    cat ~/.ssh/id_ed25519.pub >>~/.ssh/authorized_keys
+    echo "* $(cat /etc/ssh/ssh_host_ecdsa_key.pub)" >>~/.ssh/known_hosts
+fi
+chmod go-w ~ ~/.ssh
+chmod ugo-x,go-w ~/.ssh/authorized_keys
+mkdir -p ~/hub/ && cd $_
+ansible-playbook -i localhost, install.yaml --extra-vars "domain=$1 ip=$2"
+_EOF6471_
