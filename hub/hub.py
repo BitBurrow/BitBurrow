@@ -140,18 +140,6 @@ def cli(return_help_text=False):
 ###
 
 
-def mkdir_r(path):  # like Linux `mkdir --parents`
-    if path == '':
-        return
-    base_dir = os.path.dirname(path)
-    if not os.path.exists(base_dir):
-        mkdir_r(base_dir)
-    try:
-        os.makedirs(path, exist_ok=True)
-    except (PermissionError, FileNotFoundError, NotADirectoryError):
-        raise Berror(f"B19340 cannot create directory: {path}")
-
-
 def set_logging(args):
     if args.verbose is None:  # no CLI args for log level, so use config setting
         log_index = conf.get('path.log_level')
@@ -272,7 +260,7 @@ def entry_point():
                 db_file = ':memory:'
             elif not db_file.startswith("/"):  # if relative, use dir of args.config_file
                 db_file = os.path.join(os.path.dirname(args.config_file), db_file)
-            mkdir_r(os.path.dirname(db_file))
+            util.mkdir_r(os.path.dirname(db_file))
             migrate_db.migrate(db_file)
             db.engine = create_engine(f'sqlite:///{db_file}', echo=args.create_engine_echo)
             SQLModel.metadata.create_all(db.engine)

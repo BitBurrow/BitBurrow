@@ -174,6 +174,18 @@ def slugify(s: str, *, max_len: int = 32) -> str:
     return s[:max_len].strip('-')
 
 
+def mkdir_r(path):  # like Linux `mkdir --parents`
+    if path == '':
+        return
+    base_dir = os.path.dirname(path)
+    if not os.path.exists(base_dir):
+        mkdir_r(base_dir)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except (PermissionError, FileNotFoundError, NotADirectoryError):
+        raise Berror(f"B19340 cannot create directory: {path}")
+
+
 def port_forward_script():  # called from preinstall.sh
     using_tls_proxy = (
         conf.get('frontend.web_proto') == 'https' and conf.get('backend.web_proto') == 'http'

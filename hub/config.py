@@ -251,6 +251,7 @@ def generate(path, domain, public_ip):
     migrate(domain, public_ip)
     try:
         old_umask = os.umask(0o077)  # create a file with 0600 permissions
+        util.mkdir_r(os.path.dirname(path))
         with open(path, "x", encoding="utf-8") as f:
             yaml.dump(config, f, sort_keys=False, allow_unicode=True)
     except FileExistsError:
