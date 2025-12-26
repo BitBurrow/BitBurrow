@@ -178,6 +178,7 @@ def port_forward_script():  # called from preinstall.sh
     using_tls_proxy = (
         conf.get('frontend.web_proto') == 'https' and conf.get('backend.web_proto') == 'http'
     )
+    # note: all backslashes must be escaped
     script = f'''
         #!/bin/bash
         ##
@@ -203,7 +204,7 @@ def port_forward_script():  # called from preinstall.sh
         ## addresses; otherwise all connections appear to be from 127.0.0.1
         ##
         # from https://discuss.linuxcontainers.org/t/making-sure-that-ips-connected-to-the-containers-gameserver-proxy-shows-users-real-ip/8032/5
-        vmip=$(lxc list $vmname -c4 --format=csv |grep -o '^\S*')
+        vmip=$(lxc list $vmname -c4 --format=csv |grep -o '^\\S*')
         lxc stop $vmname
         lxc config device override $vmname eth0 ipv4.address=$vmip
         if [[ $using_tls_proxy != true ]]; do
