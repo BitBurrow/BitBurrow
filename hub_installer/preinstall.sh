@@ -33,7 +33,6 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
       - python3-poetry  # to install BitBurrow
       - wireguard-tools
       - sqlite3
-      - acl  # `setfacl` below and https://stackoverflow.com/a/56379678
       - bind9-dnsutils  # `dig` tool
       state: latest
 
@@ -225,50 +224,6 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
       enabled: yes
       state: restarted
     when: bind_options.changed or bind_zone_config.changed or bind_zone_file.changed
-  
-  - name: Wildcard TLS cert 🦶1--install certbot
-    # same as: sudo snap install --classic certbot
-    snap:
-      name: certbot
-      classic: yes
-
-  - name: Wildcard TLS cert 🦶2--hook file
-    # debugging: sudo certbot renew --dry-run
-    # debugging: sudo systemctl list-timers snap.certbot.renew.timer
-    copy:
-      content: |
-        #!/bin/bash
-        DNS_ZONE={{ domain }}
-        HOST='_acme-challenge'
-        sudo -u bind /usr/bin/nsupdate -l << EOM
-        zone ${DNS_ZONE}
-        update delete ${HOST}.${CERTBOT_DOMAIN} A
-        update add ${HOST}.${CERTBOT_DOMAIN} 300 TXT "${CERTBOT_VALIDATION}"
-        send
-        EOM
-        sleep 5
-      dest: /opt/certbot_hook.sh
-      mode: '0550'
-      owner: bind
-      group: bind
-
-  - name: Wildcard TLS cert 🦶3--request cert
-    shell:
-      cmd: >
-        certbot certonly -n --agree-tos
-        --manual --manual-auth-hook=/opt/certbot_hook.sh
-        --preferred-challenge=dns
-        --register-unsafely-without-email
-        -d '*.'{{ domain }} -d {{ domain }}
-        --server https://acme-v02.api.letsencrypt.org/directory
-        && touch /etc/letsencrypt/.registered
-      creates: /etc/letsencrypt/.registered  # once it completes successfully, never run again
-
-  - name: Wildcard TLS cert 🦶4--fix permissions so bbhub can read cert
-    command:
-      cmd: setfacl -Rm d:user:bitburrow:rx,user:bitburrow:rx /etc/letsencrypt/
-    changed_when: false
-
 _EOF3703_
 
 ## enable `ssh localhost` and run Ansible script

@@ -117,6 +117,10 @@ def cli(return_help_text=False):
         "port-forward-script",
         help="Print a Bash script for forwarding ports to LXC container",
     )
+    p_tls_cert_script = subparsers.add_parser(
+        "tls-cert-script",
+        help="Print a Bash script for installing and configuring Certbot",
+    )
     p_test = subparsers.add_parser(
         "test",
         help="Run internal test TEST.",
@@ -283,6 +287,8 @@ def entry_point():
             sys.exit(0)
         elif args.command == 'port-forward-script':
             util.port_forward_script()
+        elif args.command == 'tls-cert-script':
+            util.tls_cert_script()
             sys.exit(0)
         elif args.command == 'test':
             sys.exit(0 if util.integrity_test_by_id(args.test_name) else 1)

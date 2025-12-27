@@ -234,3 +234,41 @@ def port_forward_script():  # called from preinstall.sh
         ##
     '''
     print(textwrap.dedent(script).strip())
+
+
+def tls_cert_script():  # script to run certbot for wildcard TLS cert
+    using_certbot = conf.get('backend.web_proto') == 'https'
+    # note: backslashes are not escaped
+    script = r'''
+        #!/bin/bash
+        ##
+        sudo apt install -y acl  # see `setfacl` below and https://stackoverflow.com/a/56379678
+        sudo snap install --classic certbot
+        # debugging: sudo certbot renew --dry-run
+        # debugging: sudo systemctl list-timers snap.certbot.renew.timer
+        cat <<"_EOF9981_" |sudo -u bind tee /opt/certbot_hook.sh  # hook file
+        #!/bin/bash
+        DNS_ZONE={domain}
+        HOST='_acme-challenge'
+        sudo -u bind /usr/bin/nsupdate -l <<EOM
+        zone ${DNS_ZONE}
+        update delete ${HOST}.${CERTBOT_DOMAIN} A
+        update add ${HOST}.${CERTBOT_DOMAIN} 300 TXT "${CERTBOT_VALIDATION}"
+        send
+        EOM
+        sleep 5
+        _EOF9981_
+        sudo chmod 550 /opt/certbot_hook.sh
+        if ! [ -f /etc/letsencrypt/.registered ]; then  # once it completes successfully, never run again
+        sudo certbot certonly -n --agree-tos \
+            --manual --manual-auth-hook=/opt/certbot_hook.sh \
+            --preferred-challenge=dns \
+            --register-unsafely-without-email \
+            -d '*.'{domain} -d {domain} \
+            --server https://acme-v02.api.letsencrypt.org/directory \
+            && sudo touch /etc/letsencrypt/.registered
+        fi
+        # fix permissions so bbhub can read cert
+        sudo setfacl -Rm d:user:bitburrow:rx,user:bitburrow:rx /etc/letsencrypt/
+    '''
+    print(textwrap.dedent(script).strip().replace('{domain}', conf.get('frontend.domain')))
