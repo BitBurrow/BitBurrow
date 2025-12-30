@@ -13,7 +13,8 @@ sudo apt update
 sudo apt install -y wget ansible
 
 ## create Ansible script that does most of the installing
-cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
+mkdir -p "$SUDO_USER_HOME/hub/"
+cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
 ---
 - hosts: localhost
   become: true
@@ -34,6 +35,7 @@ cat <<"_EOF3703_" >$SUDO_USER_HOME/hub/install.yaml
       - wireguard-tools
       - sqlite3
       - bind9-dnsutils  # `dig` tool
+      - acl  # avoid Ansible temp file permissions issue in 'Install bbhub 🦶1--git clone'
       state: latest
 
   - name: Define poetry path
