@@ -35,7 +35,6 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       - wireguard-tools
       - sqlite3
       - bind9-dnsutils  # `dig` tool
-      - acl  # avoid Ansible temp file permissions issue in 'Install bbhub 🦶1--git clone'
       state: latest
 
   - name: Define poetry path
@@ -54,14 +53,6 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
         APT::Periodic::AutocleanInterval "7";
       dest: /etc/apt/apt.conf.d/20auto-upgrades
       mode: '0644'
-
-  - name: Add BitBurrow hub user
-    user:
-      name: bitburrow
-      password: '!'  # disabled
-      state: present
-      create_home: true
-      shell: /bin/bash
 
   - name: Allow sudo without password for specific commands
     copy:
@@ -84,6 +75,24 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
         bitburrow  ALL = NOPASSWD: /sbin/iptables *
       dest: /etc/sudoers.d/bitburrow
       mode: '0640'
+
+  - name: Add BitBurrow hub user
+    user:
+      name: bitburrow
+      password: '!'  # disabled
+      state: present
+      create_home: true
+      shell: /bin/bash
+
+  - name: Ensure remote_tmp directory exists with correct permissions
+    # avoid Ansible temp file permissions issue in 'Install bbhub 🦶1--git clone'
+    # alternate fix: sudo apt install -y acl
+    file:
+      path: /home/bitburrow/.ansible/tmp
+      state: directory
+      mode: '0755'
+      owner: bitburrow
+      group: bitburrow
 
   - name: Install bbhub 🦶1--git clone
     git:
