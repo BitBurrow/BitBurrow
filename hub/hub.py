@@ -287,6 +287,7 @@ def entry_point():
             sys.exit(0)
         elif args.command == 'port-forward-script':
             util.port_forward_script()
+            sys.exit(0)
         elif args.command == 'tls-cert-script':
             util.tls_cert_script()
             sys.exit(0)

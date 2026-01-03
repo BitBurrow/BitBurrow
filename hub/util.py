@@ -189,7 +189,7 @@ def mkdir_r(path):  # like Linux `mkdir --parents`
 def port_forward_script():
     frontp = conf.get('frontend.web_proto')
     backp = conf.get('frontend.web_proto')
-    # note: all backslashes must be escaped
+    # note: all backslashes and non-f-string {} must be doubled
     script = f'''
         #!/bin/bash
         ##
@@ -215,17 +215,17 @@ def port_forward_script():
         ## addresses; otherwise all connections appear to be from 127.0.0.1; from
         ## https://discuss.linuxcontainers.org/t/making-sure-that-ips-connected-to-the-containers-gameserver-proxy-shows-users-real-ip/8032/5
         ##
-        vmip=$(lxc list $vmname -c4 --format=csv |grep -o '^\\S*')
+        vmipv4=$(lxc exec $vmname -- ip -4 -o addr show dev eth0 |awk '{{print $4}}' |cut -d/ -f1)
         lxc stop $vmname
-        lxc config device override $vmname eth0 ipv4.address=$vmip
+        lxc config device override $vmname eth0 ipv4.address=$vmipv4
         if [ $using_tls_proxy != true ]; then
             lxc config device set $vmname web_port nat=true \\
                 listen=tcp:{conf.get('frontend.ips')[0]}:{conf.get('frontend.web_port')} \\
                 connect=tcp:0.0.0.0:{conf.get('backend.web_port')}
         fi
-        lxc config device set $vmname wg_port nat=true \\
+        lxc config device set $vmname wgport nat=true \\
             listen=udp:{conf.get('frontend.ips')[0]}:{conf.get('frontend.wg_port')} \\
-            connect=tcp:0.0.0.0:{conf.get('backend.wg_port')}
+            connect=udp:0.0.0.0:{conf.get('backend.wg_port')}
         lxc start $vmname
     '''
     print(textwrap.dedent(script).strip())
