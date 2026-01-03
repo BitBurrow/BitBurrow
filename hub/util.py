@@ -186,20 +186,19 @@ def mkdir_r(path):  # like Linux `mkdir --parents`
         raise Berror(f"B19340 cannot create directory: {path}")
 
 
-def port_forward_script():  # called from preinstall.sh
-    using_tls_proxy = (
-        conf.get('frontend.web_proto') == 'https' and conf.get('backend.web_proto') == 'http'
-    )
+def port_forward_script():
+    frontp = conf.get('frontend.web_proto')
+    backp = conf.get('frontend.web_proto')
     # note: all backslashes must be escaped
     script = f'''
         #!/bin/bash
         ##
         vmname={net.run_external('hostname', '--short')}
-        using_tls_proxy={'true' if using_tls_proxy else 'false'}
+        using_tls_proxy={'true' if (frontp == 'https' and backp == 'http') else 'false'}
         ##
         ## Configure port forwarding from host to container for BitBurrow hub
         ##
-        if [[ $using_tls_proxy != true ]]; do
+        if [ $using_tls_proxy != true ]; then
             lxc config device add $vmname web_port proxy \\
                 listen=tcp:0.0.0.0:{conf.get('frontend.web_port')} \\
                 connect=tcp:127.0.0.1:{conf.get('backend.web_port')}
@@ -212,14 +211,14 @@ def port_forward_script():  # called from preinstall.sh
         lxc config device add $vmname tcpdns proxy \\
             listen=tcp:{conf.get('frontend.ips')[0]}:53 connect=tcp:127.0.0.1:53
         ##
-        ## Allow tracking of WireGuard connection IPs for DDNS (also logging of client IP
-        ## addresses; otherwise all connections appear to be from 127.0.0.1
+        ## Allow tracking of WireGuard connection IPs for DDNS and logging of client IP
+        ## addresses; otherwise all connections appear to be from 127.0.0.1; from
+        ## https://discuss.linuxcontainers.org/t/making-sure-that-ips-connected-to-the-containers-gameserver-proxy-shows-users-real-ip/8032/5
         ##
-        # from https://discuss.linuxcontainers.org/t/making-sure-that-ips-connected-to-the-containers-gameserver-proxy-shows-users-real-ip/8032/5
         vmip=$(lxc list $vmname -c4 --format=csv |grep -o '^\\S*')
         lxc stop $vmname
         lxc config device override $vmname eth0 ipv4.address=$vmip
-        if [[ $using_tls_proxy != true ]]; do
+        if [ $using_tls_proxy != true ]; then
             lxc config device set $vmname web_port nat=true \\
                 listen=tcp:{conf.get('frontend.ips')[0]}:{conf.get('frontend.web_port')} \\
                 connect=tcp:0.0.0.0:{conf.get('backend.web_port')}
@@ -228,16 +227,13 @@ def port_forward_script():  # called from preinstall.sh
             listen=udp:{conf.get('frontend.ips')[0]}:{conf.get('frontend.wg_port')} \\
             connect=tcp:0.0.0.0:{conf.get('backend.wg_port')}
         lxc start $vmname
-        ##
-        ## Configure port forwarding from host to container for BIND
-        ##
-        ##
     '''
     print(textwrap.dedent(script).strip())
 
 
 def tls_cert_script():  # script to run certbot for wildcard TLS cert
-    using_certbot = conf.get('backend.web_proto') == 'https'
+    if conf.get('backend.web_proto') != 'https':
+        raise Berror(f"B20080 'backend.web_proto' in config file must be 'https'")
     # note: backslashes are not escaped
     script = r'''
         #!/bin/bash
