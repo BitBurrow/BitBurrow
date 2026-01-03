@@ -2,6 +2,7 @@
 # cSpell:disable  # don't spell check this file
 
 set -e # exit script if anything fails
+[ $# -eq 2 ] || { echo "Usage: $0 YOUR_HUB_DOMAIN YOUR_HUB_IP" >&2; exit 1; }
 
 ## verify $SUDO_USER
 test "x$SUDO_USER" != "x" || (echo "Run this script as a normal user using 'sudo'."; false)
@@ -35,6 +36,9 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       - wireguard-tools
       - sqlite3
       - bind9-dnsutils  # `dig` tool
+      # 'acl' avoids Ansible temp file permissions issue in 'Install bbhub 🦶1--git clone'
+      # (note that creating /home/bitburrow/.ansible/tmp doesn't help; we need package 'acl')
+      - acl
       state: latest
 
   - name: Define poetry path
@@ -83,16 +87,6 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       state: present
       create_home: true
       shell: /bin/bash
-
-  - name: Ensure remote_tmp directory exists with correct permissions
-    # avoid Ansible temp file permissions issue in 'Install bbhub 🦶1--git clone'
-    # alternate fix: sudo apt install -y acl
-    file:
-      path: /home/bitburrow/.ansible/tmp
-      state: directory
-      mode: '0755'
-      owner: bitburrow
-      group: bitburrow
 
   - name: Install bbhub 🦶1--git clone
     git:
