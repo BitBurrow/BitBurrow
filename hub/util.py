@@ -77,11 +77,8 @@ integrity_tests_yaml = r'''
   cmd: dig @{public_ip} SOA {domain} +short |keep_only '^\S*'
   expected: '{domain}.'
 # global A record
-# note: below, `dig A {domain} +short` works too (for most set-ups), but going directly
-#     to the nameserver feels better and works for a server behind NAT connected via VPN
-# note: we assume that the parent domain *is* the nameserver
 - id: global_a
-  cmd: dig @{parent_domain} A {domain} +short
+  cmd: dig A {domain} +short
   expected: '{public_ip}'
 # global NS record
 - id: global_ns
