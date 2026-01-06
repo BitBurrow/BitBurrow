@@ -57,24 +57,40 @@ integrity_tests_yaml = r'''
 # note: the ending "|keep_only 'regex'" is similar to CLI "|grep -o 'regex'" with Python's re
 # note: needs r-triplle-quoted string for regex after keep_only
 # localhost domain A record
-- id: bind_a
+- id: bind_a_via_localhost
   cmd: dig @127.0.0.1 A {domain} +short
   expected: '{public_ip}'
 # localhost domain NS record
-- id: bind_ns
+- id: bind_ns_via_localhost
   cmd: dig @127.0.0.1 NS {domain} +short
   expected: '{domain}.'
 # domain A record
-- id: bind_a
+- id: bind_a_via_ip
   cmd: dig @{public_ip} A {domain} +short
   expected: '{public_ip}'
 # domain NS record
-- id: bind_ns
+- id: bind_ns_via_ip
   cmd: dig @{public_ip} NS {domain} +short
   expected: '{domain}.'
+# domain A record over TCP
+- id: bind_tcp_a
+  cmd: dig @{public_ip} A {domain} +tcp +short
+  expected: '{public_ip}'
+# global A via Cloudflare resolver
+- id: global_cf_a
+  cmd: dig @1.1.1.1 A {domain} +short
+  expected: '{public_ip}'
+# global A via Google resolver
+- id: global_google_a
+  cmd: dig @8.8.8.8 A {domain} +short
+  expected: '{public_ip}'
 # domain SOA record
 - id: bind_soa
   cmd: dig @{public_ip} SOA {domain} +short |keep_only '^\S*'
+  expected: '{domain}.'
+# global SOA record
+- id: global_soa
+  cmd: dig SOA {domain} +short |keep_only '^\S*'
   expected: '{domain}.'
 # global A record
 - id: global_a
@@ -88,10 +104,19 @@ integrity_tests_yaml = r'''
 - id: bind_recursive_off
   cmd: dig @{public_ip} A google.com +short
   expected: ''
+# ensure BIND recursive resolver has REFUSED status
+- id: bind_recursive_status
+  cmd: >-  # use YAML folded block scalar for colon and backslash below
+    dig @{public_ip} A google.com |keep_only 'status: [^\s,]*'
+  expected: 'status: REFUSED'
 # ensure zone transfer is disabled (list of VPN bases should not be public)
 - id: bind_axfr_off
   cmd: dig @{public_ip} {domain} AXFR +short
   expected: '; Transfer failed.'
+# EDNS support (OPT pseudo-section present)
+- id: bind_edns_opt
+  cmd: dig @{public_ip} {domain} +dnssec |keep_only '^;; OPT PSEUDOSECTION:'
+  expected: ';; OPT PSEUDOSECTION:'
 ## Pytest code tests--must be done with full source because 'tests/' doesn't get installed
 #- id: pytest
 #  cmd: pytest
@@ -122,7 +147,7 @@ def integrity_test(test):
         result = str(e)
         keep_only = None
     if keep_only != None:
-        first_match = re.search(keep_only, result)
+        first_match = re.search(keep_only, result, flags=re.MULTILINE)
         if first_match != None:
             result = first_match.group(0)
     is_good = expected == result
