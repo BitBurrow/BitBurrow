@@ -502,8 +502,10 @@ def update_wg_show():
     if last and now < last + TimeDelta(minutes=2):  # no need to update yet
         return
     update_wg_show.last_update = now
-    lines = net.sudo_wg(['show', f'{wgif_prefix}{hub_id}', 'dump'])
     with Session(engine) as session:
+        if not hub_intf_exists(session):  # WireGuard is not yet configured
+            return
+        lines = net.sudo_wg(['show', f'{wgif_prefix}{hub_id}', 'dump'])
         for line in lines.splitlines()[1:]:
             elements = line.split('\t')
             intf = session.exec(select(Intf).where(Intf.wg_pubkey == elements[0])).one_or_none()
@@ -776,10 +778,13 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
         return '\n'.join(out) + '\n'
 
 
+def hub_intf_exists(session):
+    return session.exec(select(Intf).where(Intf.id == hub_id)).first() is not None
+
+
 def create_hub_if_missing(session):
     """Don't call before needed in case conf.get('frontend.wg_port') is changed."""
-    hub_device_exists = session.exec(select(sqlalchemy.exists().where(Device.id != None))).one()
-    if not hub_device_exists:
+    if not hub_intf_exists(session):
         # create the hub Device
         hub_device = Device(account_id=None, name="BitBurrow hub")
         session.add(hub_device)
@@ -795,9 +800,11 @@ def create_hub_if_missing(session):
 
 def new_device(account_id, is_base: bool) -> str:
     """Create a new device and return it's name_slug. For bases, set up WireGuard on the hub."""
-    device = Device(account_id=account_id)
     retry_max = 50
     with Session(engine) as session:
+        if is_base:
+            create_hub_if_missing(session)  # in case this is the first base router
+        device = Device(account_id=account_id)
         for attempt in range(retry_max):  # find a unique (for this user) name_slug
             device.name = f'{"Base" if is_base else "Device"} {lk.generate_login_key(3)}'
             name_slug = util.slugify(device.name)
@@ -815,7 +822,6 @@ def new_device(account_id, is_base: bool) -> str:
         else:
             raise Berror(f"B38798 duplicate slug {device.name_slug} after {retry_max} attempts")
         if is_base:  # create WireGuard connection between the new device and the hub
-            create_hub_if_missing(session)  # in case this is the first base router
             hub_peer_id = new_intf(device_id=device.id, base_intf_id=hub_id)
             hub_peer_conf = get_conf_activate_peer(hub_peer_id)
             methodize(hub_peer_conf, 'local.linux')
