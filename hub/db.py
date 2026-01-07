@@ -525,7 +525,7 @@ def get_conf(intf_id) -> tuple:
     peers = list()
     # WireGuard config file docs: https://git.zx2c4.com/wireguard-tools/about/src/man/wg-quick.8
     with Session(engine) as session:
-        intf = session.exec(select(Intf).where(Intf.id == intf_id)).one()
+        intf = session.exec(select(Intf).where(Intf.id == intf_id)).one()  # may raise NoResultFound
         if intf.backend_port:
             interface['ListenPort'] = str(intf.backend_port)
         interface['PrivateKey'] = intf.wg_privkey
@@ -776,6 +776,23 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
         return '\n'.join(out) + '\n'
 
 
+def create_hub_if_missing(session):
+    """Don't call before needed in case conf.get('frontend.wg_port') is changed."""
+    hub_device_exists = session.exec(select(sqlalchemy.exists().where(Device.id != None))).one()
+    if not hub_device_exists:
+        # create the hub Device
+        hub_device = Device(account_id=None, name="BitBurrow hub")
+        session.add(hub_device)
+        session.commit()
+        assert hub_device.id == hub_id, f"B12466 unexpected {hub_device.id=}"
+        # create the hub Intf
+        hub_intf_id = new_intf(hub_device.id, base_is_hub=True)
+        assert hub_intf_id == hub_id, f"B49296 unexpected {hub_intf_id=}"
+        # launch WireGuard server (will be done at at startup from here on)
+        hub_conf = get_conf(intf_id=hub_id)
+        methodize(hub_conf, 'local.linux')
+
+
 def new_device(account_id, is_base: bool) -> str:
     """Create a new device and return it's name_slug. For bases, set up WireGuard on the hub."""
     device = Device(account_id=account_id)
@@ -798,6 +815,7 @@ def new_device(account_id, is_base: bool) -> str:
         else:
             raise Berror(f"B38798 duplicate slug {device.name_slug} after {retry_max} attempts")
         if is_base:  # create WireGuard connection between the new device and the hub
+            create_hub_if_missing(session)  # in case this is the first base router
             hub_peer_id = new_intf(device_id=device.id, base_intf_id=hub_id)
             hub_peer_conf = get_conf_activate_peer(hub_peer_id)
             methodize(hub_peer_conf, 'local.linux')
@@ -897,20 +915,13 @@ def hub_peer_id(device_id) -> int | None:
 
 
 def on_startup() -> None:
-    """If the Device table is empty, create our BitBurrow hub device, WireGuard interface."""
+    """Create the WireGuard interface to listen for base routers."""
     delete_our_wgif(isShutdown=False)
-    with Session(engine) as session:
-        hub_device_exists = session.exec(select(sqlalchemy.exists().where(Device.id != None))).one()
-        if not hub_device_exists:  # hub Device
-            hub_device = Device(account_id=None, name="BitBurrow hub")
-            session.add(hub_device)
-            session.commit()
-            assert hub_device.id == hub_id, f"B12466 unexpected {hub_device.id=}"
-        if not hub_device_exists:  # hub Intf
-            hub_intf_id = new_intf(hub_device.id, base_is_hub=True)
-            assert hub_intf_id == hub_id, f"B49296 unexpected {hub_intf_id=}"
-    hub_conf = get_conf(intf_id=hub_id)
-    methodize(hub_conf, 'local.linux')
+    try:
+        hub_conf = get_conf(intf_id=hub_id)
+        methodize(hub_conf, 'local.linux')
+    except sqlalchemy.exc.NoResultFound:
+        logger.debug(f"B09363 hub Intf does not yet exist")  # see create_hub_if_missing()
 
 
 def delete_our_wgif(isShutdown):  # clean up wg network interfaces

@@ -119,7 +119,8 @@ def migrate(domain='', public_ip=''):  # update config data to current format
                         of BitBurrow hubs more difficult.
                       web_port: Public-facing TCP port, normally 443.
                       web_proto: Must be 'http' or 'https'.
-                      wg_port: Frontend Wireguard UDP port.
+                      wg_port: Frontend Wireguard UDP port. Don't change this once a base router
+                        has been created because the DB and router endpoint and won't get updated.
                       ips: List of IPv4 and IPv6 addresses that 'domain' should point to.
                     backend:
                       web_port: TCP port to listen on.
