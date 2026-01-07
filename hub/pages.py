@@ -230,7 +230,7 @@ def home(client: Client):
 
     async def on_delete(e):
         db.delete_device(e.args['id'])
-        table.rows = build_rows(lsid)
+        table.rows = build_rows()
         table.update()
 
     async def on_add_item():
