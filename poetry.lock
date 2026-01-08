@@ -1326,14 +1326,14 @@ files = [
 
 [[package]]
 name = "nicegui"
-version = "3.4.0"
+version = "3.5.0"
 description = "Create web-based user interfaces with Python. The nice way."
 optional = false
 python-versions = "<4,>=3.9"
 groups = ["main"]
 files = [
-    {file = "nicegui-3.4.0-py3-none-any.whl", hash = "sha256:8c4f3500fc716e24b2ae4fe9ef68b7748164aac606339907b9ec88d35c3c8ab5"},
-    {file = "nicegui-3.4.0.tar.gz", hash = "sha256:b63e8efdd73cb6e7354b390561b4dcb988394c756a67c7048f6bb560c18d23e4"},
+    {file = "nicegui-3.5.0-py3-none-any.whl", hash = "sha256:27d1659bbeeb543c96a9dad0c4da586896becbfec117bf8ed122a6e5b696340c"},
+    {file = "nicegui-3.5.0.tar.gz", hash = "sha256:de802505d76ac3235088b19a32dba0f15cf51caf0d5b0fa6e196bfa0bc247af6"},
 ]
 
 [package.dependencies]
@@ -1360,6 +1360,8 @@ uvicorn = {version = ">=0.22.0", extras = ["standard"]}
 watchfiles = ">=0.18.1"
 
 [package.extras]
+altair = ["altair (>=6.0.0)"]
+anywidget = ["anywidget (>=0.9.21)"]
 highcharts = ["nicegui-highcharts (>=2.0.2,<3)"]
 matplotlib = ["matplotlib (>=3.5.0,<4)"]
 native = ["pywebview (>=5.0.1,<7)"]
@@ -2813,4 +2815,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "4063141f2aa7dedcd1a202c09152324c18431a91900c59e63798aaf7e04b0254"
+content-hash = "719a476ae26a29b561a6463db800b8da07b9ce9f3c3134fb67e62f7ce8baf3b4"
