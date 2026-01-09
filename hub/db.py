@@ -511,10 +511,12 @@ def update_wg_show():
             intf = session.exec(select(Intf).where(Intf.wg_pubkey == elements[0])).one_or_none()
             if intf:
                 endpoint = elements[2]
-                if endpoint != '(none)':
+                last_handshake = int(elements[4])
+                # once in a blue moon, endpoint is '(none)' but last_handshake is 0, so check both
+                if endpoint != '(none)' and last_handshake > 10:  # have valid 'latest handshake'
                     addr = urllib.parse.urlsplit(f'//{endpoint}').hostname  # strip port (IPv6-safe)
                     intf.last_endpoint = addr
-                    intf.last_handshake = elements[4]
+                    intf.last_handshake = last_handshake
                     session.add(intf)
                     session.commit()
             else:
