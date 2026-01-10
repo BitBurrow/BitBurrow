@@ -499,7 +499,7 @@ def render_page(sections, is_logged_in: bool):
     )
     with ui.header().classes('app-header w-full'):
         with ui.row().classes('w-full items-center no-wrap'):
-            logo_icon = ui.image('ui/img/bitburrow.png').style('width: 4rem; height: auto;')
+            logo_icon = ui.image('/ui/img/bitburrow.png').style('width: 4rem; height: auto;')
             logo_icon.on('click', lambda: ui.navigate.to('/home'))
             ui.space()
             menu_icon = ui.icon('menu').classes('cursor-pointer text-white' ' scale-175')
