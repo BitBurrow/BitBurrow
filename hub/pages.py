@@ -182,10 +182,14 @@ def home(client: Client):
             ui.label(value).classes('text-caption')
 
     def render_cards():
+        css = 'w-full max-w-xl mx-auto'
         cards_container.clear()
-        for card in cards:
-            with cards_container:
-                with ui.card().classes('w-full max-w-xl mx-auto'):
+        with cards_container:
+            with ui.column().classes(css):
+                idelem['base_name'] = uif.input(placeholder='Name', font_size='18px', icon='router')
+                idelem['new_base'] = uif.button(text="New base router", align='center')
+            for card in cards:
+                with ui.card().classes(css):
                     ui.label(card['name']).classes('text-subtitle1 font-medium truncate')
                     ui.separator().classes('my-2')
                     with ui.column().classes('w-full gap-1'):
