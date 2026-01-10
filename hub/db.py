@@ -802,22 +802,20 @@ def create_hub_if_missing(session):
 
 def new_device(account_id, is_base: bool, name: str) -> str:
     """Create a new device and return it's name_slug. For bases, set up WireGuard on the hub."""
-    retry_max = 50
+    retry_max = 1000
     with Session(engine) as session:
         if is_base:
             create_hub_if_missing(session)  # in case this is the first base router
         device = Device(account_id=account_id)
+        device.name = name
+        slugged = util.slugify(device.name)
         for attempt in range(retry_max):  # find a unique (for this user) name_slug
-            device.name = name
-            name_slug = util.slugify(device.name)
-            device.name_slug = name_slug
+            device.name_slug = slugged + ('' if attempt == 0 else str(attempt))
             try:
                 session.add(device)
                 session.commit()
             except sqlalchemy.exc.IntegrityError:
                 session.rollback()
-                if attempt > 20:
-                    logger.warning(f"B94707 duplicate slug {device.name_slug} (retry {attempt})")
                 continue
             else:
                 break
@@ -827,7 +825,7 @@ def new_device(account_id, is_base: bool, name: str) -> str:
             hub_peer_id = new_intf(device_id=device.id, base_intf_id=hub_id)
             hub_peer_conf = get_conf_activate_peer(hub_peer_id)
             methodize(hub_peer_conf, 'local.linux')
-    return name_slug
+        return device.name_slug
 
 
 def shell_to_device(device_id: int):
