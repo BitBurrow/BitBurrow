@@ -800,7 +800,7 @@ def create_hub_if_missing(session):
         methodize(hub_conf, 'local.linux')
 
 
-def new_device(account_id, is_base: bool) -> str:
+def new_device(account_id, is_base: bool, name: str) -> str:
     """Create a new device and return it's name_slug. For bases, set up WireGuard on the hub."""
     retry_max = 50
     with Session(engine) as session:
@@ -808,7 +808,7 @@ def new_device(account_id, is_base: bool) -> str:
             create_hub_if_missing(session)  # in case this is the first base router
         device = Device(account_id=account_id)
         for attempt in range(retry_max):  # find a unique (for this user) name_slug
-            device.name = f'{"Base" if is_base else "Device"} {lk.generate_login_key(3)}'
+            device.name = name
             name_slug = util.slugify(device.name)
             device.name_slug = name_slug
             try:

@@ -215,7 +215,8 @@ def home(client: Client):
             button.enable()
 
     async def on_add_item():
-        device_slug = db.new_device(account_id=aid, is_base=True)
+        base_name = idelem['base_name'].value or f'Base {lk.generate_login_key(3)}'
+        device_slug = db.new_device(account_id=aid, is_base=True, name=base_name)
         ui.navigate.to(f'/manage/{device_slug}')
 
     render_cards()

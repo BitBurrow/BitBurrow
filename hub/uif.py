@@ -278,8 +278,11 @@ def image(source='', align='left', alt='', width=None):
     return img
 
 
-def button(text=''):
-    return ui.button(text)
+def button(text='', align='left'):
+    if align == 'left':
+        return ui.button(text)
+    else:
+        return ui.button(text).classes('mx-auto' if align == 'center' else 'mr-auto')
 
 
 def floating_button(icon=''):
