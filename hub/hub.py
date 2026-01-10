@@ -363,6 +363,7 @@ def entry_point():
             host=conf.get('backend.ip'),
             port=conf.get('backend.web_port'),
             title='BitBurrow',
+            favicon='hub/ui/img/favicon.png',
             reload=False,
             uvicorn_logging_level=args.log_level_uvicorn,
             ssl_keyfile=ssl_keyfile,
