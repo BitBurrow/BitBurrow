@@ -163,13 +163,13 @@ def home(client: Client):
             if inf and inf.last_endpoint:
                 new_row['last_ip'] = inf.last_endpoint
                 last_seen = now - DateTime.fromtimestamp(inf.last_handshake, TimeZone.utc)
-                if last_seen > TimeDelta(minutes=10):
-                    new_row['last_seen'] = uif.human_duration(last_seen, positive_only=True)
-                else:
+                if last_seen < TimeDelta(minutes=10):
                     new_row['last_seen'] = "just now"  # values below 7 minutes are somewhat random
+                else:
+                    new_row['last_seen'] = uif.human_duration(last_seen, positive_only=True)
             else:
                 new_row['last_ip'] = '-'
-                new_row['last_seen'] = 'never'
+                new_row['last_seen'] = "never"
             rows.append(new_row)
         return rows
 
@@ -209,6 +209,30 @@ def home(client: Client):
                         ).props('flat color=negative')
 
     async def on_delete_card(card, button):
+        dialog = ui.dialog()
+        confirmed = {'value': False}
+        with dialog, ui.card():
+            if card['last_seen'] != "never":
+                warning = f"WARNING: The base router '{card['name']}'"
+                if card['last_seen'] != "just now":
+                    warning += f" was active {card['last_seen']} ago."
+                else:
+                    warning += f" is currently active."
+                warning += " Are you sure you want to remove the ability to manage this router?"
+            else:
+                warning = f"Delete the base router '{card['name']}'?"
+            ui.label(warning).classes('text-subtitle2')
+            ui.label("This cannot be undone.").classes('text-caption text-grey-7')
+            with ui.row().classes('w-full justify-end gap-2'):
+                ui.button('Cancel', on_click=dialog.close).props('flat')
+                ui.button(
+                    'Delete',
+                    on_click=lambda: (confirmed.__setitem__('value', True), dialog.close()),
+                ).props('flat color=negative')
+        dialog.open()
+        await dialog
+        if not confirmed['value']:
+            return
         button.disable()
         try:
             db.delete_device(card['id'])
