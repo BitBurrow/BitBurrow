@@ -2,7 +2,7 @@ Image sources in chronological order:
 
 * `cloud-data-connection.svg`: https://tabler-icons.io/static/tabler-icons/icons/cloud-data-connection.svg
 * `ticket.svg`: https://tabler-icons.io/static/tabler-icons/icons/ticket.svg
-* `BitBurrow.png`: anonymous, Copyright (c) 2020 Bitinerant
+* `bitburrow.png`: anonymous, Copyright (c) 2020 Bitinerant
 * `padlock-24051.svg`: https://pixabay.com/images/download/padlock-24051.svg
 * `key.svg`: https://tabler-icons.io/static/tabler-icons/icons/key.svg
 * `brass-1293947.png`: https://pixabay.com/images/download/brass-1293947.png

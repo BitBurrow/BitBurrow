@@ -2,7 +2,7 @@
 
 {{ headline(text='**Welcome to BitBurrow**', align='center') }}
 
-{{ image(source='BitBurrow.png', align='center', width='50%') }}
+{{ image(source='bitburrow.png', align='center', width='50%') }}
 
 BitBurrow is a set of tools to help you set up and use a VPN "base" anywhere--at your parents' house, an office, or a
 friend's apartment. And you don't have to be good with computers. A BitBurrow base will allow you to securely use the
