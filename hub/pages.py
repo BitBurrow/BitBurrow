@@ -147,24 +147,6 @@ def home(client: Client):
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     idelem = uif.render_page(sections, is_logged_in=True)
-    columns = [
-        {'name': 'id', 'sortable': True},  # columns[0] visible only for admin
-        {'name': 'login', 'sortable': True},  # columns[1] visible only for admin
-        {'name': 'name', 'sortable': True},
-        {'name': 'slug', 'classes': 'hidden', 'headerClasses': 'hidden'},
-        {'name': 'last_ip', 'sortable': True},
-        {'name': 'last_seen', 'sortable': True},
-        {'name': 'more', 'align': 'center'},  # 'manage' button
-        {'name': 'action', 'align': 'center'},  # 'delete' button
-    ]
-    for c in columns:
-        c['label'] = c['name'].replace('_', ' ').upper()
-        c['field'] = c['name']
-    if kind != db.AccountKind.ADMIN:  # hide id, login if we're not admin
-        columns[0]['classes'] = 'hidden'
-        columns[0]['headerClasses'] = 'hidden'
-        columns[1]['classes'] = 'hidden'
-        columns[1]['headerClasses'] = 'hidden'
 
     def build_rows():
         db.update_wg_show()
@@ -187,58 +169,56 @@ def home(client: Client):
                     new_row['last_seen'] = "just now"  # values below 7 minutes are somewhat random
             else:
                 new_row['last_ip'] = '-'
-                new_row['last_seen'] = '-'
+                new_row['last_seen'] = 'never'
             rows.append(new_row)
         return rows
 
-    rows = build_rows()
-    table = ui.table(
-        columns=columns,
-        rows=rows,
-        row_key='id',
-        column_defaults={'align': 'left'},
-    )
-    table.add_slot(  # 'manage' button
-        'body-cell-more',
-        '''
-            <q-td :props="props">
-                <q-btn
-                  label="Manage"
-                  color="black"
-                  @click="() => $parent.$emit('manage', props.row)"
-                  flat
-                />
-            </q-td>
-        ''',
-    )
-    table.add_slot(  # 'delete' button
-        'body-cell-action',
-        '''
-            <q-td :props="props">
-                <q-btn
-                  label="Delete"
-                  color="red"
-                  @click="() => $parent.$emit('delete', props.row)"
-                  flat
-                />
-            </q-td>
-        ''',
-    )
+    cards = build_rows()
+    cards_container = ui.column().classes('w-full gap-4')
 
-    def on_manage(e):
-        ui.navigate.to(f'/manage/{e.args['slug']}')
+    def kv_row(key, value):
+        with ui.row().classes('w-full justify-between no-wrap'):
+            ui.label(key).classes('text-caption text-grey-7')
+            ui.label(value).classes('text-caption')
 
-    async def on_delete(e):
-        db.delete_device(e.args['id'])
-        table.rows = build_rows()
-        table.update()
+    def render_cards():
+        cards_container.clear()
+        for card in cards:
+            with cards_container:
+                with ui.card().classes('w-full max-w-xl mx-auto'):
+                    ui.label(card['name']).classes('text-subtitle1 font-medium truncate')
+                    ui.separator().classes('my-2')
+                    with ui.column().classes('w-full gap-1'):
+                        if kind == db.AccountKind.ADMIN:
+                            kv_row('ID', card['id'])
+                            kv_row('LOGIN', card['login'])
+                        kv_row('LAST IP', card['last_ip'])
+                        kv_row('LAST SEEN', card['last_seen'])
+                    with ui.row().classes('w-full no-wrap items-center justify-end gap-2'):
+                        ui.button(
+                            'Manage',
+                            on_click=lambda c=card: ui.navigate.to(f'/manage/{c['slug']}'),
+                        ).props('flat')
+                        ui.button(
+                            'Delete',
+                            on_click=lambda e, c=card: on_delete_card(c, e.sender),
+                        ).props('flat color=negative')
+
+    async def on_delete_card(card, button):
+        button.disable()
+        try:
+            db.delete_device(card['id'])
+            nonlocal cards
+            cards = build_rows()
+            render_cards()
+        finally:
+            button.enable()
 
     async def on_add_item():
         device_slug = db.new_device(account_id=aid, is_base=True)
         ui.navigate.to(f'/manage/{device_slug}')
 
-    table.on('manage', on_manage)
-    table.on('delete', on_delete)
+    render_cards()
     idelem['new_base'].on_click(callback=on_add_item)
 
 
