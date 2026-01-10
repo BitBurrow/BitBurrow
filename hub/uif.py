@@ -493,20 +493,26 @@ def render_page(sections, is_logged_in: bool):
     within = list()  # expansion object stack
     within.append(None)  # something for the outer-most level to build on
     enable_external_links_new_tab()
-    with ui.header().classes('app-header'):
-        with ui.row().classes('w-full items-center'):  # better placement of menu drop-down
-            ui.space()  # right-justify the menu
-            menu_icon = ui.icon('menu').classes(
-                'cursor-pointer text-white'
-                ' scale-175'  # scale menu icon
-                ' leading-none'  # keep small header bar hieght
-            )
+    ui.colors(  # docs: https://nicegui.io/documentation/colors
+        primary='#177245',  # our app color, "dark spring green"
+        # see also 'theme.css'
+    )
+    with ui.header().classes('app-header w-full'):
+        with ui.row().classes('w-full items-center no-wrap'):
+            logo_icon = ui.image('ui/img/bitburrow.png').style('width: 4rem; height: auto;')
+            logo_icon.on('click', lambda: ui.navigate.to('/home'))
+            ui.space()
+            menu_icon = ui.icon('menu').classes('cursor-pointer text-white' ' scale-175')
+            # or: ui.button('Menu').props('flat').style('color: var(--app-bg) !important;')
             with ui.menu().props('anchor="top right" self="bottom right"') as menu:
                 if is_logged_in:
                     ui.menu_item("Home", lambda: ui.navigate.to('/home'))
-                    ui.menu_item("View loggin sessions", lambda: ui.navigate.to('/login_sessions'))
-                    ui.menu_item('Log out', on_click=auth.log_out)
+                    ui.menu_item("View login sessions", lambda: ui.navigate.to('/login_sessions'))
+                    ui.menu_item("About", lambda: ui.navigate.to('/about'))
+                    ui.separator()
+                    ui.menu_item("Log out", on_click=auth.log_out)
                 else:
+                    ui.menu_item("About", lambda: ui.navigate.to('/about'))
                     ui.menu_item("Log in", lambda: ui.navigate.to('/login'))
             menu_icon.on('click', lambda e: menu.open())
     with ui.column().classes('w-full max-w-screen-sm mx-auto px-3'):

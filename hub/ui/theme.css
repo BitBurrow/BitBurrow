@@ -1,17 +1,8 @@
 @layer components {
+  :root {
+    --app-bg: #ecf2ef; /* a very light flavor of #177245 */
+  }
   body {
-    background-color: #eef0f2;
-    color: #2b3035; /* text */
+    background-color: var(--app-bg);
   }
-  .nicegui-content {
-    --q-primary: #3d5ea4; /* buttons, etc. */
-    --q-secondary: #708090;
-    --q-accent: #a4b0b9;
-    --q-primary-dark: #c00000;
-    --q-primary-light: #ff6666;
-  }
-  .app-header {
-    background-color: #3d5ea4; /* top header (or maybe #5a5a5a) */
-    color: #e9edf0;
-  }
-
+}
