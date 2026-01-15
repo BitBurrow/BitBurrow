@@ -2,7 +2,30 @@
 # cSpell:disable  # don't spell check this file
 
 set -e # exit script if anything fails
-[ $# -eq 2 ] || { echo "Usage: $0 YOUR_HUB_DOMAIN YOUR_HUB_IP" >&2; exit 1; }
+
+usage() {
+  echo "Usage:"
+  echo "  $0 install YOUR_HUB_DOMAIN YOUR_HUB_IP"
+  echo "  $0 upgrade"
+}
+
+mode="${1:-}"
+case "$mode" in
+  install)
+    [ $# -eq 3 ] || { usage >&2; exit 1; }
+    domain="$2"
+    ip="$3"
+    ;;
+  upgrade)
+    [ $# -eq 1 ] || { usage >&2; exit 1; }
+    domain=""
+    ip=""
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
 
 ## verify $SUDO_USER
 test "x$SUDO_USER" != "x" || (echo "Run this script as a normal user using 'sudo'."; false)
@@ -162,6 +185,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       name:
       - bind9
       state: latest
+    when: domain is defined
 
   - name: Install BIND 🦶2--options file
     # changes from default BIND named.conf.options file:
@@ -181,6 +205,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
         };
       dest: /etc/bind/named.conf.options
     register: bind_options
+    when: domain is defined
 
   - name: Install BIND 🦶3--add zone config
     blockinfile:
@@ -193,6 +218,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
         };
       path: /etc/bind/named.conf.local
     register: bind_zone_config
+    when: domain is defined
 
   - name: Install BIND 🦶4--add zone file
     # re CAA record, see https://letsencrypt.org/docs/caa/
@@ -219,6 +245,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       owner: bind
       group: bind
     register: bind_zone_file
+    when: domain is defined
 
   - name: Install BIND 🦶5--restart
     # debugging: sudo named-checkconf  # should display nothing
@@ -228,11 +255,11 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       name: bind9
       enabled: yes
       state: restarted
-    when: bind_options.changed or bind_zone_config.changed or bind_zone_file.changed
+    when: (domain is defined) and (bind_options.changed or bind_zone_config.changed or bind_zone_file.changed)
 _EOF3703_
 
 ## enable `ssh localhost` and run Ansible script
-cat <<"_EOF6471_" |sudo --user $SUDO_USER bash -s -- "$1" "$2"
+cat <<"_EOF6471_" |sudo --user $SUDO_USER bash -s -- "$domain" "$ip"
 mkdir -p ~/.ssh/
 if test ! -f ~/.ssh/id_ed25519; then
     ssh-keygen -q -f ~/.ssh/id_ed25519 -N '' -t ed25519
@@ -244,5 +271,9 @@ fi
 chmod go-w ~ ~/.ssh
 chmod ugo-x,go-w ~/.ssh/authorized_keys
 mkdir -p ~/hub/ && cd $_
-ansible-playbook -i localhost, install.yaml --extra-vars "domain=$1 ip=$2"
+if test "x$1" = "x"; then
+  ansible-playbook -i localhost, install.yaml
+else
+  ansible-playbook -i localhost, install.yaml --extra-vars "domain=$1 ip=$2"
+fi
 _EOF6471_
