@@ -141,6 +141,29 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       {{ poetry }} run rfbrowser install chromium-headless-shell  # harmless to rerun
     become_user: bitburrow
 
+  - name: Install bbhub 🦶5--get Robot Framework dependencies list
+    shell: |-
+      cd /home/bitburrow/bitburrow/
+      {{ poetry }} run rfbrowser install --dry-run --with-deps chromium-headless-shell
+    become_user: bitburrow
+    register: rfbrowser_dryrun
+    changed_when: false
+
+  - name: Install bbhub 🦶6--extract RF dependencies list from output
+    set_fact:
+      rfbrowser_apt_sudo_cmd: >-
+        {{
+          (rfbrowser_dryrun.stdout
+            | regex_search('^sudo -- sh -c .apt-get[^\r\n]*"$', multiline=True))
+          | mandatory('Could not find a matching apt-get line')
+        }}
+
+  - name: Install bbhub 🦶7--install Robot Framework dependencies
+    shell: |-
+      {{ rfbrowser_apt_sudo_cmd }}
+    register: rfbrowser_apt_install
+    changed_when: "'0 upgraded' not in (rfbrowser_apt_install.stdout | default(''))"
+
   - name: Define bbhub path
     set_fact:
       bbhub: /home/bitburrow/bitburrow/.venv/bin/bbhub
