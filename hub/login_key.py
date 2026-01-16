@@ -15,6 +15,7 @@ from typing import Final
 #     → log(10^16)÷log(2) ≈ 53 bits of entropy
 # Plus Codes use base 20 ('23456789CFGHJMPQRVWX'): https://en.wikipedia.org/wiki/Open_Location_Code
 base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
+base20_digits: Final[str] = 'BCDFGHJKLMNPQRSTVWXZ'  # no numbers
 login_key_len: Final[int] = 18
 login_len: Final[int] = 4  # digits from beginning of login_key, used like a username
 key_len: Final[int] = 14  # remaining digits of login_key, used like a password
@@ -37,3 +38,7 @@ def strip_login_key(k):
 def dress_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'
     assert len(k) == login_key_len
     return f'{k[0:4]}-{k[4:9]}-{k[9:13]}-{k[13:login_key_len]}'
+
+
+def generate_login_key_letters(n):  # same but letters only (for domain names)
+    return ''.join(secrets.choice(base20_digits) for i in range(n))

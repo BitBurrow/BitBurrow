@@ -7,6 +7,7 @@ import hub.uif as uif
 import hub.db as db
 import hub.login_key as lk
 import hub.auth as auth
+import hub.config as conf
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -159,6 +160,7 @@ def home(client: Client):
                 'login': dev.account.login,
                 'name': dev.name,
                 'slug': dev.name_slug,
+                'subd': f'{dev.subd}.{conf.get('frontend.domain')}' if dev.subd else '-',
             }
             if inf and inf.last_endpoint:
                 new_row['last_ip'] = inf.last_endpoint
@@ -190,7 +192,9 @@ def home(client: Client):
                 idelem['new_base'] = uif.button(text="New base router", align='center')
             for card in cards:
                 with ui.card().classes(css):
-                    ui.label(card['name']).classes('text-subtitle1 font-medium truncate')
+                    with ui.column().classes('min-w-0 gap-0'):
+                        ui.label(card['name']).classes('text-subtitle1 font-medium truncate')
+                        ui.label(card['subd']).classes('text-caption text-grey-7 truncate')
                     ui.separator().classes('my-2')
                     with ui.column().classes('w-full gap-1'):
                         if kind == db.AccountKind.ADMIN:

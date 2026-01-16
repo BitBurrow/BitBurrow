@@ -333,8 +333,10 @@ class Device(SQLModel, table=True):
     )
     id: Optional[int] = Field(primary_key=True, default=None)
     account_id: Optional[int] = Field(index=True, foreign_key='account.id')  # device admin--manager
-    name: str = ''  # e.g. "Base SPWL" but user can modify
+    name: str = ''  # e.g. "Base SPW" but user can modify
     name_slug: Optional[str] = Field(default=None, index=True)  # URL-safe version of name
+    # for bases, subd is the left-most label of FQDN, e.g. y99g in y99g.vxm.example.org
+    subd: Optional[str] = Field(default=None, index=True, unique=True)
     account: Optional[Account] = Relationship(back_populates="devices")
     comment: str = ""
 
@@ -802,13 +804,33 @@ def create_hub_if_missing(session):
 
 def new_device(account_id, is_base: bool, name: str) -> str:
     """Create a new device and return it's name_slug. For bases, set up WireGuard on the hub."""
-    retry_max = 1000
     with Session(engine) as session:
         if is_base:
             create_hub_if_missing(session)  # in case this is the first base router
         device = Device(account_id=account_id)
+        if is_base:
+            retry_max = 200
+            for attempt in range(retry_max):  # find a unique subd
+                # a domain name that begins with a digit is legal but occasionally problematic
+                # up to 439,040 base routers; Linux probably can't handle nearly that many anyhow
+                device.subd = (lk.generate_login_key_letters(1) + lk.generate_login_key(3)).lower()
+                try:
+                    session.add(device)
+                    session.commit()
+                except sqlalchemy.exc.IntegrityError:
+                    session.rollback()
+                    if attempt > 170:
+                        logger.warning(f"B97484 duplicate subd {device.subd} (retry {attempt})")
+                    continue
+                else:
+                    break
+            else:
+                raise Berror(f"B08611 duplicate subd {device.subd} after {retry_max} attempts")
+        else:
+            device.subd = None
         device.name = name
         slugged = util.slugify(device.name)
+        retry_max = 1000
         for attempt in range(retry_max):  # find a unique (for this user) name_slug
             device.name_slug = slugged + ('' if attempt == 0 else str(attempt))
             try:
