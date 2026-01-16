@@ -140,6 +140,8 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       cd /home/bitburrow/bitburrow/
       {{ poetry }} run rfbrowser install chromium-headless-shell  # harmless to rerun
     become_user: bitburrow
+    register: rfbrowser_install_binaries
+    changed_when: "'Downloading ' in (rfbrowser_install_binaries.stdout | default(''))"
 
   - name: Install bbhub 🦶5--get Robot Framework dependencies list
     shell: |-
