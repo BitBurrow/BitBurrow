@@ -135,6 +135,12 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
     become_user: bitburrow
     when: git_result.changed
 
+  - name: Install bbhub 🦶4--install headless Chromium for Robot Framework Browser
+    shell: |-
+      cd /home/bitburrow/bitburrow/
+      {{ poetry }} run rfbrowser install chromium-headless-shell  # harmless to rerun
+    become_user: bitburrow
+
   - name: Define bbhub path
     set_fact:
       bbhub: /home/bitburrow/bitburrow/.venv/bin/bbhub
