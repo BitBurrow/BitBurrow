@@ -42,6 +42,25 @@ class CredentialsError(Exception):
     pass
 
 
+def set_unique_value(session, rec, attr, retry, valuef):
+    """Loop until a unique value is found or retries exceeded. Relies on SQLModel 'unique' rules."""
+    warn_at = int(retry * 0.9)
+    for attempt in range(retry):  # find a unique value
+        setattr(rec, attr, valuef(attempt))
+        try:
+            session.add(rec)
+            session.commit()
+        except sqlalchemy.exc.IntegrityError:
+            session.rollback()
+            if attempt > warn_at:
+                logger.warning(f"B97484 duplicate {attr} {getattr(rec, attr)} (retry {attempt})")
+            continue
+        else:
+            break
+    else:
+        raise Berror(f"B08611 duplicate {attr} {getattr(rec, attr)} after {retry} attempts")
+
+
 ###
 ### DB table Account - an administrative login, coupon code, manager, or user
 ###
@@ -129,22 +148,9 @@ def new_account(kind: AccountKind, valid_for=TimeDelta(days=10950), parent_accou
     account.kind = kind
     account.valid_until = DateTime.now(TimeZone.utc) + valid_for
     account.parent_id = parent_account_id
-    retry_max = 50
     with Session(engine) as session:
-        for attempt in range(retry_max):
-            account.login = lk.generate_login_key(lk.login_len)
-            try:
-                session.add(account)
-                session.commit()
-            except sqlalchemy.exc.IntegrityError:
-                session.rollback()
-                if attempt > 20:
-                    logger.warning(f"B09974 duplicate login {account.login} (retry {attempt})")
-                continue
-            else:
-                break
-        else:
-            raise Berror(f"B00995 duplicate login {account.login} after {retry_max} attempts")
+        new_login = lambda _: lk.generate_login_key(lk.login_len)
+        set_unique_value(session, account, 'login', retry=50, valuef=new_login)
         login_key = account.login + key
     logger.info(f"Created new {kind.token_name()} {login_key}")
     return login_key
@@ -465,32 +471,23 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
         intf.ssh_privkey, intf.ssh_pubkey = net.ssh_keygen(key_type='rsa')
     host_id_min = 39
     host_id_limit = 2**intf.host_bits - 1
-    retry_max = 25
     with Session(engine) as session:
         if base_intf_id:  # single-peer, i.e. new 'client'
-            for attempt in range(retry_max):  # find an unused host_id in the network
-                try:
-                    statement = select(Intf.host_id).where(
-                        Intf.host_id >= host_id_min,
-                        Intf.host_id < host_id_limit,
-                        Intf.base_intf_id == base_intf_id,
-                    )
-                    used = set(session.exec(statement))
-                    free = min(set(range(host_id_min, host_id_limit)) - used, default=None)
-                    if free is None:
-                        raise Berror(
-                            f"B95195 no free IPs in range [{host_id_min}, {host_id_limit})"
-                        )
-                    intf.host_id = free
-                    session.add(intf)
-                    session.commit()
-                except sqlalchemy.IntegrityError:
-                    session.rollback()
-                    continue
-                else:
-                    break
-            else:
-                raise Berror(f"B73650 failed to allocate unique host_id after {retry_max} retries")
+            statement = select(Intf.host_id).where(
+                Intf.host_id >= host_id_min,
+                Intf.host_id < host_id_limit,
+                Intf.base_intf_id == base_intf_id,
+            )
+
+            def first_free(_):
+                used = set(session.exec(statement))
+                free = min(set(range(host_id_min, host_id_limit)) - used, default=None)
+                if free is None:
+                    raise Berror(f"B95195 no free IPs in range [{host_id_min}, {host_id_limit})")
+                return free
+
+            # find an unused host_id in the network
+            set_unique_value(session, intf, 'host_id', retry=25, valuef=first_free)
         else:  # multi-peer
             intf.host_id = hub_id
             session.add(intf)
@@ -809,40 +806,17 @@ def new_device(account_id, is_base: bool, name: str) -> str:
             create_hub_if_missing(session)  # in case this is the first base router
         device = Device(account_id=account_id)
         if is_base:
-            retry_max = 200
-            for attempt in range(retry_max):  # find a unique subd
-                # a domain name that begins with a digit is legal but occasionally problematic
-                # up to 439,040 base routers; Linux probably can't handle nearly that many anyhow
-                device.subd = (lk.generate_login_key_letters(1) + lk.generate_login_key(3)).lower()
-                try:
-                    session.add(device)
-                    session.commit()
-                except sqlalchemy.exc.IntegrityError:
-                    session.rollback()
-                    if attempt > 170:
-                        logger.warning(f"B97484 duplicate subd {device.subd} (retry {attempt})")
-                    continue
-                else:
-                    break
-            else:
-                raise Berror(f"B08611 duplicate subd {device.subd} after {retry_max} attempts")
+            # a domain name that begins with a digit is legal but occasionally problematic
+            # up to 439,040 base routers; Linux probably can't handle nearly that many anyhow
+            subd = lambda _: (lk.generate_login_key_letters(1) + lk.generate_login_key(3)).lower()
+            set_unique_value(session, device, 'subd', retry=200, valuef=subd)
         else:
             device.subd = None
         device.name = name
         slugged = util.slugify(device.name)
-        retry_max = 1000
-        for attempt in range(retry_max):  # find a unique (for this user) name_slug
-            device.name_slug = slugged + ('' if attempt == 0 else str(attempt))
-            try:
-                session.add(device)
-                session.commit()
-            except sqlalchemy.exc.IntegrityError:
-                session.rollback()
-                continue
-            else:
-                break
-        else:
-            raise Berror(f"B38798 duplicate slug {device.name_slug} after {retry_max} attempts")
+        # find a unique (for this user) name_slug
+        name_slug = lambda attempt: slugged + ('' if attempt == 0 else str(attempt))
+        set_unique_value(session, device, 'name_slug', retry=1000, valuef=name_slug)
         if is_base:  # create WireGuard connection between the new device and the hub
             hub_peer_id = new_intf(device_id=device.id, base_intf_id=hub_id)
             hub_peer_conf = get_conf_activate_peer(hub_peer_id)
