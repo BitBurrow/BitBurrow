@@ -190,12 +190,13 @@ def home(client: Client):
             with ui.column().classes(css):
                 idelem['base_name'] = uif.input(placeholder='Name', font_size='18px', icon='router')
                 idelem['new_base'] = uif.button(text="New base router", align='center')
+                idelem['new_base'].on_click(callback=on_add_item)
             for card in cards:
                 with ui.card().classes(css):
                     with ui.column().classes('min-w-0 gap-0'):
                         ui.label(card['name']).classes('text-subtitle1 font-medium truncate')
                         ui.label(card['subd']).classes('text-caption text-grey-7 truncate')
-                    ui.separator().classes('my-2')
+                    # doesn't really improve anything: ui.separator().classes('my-2')
                     with ui.column().classes('w-full gap-1'):
                         if kind == db.AccountKind.ADMIN:
                             kv_row('ID', card['id'])
@@ -252,7 +253,6 @@ def home(client: Client):
         ui.navigate.to(f'/manage/{device_slug}')
 
     render_cards()
-    idelem['new_base'].on_click(callback=on_add_item)
 
 
 ###
