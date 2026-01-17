@@ -416,11 +416,12 @@ def render_markdown_with_ctags(md: str, idelem: Dict[str, object], within=None):
 
 
 def render_expansion(title_md: str, within=None):
+    exp_css = 'w-full rounded-xl shadow-sm'
     if within:
         with within:
-            e = ui.expansion(icon='chevron_right').props('dense').classes('rounded-xl shadow-sm')
+            e = ui.expansion(icon='chevron_right').props('dense').classes(exp_css)
     else:
-        e = ui.expansion(icon='chevron_right').props('dense').classes('rounded-xl shadow-sm')
+        e = ui.expansion(icon='chevron_right').props('dense').classes(exp_css)
     with e.add_slot('header'):
         # using ui.row() with ui.icon() and ui.markdown() split bullet when screen was narrow
         content = f'■\u2000 {title_md.lstrip("# \t")}'  # EN QUAD to force more space after bullet
