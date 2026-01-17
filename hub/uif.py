@@ -235,7 +235,7 @@ def input(
     show_copy: bool = False,
 ):
     # docs: https://nicegui.io/documentation/input
-    # icon names: https://quasar.dev/vue-components/icon/#ionicons
+    # names for icons: https://quasar.dev/vue-components/icon/#ionicons
     props = [f'input-class="text-{align}"']
     if readonly:
         props.append('readonly')  # QInput readonly prop
@@ -492,16 +492,13 @@ def test_parse_markdown_sections():
     assert parse_markdown_sections(input) == expected_output
 
 
-def render_page(sections, is_logged_in: bool):
-    idelem: Dict[str, object] = dict()  # map each element ID to its actual object
-    within = list()  # expansion object stack
-    within.append(None)  # something for the outer-most level to build on
+def render_header(is_logged_in: bool):
     enable_external_links_new_tab()
     ui.colors(  # docs: https://nicegui.io/documentation/colors
         primary='#177245',  # our app color, "dark spring green"
         # see also 'theme.css'
     )
-    with ui.header().classes('app-header w-full'):
+    with ui.header().classes('app-header w-full'):  # top header bar
         with ui.row().classes('w-full items-center no-wrap'):
             logo_icon = ui.image('/ui/img/bitburrow.png').style('width: 4rem; height: auto;')
             logo_icon.on('click', lambda: ui.navigate.to('/home'))
@@ -519,22 +516,27 @@ def render_page(sections, is_logged_in: bool):
                     ui.menu_item("About", lambda: ui.navigate.to('/about'))
                     ui.menu_item("Log in", lambda: ui.navigate.to('/login'))
             menu_icon.on('click', lambda e: menu.open())
-    with ui.column().classes('w-full max-w-screen-sm mx-auto px-3'):
-        stack = list()  # the part of the tree that is left to traverse
-        stack.append(sections[1:])  # push the list without title
-        while len(stack):  # depth-first traversal of sections
-            secs = stack.pop()
-            for i, sec in enumerate(secs):
-                if isinstance(sec, str):
-                    w = within[-1]  # current expansion object
-                    render_markdown_with_ctags(sec, idelem, w)
-                else:  # sec is a list representing a section header and sections
-                    assert isinstance(sec[0], str)
-                    w = within[-1]  # current expansion object
-                    within.append(render_expansion(sec[0], w))
-                    stack.append(secs[i + 1 :])  # remainder of current list
-                    stack.append(sec[1:])  # sublist without title
-                    break
-            else:  # done with secs at this level
-                within.pop()
+
+
+def render_content(sections):
+    within = list()  # expansion object stack
+    within.append(None)  # something for the outer-most level to build on
+    idelem: Dict[str, object] = dict()  # map each element ID to its actual object
+    stack = list()  # the part of the tree that is left to traverse
+    stack.append(sections[1:])  # push the list without title
+    while len(stack):  # depth-first traversal of sections
+        secs = stack.pop()
+        for i, sec in enumerate(secs):
+            if isinstance(sec, str):
+                w = within[-1]  # current expansion object
+                render_markdown_with_ctags(sec, idelem, w)
+            else:  # sec is a list representing a section header and sections
+                assert isinstance(sec[0], str)
+                w = within[-1]  # current expansion object
+                within.append(render_expansion(sec[0], w))
+                stack.append(secs[i + 1 :])  # remainder of current list
+                stack.append(sec[1:])  # sublist without title
+                break
+        else:  # done with secs at this level
+            within.pop()
     return idelem

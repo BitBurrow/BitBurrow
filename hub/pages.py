@@ -28,7 +28,8 @@ def welcome(client: Client):
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
     qparam_coupon = client.request.query_params.get('coupon')
-    idelem = uif.render_page(sections, is_logged_in=False)
+    uif.render_header(is_logged_in=False)
+    idelem = uif.render_content(sections)
     if qparam_coupon:
         idelem['coupon_code'].set_value(qparam_coupon)
 
@@ -72,7 +73,8 @@ def confirm(client: Client):
     with open(md_path, 'r', encoding='utf-8') as f:
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
-    idelem = uif.render_page(sections, is_logged_in=False)
+    uif.render_header(is_logged_in=False)
+    idelem = uif.render_content(sections)
     login_key = db.new_account(
         kind=db.AccountKind.NONE,  # in DB but disabled until confirmed
         valid_for=TimeDelta(days=1),  # expire in 1 day if not confirmed
@@ -112,7 +114,8 @@ def login(client: Client):
     with open(md_path, 'r', encoding='utf-8') as f:
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
-    idelem = uif.render_page(sections, is_logged_in=False)
+    uif.render_header(is_logged_in=False)
+    idelem = uif.render_content(sections)
 
     async def on_continue():
         login_key = lk.strip_login_key(idelem['login_key'].value or '')
@@ -147,7 +150,8 @@ def home(client: Client):
     with open(md_path, 'r', encoding='utf-8') as f:
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
-    idelem = uif.render_page(sections, is_logged_in=True)
+    uif.render_header(is_logged_in=True)
+    idelem = uif.render_content(sections)
 
     def build_rows():
         db.update_wg_show()
@@ -272,13 +276,15 @@ def manage(client: Client, device_slug: str):
             md = f.read().replace('{device_slug}', device_slug)
             sections = uif.parse_markdown_sections(md)
         ui.run_javascript(f"document.title = '{sections[0]}'")
-        idelem = uif.render_page(sections, is_logged_in=True)
+        uif.render_header(is_logged_in=True)
+        idelem = uif.render_content(sections)
         return
     md_path = os.path.join(ui_path, 'manage.md')
     with open(md_path, 'r', encoding='utf-8') as f:
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
-    idelem = uif.render_page(sections, is_logged_in=True)
+    uif.render_header(is_logged_in=True)
+    idelem = uif.render_content(sections)
     conf = db.get_conf(db.hub_peer_id(device_id))
     code = db.methodize(conf, 'linux.openwrt.gzb')
     idelem['code_for_local_startup'].set_content(code)
@@ -299,7 +305,9 @@ def login_sessions(client: Client):
     with open(md_path, 'r', encoding='utf-8') as f:
         sections = uif.parse_markdown_sections(f.read())
     ui.run_javascript(f"document.title = '{sections[0]}'")
-    idelem = uif.render_page(sections, is_logged_in=True)
+    uif.render_header(is_logged_in=True)
+    idelem = uif.render_content(sections)
+
     columns = [
         {'name': 'id', 'sortable': True},  # columns[0]
         {'name': 'login', 'sortable': True},  # columns[1]
