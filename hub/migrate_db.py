@@ -4,7 +4,9 @@ import sqlite3
 import tempfile
 from contextlib import contextmanager
 from typing import Iterable
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import SQLModel, create_engine, Session, select
+import hub.db as db
+import hub.login_key as lk
 import hub.util as util
 
 ### How to make a new schema version of the database
@@ -96,10 +98,6 @@ def migrate(db_path: str) -> None:
     if current_version >= db_schema_version:
         return
     logger.info(f"B49255 migrating database from version {current_version} to {db_schema_version}")
-    if current_version == 22:  # version 22 → 23 renamed 2 data fields
-        with sqlite_conn(db_path) as conn:
-            conn.execute('''ALTER TABLE "Intf" RENAME COLUMN "privkey" TO "wg_privkey";''')
-            conn.execute('''ALTER TABLE "Intf" RENAME COLUMN "pubkey" TO "wg_pubkey";''')
     with tempfile.NamedTemporaryFile(
         dir=os.path.dirname(db_path),  # in the same directory
         prefix='data-',
@@ -114,3 +112,24 @@ def migrate(db_path: str) -> None:
         conn.execute(f'''PRAGMA user_version = {int(db_schema_version)};''')
     copy_data_from_old_db_to_new(tmp_path, db_path)
     util.rotate_backups(db_path, tmp_path)
+    if current_version < 23:  # version 22 → 23: renamed 2 Intf data fields
+        with sqlite_conn(db_path) as conn:
+            conn.execute('''ALTER TABLE "Intf" RENAME COLUMN "privkey" TO "wg_privkey";''')
+            conn.execute('''ALTER TABLE "Intf" RENAME COLUMN "pubkey" TO "wg_pubkey";''')
+        current_version = 23
+    if current_version < 27:  # version 26 → 27: added Device.subd
+        engine = create_engine(f"sqlite:///{db_path}")
+        with Session(engine) as session:
+            statement = select(db.Intf.device_id).where(db.Intf.base_intf_id == db.hub_id)
+            device_ids = session.exec(statement.distinct()).all()
+            subd = lambda _: (lk.generate_login_key_letters(1) + lk.generate_login_key(3)).lower()
+            for device_id in device_ids:
+                device = session.get(db.Device, device_id)
+                if device.subd is not None:
+                    continue
+                db.set_unique_value(session, device, "subd", retry=200, valuef=subd)
+            session.commit()
+        current_version = 27
+    # if current_version < ...
+    #     ...
+    #     current_version = ...
