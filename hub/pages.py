@@ -192,7 +192,12 @@ def home(client: Client):
         cards_container.clear()
         with cards_container:
             with ui.column().classes(css):
-                idelem['base_name'] = uif.input(placeholder='Name', font_size='18px', icon='router')
+                idelem['base_name'] = uif.input(
+                    placeholder='Name',
+                    font_size='18px',
+                    icon='router',
+                    max_length=70,
+                )
                 idelem['new_base'] = uif.button(text="New base router", align='center')
                 idelem['new_base'].on_click(callback=on_add_item)
             for card in cards:
@@ -252,7 +257,7 @@ def home(client: Client):
             button.enable()
 
     async def on_add_item():
-        base_name = idelem['base_name'].value or f'Base {lk.generate_login_key(3)}'
+        base_name = idelem['base_name'].value[:70] or f'Base {lk.generate_login_key(3)}'
         device_slug = db.new_device(account_id=aid, is_base=True, name=base_name)
         ui.navigate.to(f'/manage/{device_slug}')
 

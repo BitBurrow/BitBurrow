@@ -233,12 +233,15 @@ def input(
     align: str = 'left',
     font_size=None,  # e.g. '14px', '1rem'
     show_copy: bool = False,
+    max_length=None,
 ):
     # docs: https://nicegui.io/documentation/input
     # names for icons: https://quasar.dev/vue-components/icon/#ionicons
     props = [f'input-class="text-{align}"']
     if readonly:
         props.append('readonly')  # QInput readonly prop
+    if max_length:
+        props.append(f'maxlength={max_length}')
     obj = ui.input(label=label, placeholder=placeholder).props(' '.join(props)).classes('w-full')
     if font_size:
         obj.style(f'font-size: {font_size}')
