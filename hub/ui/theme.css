@@ -5,4 +5,16 @@
   body {
     background-color: var(--app-bg);
   }
+  .q-tab-panels,
+  .q-tab-panel {
+    background: transparent !important; /* tab panels same as background, not white */
+  }
+  .q-stepper,
+  .q-stepper__content,
+  .q-stepper__step-content {
+    background: transparent !important; /* ... also ui.stepper() panels */
+  }
+  .q-stepper {
+    box-shadow: none !important; /* no surrounding shadow */
+  }
 }

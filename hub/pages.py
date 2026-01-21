@@ -269,6 +269,13 @@ def home(client: Client):
 ###
 
 
+class State:
+    stage: str = 'register'  # register | enable | add
+    register_i: int = 0  # 0..13
+    enable_i: int = 0  # 0..4
+    devices: list[str] = []
+
+
 @ui.page('/manage/{device_slug}')
 def manage(client: Client, device_slug: str):
     try:
@@ -284,15 +291,187 @@ def manage(client: Client, device_slug: str):
         uif.render_header(is_logged_in=True)
         idelem = uif.render_content(sections)
         return
-    md_path = os.path.join(ui_path, 'manage.md')
-    with open(md_path, 'r', encoding='utf-8') as f:
-        sections = uif.parse_markdown_sections(f.read())
-    ui.run_javascript(f"document.title = '{sections[0]}'")
+    text_for_enable_tab = [
+        (
+            "Initium amet, consectetur esse cillum dolore",
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Proin varius, arcu in facilisis luctus, erat nisl vulputate purus, sed commodo mi ipsum sed nulla.",
+        ),
+        (
+            "Praeparatio",
+            "Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis.",
+        ),
+        (
+            "Consilium placerat, nisi at aliquam",
+            "Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt, neque porro quisquam.",
+        ),
+        (
+            "Cura sed arcu sed eros suscipit",
+            "Ut enim ad minima veniam, quis nostrum exercitationem ullam corporis suscipit laboriosam, nisi ut aliquid ex ea commodi consequatur, quis autem vel eum iure reprehenderit qui in ea voluptate velit esse.",
+        ),
+        (
+            "Forma",
+            "Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur, excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.",
+        ),
+        (
+            "Mutatio elit libero, a pharetra augue",
+            "Integer vitae justo non odio lacinia tincidunt. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Curabitur auctor, nunc vitae porta tristique, nisl nisl dictum sem, sit amet.",
+        ),
+        (
+            "Verificatio perspiciatis unde omnis iste natus",
+            "Morbi non nunc id lorem tincidunt tristique. Aenean placerat, nisi at aliquam hendrerit, lacus arcu viverra mauris, in dictum lectus tortor at odio. Quisque volutpat, justo in commodo vulputate, nisi.",
+        ),
+        (
+            "Acceptio ad minima",
+            "Aliquam erat volutpat. Etiam sed arcu sed eros suscipit luctus. Maecenas nec elit at nibh porta posuere. Vivamus mollis, nisi a blandit pellentesque, dolor magna dapibus ligula, at.",
+        ),
+        (
+            "Regulae posuere consectetur",
+            "Fusce dapibus, tellus ac cursus commodo, tortor mauris condimentum nibh, ut fermentum massa justo sit amet risus. Cras mattis consectetur purus sit amet fermentum, donec ullamcorper.",
+        ),
+        (
+            "Nexus etiam sed arcu sed",
+            "Praesent commodo cursus magna, vel scelerisque nisl consectetur et. Sed posuere consectetur est at lobortis. Aenean eu leo quam. Pellentesque ornare sem lacinia quam venenatis vestibulum.",
+        ),
+        (
+            "Confirmatio",
+            "Nulla vitae elit libero, a pharetra augue. Vestibulum id ligula porta felis euismod semper. Maecenas faucibus mollis interdum. Donec sed odio dui. Cras justo odio, dapibus ac facilisis.",
+        ),
+        (
+            "Ratio vitae elit libero, a pharetra augue",
+            "Curabitur blandit tempus porttitor. Etiam porta sem malesuada magna mollis euismod. Integer posuere erat a ante venenatis dapibus posuere velit aliquet. Donec ullamcorper nulla non metus auctor.",
+        ),
+        (
+            "Finis prope",
+            "Aenean lacinia bibendum nulla sed consectetur. Vivamus sagittis lacus vel augue laoreet rutrum faucibus dolor auctor. Vestibulum id ligula porta felis euismod semper. Donec id elit non mi porta gravida.",
+        ),
+        (
+            "Completum",
+            "Donec sed odio dui. Cras mattis consectetur purus sit amet fermentum. Nulla vitae elit libero, a pharetra augue. Etiam porta sem malesuada magna mollis euismod. Curabitur blandit tempus porttitor.",
+        ),
+    ]
+    state = State()
+
+    def clamp(v: int, lo: int, hi: int) -> int:
+        return lo if v < lo else hi if v > hi else v
+
+    def restore_by_next(stepper: ui.stepper, idx: int) -> None:
+        for _ in range(max(0, idx)):
+            stepper.next()
+
+    @ui.refreshable
+    def render_three_tabs():
+        with ui.element('div').classes('w-full'):
+            with ui.row().classes('w-full justify-center items-center gap-6 py-4'):
+                stage_chip('Register', 'register')
+                ui.icon('arrow_forward').classes('text-4xl')
+                stage_chip('Enable access', 'enable')
+                ui.icon('arrow_forward').classes('text-4xl')
+                stage_chip('Add devices', 'add')
+
+    def set_stage(stage: str) -> None:
+        state.stage = stage
+        render_three_tabs.refresh()
+        panels.set_value(stage)
+
+    def stage_chip(title: str, stage: str) -> None:
+        active = state.stage == stage
+        classes = 'stage-chip px-6 py-3 rounded-full text-2xl'
+        pro = 'unelevated' if active else 'outline'
+        sc = ' stage-chip--active' if active else ' stage-chip--inactive'
+        ui.button(title, on_click=lambda s=stage: set_stage(s)).props(pro).classes(classes + sc)
+
+    def render_register():
+        md_path = os.path.join(ui_path, 'manage.md')
+        with open(md_path, 'r', encoding='utf-8') as f:
+            sections = uif.parse_markdown_sections(f.read())
+        ui.run_javascript(f"document.title = '{sections[0]}'")
+        idelem = uif.render_content(sections)
+        conf = db.get_conf(db.hub_peer_id(device_id))
+        code = db.methodize(conf, 'linux.openwrt.gzb')
+        idelem['code_for_local_startup'].set_content(code)
+
+    def render_enable():
+        with ui.stepper().props('vertical').classes('w-full max-w-5xl') as stepper:
+
+            def go_next() -> None:
+                state.enable_i = clamp(state.enable_i + 1, 0, len(text_for_enable_tab) - 1)
+                stepper.next()
+
+            def go_prev() -> None:
+                state.enable_i = clamp(state.enable_i - 1, 0, len(text_for_enable_tab) - 1)
+                stepper.previous()
+
+            def back_to_register_end() -> None:
+                state.register_i = 0  # FIXME: should be the last step on that tab
+                set_stage('register')
+
+            def done() -> None:
+                state.enable_i = len(text_for_enable_tab) - 1
+                set_stage('add')
+
+            for i, (title, text) in enumerate(text_for_enable_tab):
+                with ui.step(title):
+                    ui.label(text)
+                    with ui.stepper_navigation():
+                        if i == 0:
+                            ui.button('Back', on_click=back_to_register_end).props('outline')
+                            ui.button('Next', on_click=go_next)
+                        elif i == len(text_for_enable_tab) - 1:
+                            ui.button('Back', on_click=go_prev).props('outline')
+                            ui.button('Done', on_click=done)
+                        else:
+                            ui.button('Back', on_click=go_prev).props('outline')
+                            ui.button('Next', on_click=go_next)
+            ui.timer(0.01, once=True, callback=lambda: restore_by_next(stepper, state.enable_i))
+        ui.keyboard(
+            on_key=lambda e: (
+                go_next()
+                if (e.action.keydown and e.key in ('Enter', 'ArrowRight'))
+                else (
+                    go_prev()
+                    if (e.action.keydown and e.key in ('Backspace', 'ArrowLeft'))
+                    else None
+                )
+            )
+        )
+
+    def render_add_devices():
+        ui.label('Add a device name below:').classes('text-lg font-medium')
+        name = ui.input(label='Device name').classes('w-full max-w-xl')
+
+        def add_device() -> None:
+            v = (name.value or '').strip()
+            if not v:
+                return
+            state.devices.append(v)
+            name.value = ''
+
+        ui.button('Add device', on_click=add_device)
+        ui.separator().classes('w-full max-w-5xl my-6')
+        if not state.devices:
+            ui.label('No devices yet.').classes('text-base opacity-70')
+        else:
+            with ui.column().classes('w-full max-w-5xl gap-3'):
+                for d in state.devices:
+                    with ui.row().classes('items-center gap-3'):
+                        ui.icon('devices')
+                        ui.label(d).classes('text-base')
+
     uif.render_header(is_logged_in=True)
-    idelem = uif.render_content(sections)
-    conf = db.get_conf(db.hub_peer_id(device_id))
-    code = db.methodize(conf, 'linux.openwrt.gzb')
-    idelem['code_for_local_startup'].set_content(code)
+    render_three_tabs()
+    with ui.tabs().classes('hidden') as tabs:
+        ui.tab('register')
+        ui.tab('enable')
+        ui.tab('add')
+    with ui.tab_panels(tabs, value='register').props(
+        'animated transition-prev="slide-right" transition-next="slide-left" keep-alive'
+    ).classes('w-full') as panels:
+        with ui.tab_panel('register'):
+            render_register()
+        with ui.tab_panel('enable'):
+            render_enable()
+        with ui.tab_panel('add'):
+            render_add_devices()
 
 
 ###
