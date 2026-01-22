@@ -270,8 +270,8 @@ def home(client: Client):
 
 
 class State:
-    stage: str = 'register'  # register | enable | add
-    register_i: int = 0  # 0..13
+    stage: str = 'adopt'  # adopt | enable | add
+    adopt_i: int = 0  # 0..13
     enable_i: int = 0  # 0..4
     devices: list[str] = []
 
@@ -371,7 +371,7 @@ def manage(client: Client, device_slug: str):
     @ui.refreshable
     def render_tab_buttons():
         with ui.row().classes('w-full items-center justify-center gap-2 py-3 flex-nowrap'):
-            stage_chip('Register', 'register', 1)
+            stage_chip('Connect', 'adopt', 1)
             ui.element('div').classes('stage-connector')
             stage_chip('Enable access', 'enable', 2)
             ui.element('div').classes('stage-connector')
@@ -382,7 +382,7 @@ def manage(client: Client, device_slug: str):
         render_tab_buttons.refresh()
         panels.set_value(stage)
 
-    def render_register():
+    def render_adopt():
         md_path = os.path.join(ui_path, 'manage.md')
         with open(md_path, 'r', encoding='utf-8') as f:
             sections = uif.parse_markdown_sections(f.read())
@@ -403,9 +403,9 @@ def manage(client: Client, device_slug: str):
                 state.enable_i = clamp(state.enable_i - 1, 0, len(text_for_enable_tab) - 1)
                 stepper.previous()
 
-            def back_to_register_end() -> None:
-                state.register_i = 0  # FIXME: should be the last step on that tab
-                set_stage('register')
+            def back_to_adopt_end() -> None:
+                state.adopt_i = 0  # FIXME: should be the last step on that tab
+                set_stage('adopt')
 
             def done() -> None:
                 state.enable_i = len(text_for_enable_tab) - 1
@@ -416,7 +416,7 @@ def manage(client: Client, device_slug: str):
                     ui.label(text)
                     with ui.stepper_navigation():
                         if i == 0:
-                            ui.button('Back', on_click=back_to_register_end).props('outline')
+                            ui.button('Back', on_click=back_to_adopt_end).props('outline')
                             ui.button('Next', on_click=go_next)
                         elif i == len(text_for_enable_tab) - 1:
                             ui.button('Back', on_click=go_prev).props('outline')
@@ -498,14 +498,14 @@ def manage(client: Client, device_slug: str):
     add_custom_css()
     render_tab_buttons()
     with ui.tabs().classes('hidden') as tabs:
-        ui.tab('register')
+        ui.tab('adopt')
         ui.tab('enable')
         ui.tab('add')
-    with ui.tab_panels(tabs, value='register').props(
+    with ui.tab_panels(tabs, value='adopt').props(
         'animated transition-prev="slide-right" transition-next="slide-left" keep-alive'
     ).classes('w-full') as panels:
-        with ui.tab_panel('register'):
-            render_register()
+        with ui.tab_panel('adopt'):
+            render_adopt()
         with ui.tab_panel('enable'):
             render_enable()
         with ui.tab_panel('add'):
