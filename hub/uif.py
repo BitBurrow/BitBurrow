@@ -2,7 +2,6 @@ import ast
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from nicegui import ui, Client
 import re
-from typing import Dict, List, Tuple
 import logging
 import zoneinfo
 import hub.auth as auth
@@ -353,13 +352,13 @@ def parse_kwargs(param_str: str):
     return kwargs
 
 
-def split_at_ctags(text: str) -> List[str]:
+def split_at_ctags(text: str) -> list[str]:
     """Split text at '{{ ... }}' ctags.
 
     Returns a list of strings where each piece either does not contain '{{ ', or
     it starts with '{{ ' and ends with ' }}'. Raises an exception on unmatched or nested ctags.
     """
-    ctags: List[str] = list()
+    ctags: list[str] = list()
     i = 0
     len_text = len(text)
     while i < len_text:
@@ -381,7 +380,7 @@ def split_at_ctags(text: str) -> List[str]:
     return ctags
 
 
-def render_markdown_with_ctags(md: str, idelem: Dict[str, object], within=None):
+def render_markdown_with_ctags(md: str, idelem: dict[str, object], within=None):
     splits = split_at_ctags(md)
     for split in splits:
         if split.startswith('{{ '):
@@ -524,7 +523,7 @@ def render_header(is_logged_in: bool):
 def render_content(sections):
     within = list()  # expansion object stack
     within.append(None)  # something for the outer-most level to build on
-    idelem: Dict[str, object] = dict()  # map each element ID to its actual object
+    idelem: dict[str, object] = dict()  # map each element ID to its actual object
     stack = list()  # the part of the tree that is left to traverse
     stack.append(sections[1:])  # push the list without title
     while len(stack):  # depth-first traversal of sections
