@@ -358,27 +358,29 @@ def manage(client: Client, device_slug: str):
         for _ in range(max(0, idx)):
             stepper.next()
 
+    def stage_chip(title: str, stage: str, n: int) -> None:
+        active = state.stage == stage
+        props = 'unelevated' if active else 'outline'
+        classes = 'stage-pill px-3 py-2 rounded-full whitespace-nowrap min-w-0 ' + (
+            ' stage-pill--active' if active else ' stage-pill--inactive'
+        )
+        with ui.button(on_click=lambda s=stage: set_stage(s)).props(props).classes(classes):
+            ui.label(str(n)).classes('stage-pill__num')
+            ui.label(title).classes('stage-pill__label')
+
     @ui.refreshable
-    def render_three_tabs():
-        with ui.element('div').classes('w-full'):
-            with ui.row().classes('w-full justify-center items-center gap-6 py-4'):
-                stage_chip('Register', 'register')
-                ui.icon('arrow_forward').classes('text-4xl')
-                stage_chip('Enable access', 'enable')
-                ui.icon('arrow_forward').classes('text-4xl')
-                stage_chip('Add devices', 'add')
+    def render_tab_buttons():
+        with ui.row().classes('w-full items-center justify-center gap-2 py-3 flex-nowrap'):
+            stage_chip('Register', 'register', 1)
+            ui.element('div').classes('stage-connector')
+            stage_chip('Enable access', 'enable', 2)
+            ui.element('div').classes('stage-connector')
+            stage_chip('Add device', 'add', 3)
 
     def set_stage(stage: str) -> None:
         state.stage = stage
-        render_three_tabs.refresh()
+        render_tab_buttons.refresh()
         panels.set_value(stage)
-
-    def stage_chip(title: str, stage: str) -> None:
-        active = state.stage == stage
-        classes = 'stage-chip px-6 py-3 rounded-full text-2xl'
-        pro = 'unelevated' if active else 'outline'
-        sc = ' stage-chip--active' if active else ' stage-chip--inactive'
-        ui.button(title, on_click=lambda s=stage: set_stage(s)).props(pro).classes(classes + sc)
 
     def render_register():
         md_path = os.path.join(ui_path, 'manage.md')
@@ -457,8 +459,44 @@ def manage(client: Client, device_slug: str):
                         ui.icon('devices')
                         ui.label(d).classes('text-base')
 
+    def add_custom_css():  # style for render_tab_buttons()
+        ui.add_head_html(
+            '''
+                <style>
+                .stage-pill {
+                  max-width: 32vw;
+                }
+                .stage-pill .q-btn__content {
+                  display: inline-flex;
+                  align-items: center;
+                  gap: 0.5rem;
+                  min-width: 0;
+                  font-size: clamp(0.85rem, 2.8vw, 1.1rem);
+                  line-height: 1.2;
+                }
+                .stage-pill__num {
+                  flex: 0 0 auto;
+                  font-weight: 700;
+                  opacity: 0.9;
+                }
+                .stage-pill__label {
+                  min-width: 0;
+                  overflow: hidden;
+                  text-overflow: ellipsis;
+                }
+                .stage-connector {
+                  height: 2px;
+                  width: clamp(10px, 3vw, 18px);
+                  opacity: 0.35;
+                  background: currentColor;
+                }
+                </style>
+            '''
+        )
+
     uif.render_header(is_logged_in=True)
-    render_three_tabs()
+    add_custom_css()
+    render_tab_buttons()
     with ui.tabs().classes('hidden') as tabs:
         ui.tab('register')
         ui.tab('enable')
