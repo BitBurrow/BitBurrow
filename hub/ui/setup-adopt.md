@@ -1,4 +1,4 @@
-# BitBurrow: Manage base router
+# (uses page title)
 
 Connect a new base router to the BitBurrow hub.
 

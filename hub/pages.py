@@ -429,7 +429,6 @@ def setup(client: Client, device_slug: str):
         md_path = os.path.join(ui_path, 'setup-adopt.md')
         with open(md_path, 'r', encoding='utf-8') as f:
             sections = uif.parse_markdown_sections(f.read())
-        ui.run_javascript(f"document.title = '{sections[0]}'")
         # idelem = uif.render_content(sections)
         idelem: dict[str, object] = dict()  # map each element ID to its actual object
         step_count = 0
@@ -552,7 +551,12 @@ def setup(client: Client, device_slug: str):
             '''
         )
 
+    md_path = os.path.join(ui_path, 'setup.md')
+    with open(md_path, 'r', encoding='utf-8') as f:
+        sections = uif.parse_markdown_sections(f.read())
+    ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=True)
+    idelem = uif.render_content(sections)
     add_custom_css()
     render_tab_buttons()
     with ui.tabs().classes('hidden') as tabs:
