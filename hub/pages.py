@@ -272,7 +272,6 @@ def home(client: Client):
 class State:
     stage: str = None  # adopt | enable | add
     step: dict[str, int] = dict()  # e.g. step_no['adopt'] is step number on 'adopt' tab
-    devices: list[str] = []
 
 
 @ui.page('/manage/{device_slug}')
@@ -508,19 +507,15 @@ def manage(client: Client, device_slug: str):
             v = (name.value or '').strip()
             if not v:
                 return
-            state.devices.append(v)
+            with device_list:
+                with ui.row().classes('items-center gap-3'):
+                    ui.icon('devices')
+                    ui.label(v).classes('text-base')
             name.value = ''
 
         ui.button('Add device', on_click=add_device)
         ui.separator().classes('w-full max-w-5xl my-6')
-        if not state.devices:
-            ui.label('No devices yet.').classes('text-base opacity-70')
-        else:
-            with ui.column().classes('w-full max-w-5xl gap-3'):
-                for d in state.devices:
-                    with ui.row().classes('items-center gap-3'):
-                        ui.icon('devices')
-                        ui.label(d).classes('text-base')
+        device_list = ui.column().classes('w-full max-w-5xl gap-3')
 
     def add_custom_css():  # style for render_tab_buttons()
         ui.add_head_html(
