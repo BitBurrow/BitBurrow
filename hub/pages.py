@@ -270,9 +270,8 @@ def home(client: Client):
 
 
 class State:
-    stage: str = 'adopt'  # adopt | enable | add
-    adopt_i: int = 0  # 0..13
-    enable_i: int = 0  # 0..4
+    stage: str = None  # adopt | enable | add
+    step: dict[str, int] = dict()  # e.g. step_no['adopt'] is step number on 'adopt' tab
     devices: list[str] = []
 
 
@@ -350,13 +349,12 @@ def manage(client: Client, device_slug: str):
         ),
     ]
     state = State()
+    state.step['adopt'] = 0
+    state.step['enable'] = 0
+    state.stage = 'adopt'
 
     def clamp(v: int, lo: int, hi: int) -> int:
         return lo if v < lo else hi if v > hi else v
-
-    def restore_by_next(stepper: ui.stepper, idx: int) -> None:
-        for _ in range(max(0, idx)):
-            stepper.next()
 
     def stage_chip(title: str, stage: str, n: int) -> None:
         active = state.stage == stage
@@ -382,25 +380,15 @@ def manage(client: Client, device_slug: str):
         render_tab_buttons.refresh()
         panels.set_value(stage)
 
-    def render_adopt():
-        md_path = os.path.join(ui_path, 'manage.md')
-        with open(md_path, 'r', encoding='utf-8') as f:
-            sections = uif.parse_markdown_sections(f.read())
-        ui.run_javascript(f"document.title = '{sections[0]}'")
-        idelem = uif.render_content(sections)
-        conf = db.get_conf(db.hub_peer_id(device_id))
-        code = db.methodize(conf, 'linux.openwrt.gzb')
-        idelem['code_for_local_startup'].set_content(code)
-
-    def render_enable():
+    def render_stepper(stage: str, text_list):
         with ui.stepper().props('vertical').classes('w-full max-w-5xl') as stepper:
 
             def go_next() -> None:
-                state.enable_i = clamp(state.enable_i + 1, 0, len(text_for_enable_tab) - 1)
+                state.step[stage] = clamp(state.step[stage] + 1, 0, len(text_list) - 1)
                 stepper.next()
 
             def go_prev() -> None:
-                state.enable_i = clamp(state.enable_i - 1, 0, len(text_for_enable_tab) - 1)
+                state.step[stage] = clamp(state.step[stage] - 1, 0, len(text_list) - 1)
                 stepper.previous()
 
             def back_to_adopt_end() -> None:
@@ -408,23 +396,23 @@ def manage(client: Client, device_slug: str):
                 set_stage('adopt')
 
             def done() -> None:
-                state.enable_i = len(text_for_enable_tab) - 1
+                state.step[stage] = len(text_list) - 1
                 set_stage('add')
 
-            for i, (title, text) in enumerate(text_for_enable_tab):
+            for i, (title, text) in enumerate(text_list):
                 with ui.step(title):
                     ui.label(text)
                     with ui.stepper_navigation():
                         if i == 0:
                             ui.button('Back', on_click=back_to_adopt_end).props('outline')
                             ui.button('Next', on_click=go_next)
-                        elif i == len(text_for_enable_tab) - 1:
+                        elif i == len(text_list) - 1:
                             ui.button('Back', on_click=go_prev).props('outline')
                             ui.button('Done', on_click=done)
                         else:
                             ui.button('Back', on_click=go_prev).props('outline')
                             ui.button('Next', on_click=go_next)
-            ui.timer(0.01, once=True, callback=lambda: restore_by_next(stepper, state.enable_i))
+            # ui.timer(0.01, once=True, callback=lambda: restore_by_next(stepper, state.step[stage]))
         ui.keyboard(
             on_key=lambda e: (
                 go_next()
@@ -436,6 +424,81 @@ def manage(client: Client, device_slug: str):
                 )
             )
         )
+
+    def render_adopt():
+        stage = 'adopt'
+        md_path = os.path.join(ui_path, 'manage.md')
+        with open(md_path, 'r', encoding='utf-8') as f:
+            sections = uif.parse_markdown_sections(f.read())
+        ui.run_javascript(f"document.title = '{sections[0]}'")
+        # idelem = uif.render_content(sections)
+        idelem: dict[str, object] = dict()  # map each element ID to its actual object
+        step_count = 0
+        for sec in sections[1:]:  # we need to know, in advance, how many steps there are
+            if isinstance(sec, list):
+                step_count += 1
+        step_no = 0
+        stepper = None
+        before_after_state = -1  # -1/0/1 = before/in/after the list
+        for sec in sections[1:]:
+            if before_after_state in (-1, 1):
+                if isinstance(sec, str):  # text before or after the list
+                    uif.render_markdown_with_ctags(sec, idelem, None)
+                    continue
+                else:
+                    before_after_state += 1
+                    # ui.stepper() must be called after 'before' text, above
+                    stepper = ui.stepper().props('vertical').classes('w-full max-w-5xl')
+                    assert before_after_state != 2  # multiple lists on one page are not supported
+
+            def go_next() -> None:
+                state.step[stage] = clamp(state.step[stage] + 1, 0, step_count - 1)
+                stepper.next()
+
+            def go_prev() -> None:
+                state.step[stage] = clamp(state.step[stage] - 1, 0, step_count - 1)
+                stepper.previous()
+
+            def back_to_adopt_end() -> None:
+                state.adopt_i = 0  # FIXME: should be the last step on that tab
+                set_stage('adopt')
+
+            def done() -> None:
+                state.step[stage] = step_count - 1
+                set_stage('add')
+
+            assert isinstance(sec, list)
+            assert isinstance(sec[0], str)  # sec[] is a section header plus sections of text
+            with stepper:
+                with ui.step(sec[0]):
+                    for text in sec[1:]:  # text within this step
+                        uif.render_markdown_with_ctags(text, idelem, None)
+                    with ui.stepper_navigation():
+                        if step_no == 0:
+                            # ui.button('Back', on_click=back_to_adopt_end).props('outline')
+                            ui.button('Next', on_click=go_next)
+                        elif step_no == step_count - 1:
+                            ui.button('Back', on_click=go_prev).props('outline')
+                            ui.button('Done', on_click=done)
+                        else:
+                            ui.button('Back', on_click=go_prev).props('outline')
+                            ui.button('Next', on_click=go_next)
+                    step_no += 1  # next step
+            # ui.timer(0.01, once=True, callback=lambda: restore_by_next(stepper, state.step[stage]))
+        ui.keyboard(
+            on_key=lambda e: (
+                go_next()
+                if (e.action.keydown and e.key in ('Enter', 'ArrowRight'))
+                else (
+                    go_prev()
+                    if (e.action.keydown and e.key in ('Backspace', 'ArrowLeft'))
+                    else None
+                )
+            )
+        )
+        conf = db.get_conf(db.hub_peer_id(device_id))
+        code = db.methodize(conf, 'linux.openwrt.gzb')
+        idelem['code_for_local_startup'].set_content(code)
 
     def render_add_devices():
         ui.label('Add a device name below:').classes('text-lg font-medium')
@@ -507,7 +570,7 @@ def manage(client: Client, device_slug: str):
         with ui.tab_panel('adopt'):
             render_adopt()
         with ui.tab_panel('enable'):
-            render_enable()
+            render_stepper('enable', text_for_enable_tab)
         with ui.tab_panel('add'):
             render_add_devices()
 
