@@ -214,8 +214,8 @@ def home(client: Client):
                         kv_row('LAST SEEN', card['last_seen'])
                     with ui.row().classes('w-full no-wrap items-center justify-end gap-2'):
                         ui.button(
-                            'Manage',
-                            on_click=lambda c=card: ui.navigate.to(f'/manage/{c['slug']}'),
+                            'Set up',
+                            on_click=lambda c=card: ui.navigate.to(f'/setup/{c['slug']}'),
                         ).props('flat')
                         ui.button(
                             'Delete',
@@ -259,13 +259,13 @@ def home(client: Client):
     async def on_add_item():
         base_name = idelem['base_name'].value[:70] or f'Base {lk.generate_login_key(3)}'
         device_slug = db.new_device(account_id=aid, is_base=True, name=base_name)
-        ui.navigate.to(f'/manage/{device_slug}')
+        ui.navigate.to(f'/setup/{device_slug}')
 
     render_cards()
 
 
 ###
-### page: /manage
+### page: /setup
 ###
 
 
@@ -274,8 +274,8 @@ class State:
     step: dict[str, int] = dict()  # e.g. step_no['adopt'] is step number on 'adopt' tab
 
 
-@ui.page('/manage/{device_slug}')
-def manage(client: Client, device_slug: str):
+@ui.page('/setup/{device_slug}')
+def setup(client: Client, device_slug: str):
     try:
         lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
@@ -426,7 +426,7 @@ def manage(client: Client, device_slug: str):
 
     def render_adopt():
         stage = 'adopt'
-        md_path = os.path.join(ui_path, 'manage.md')
+        md_path = os.path.join(ui_path, 'setup-adopt.md')
         with open(md_path, 'r', encoding='utf-8') as f:
             sections = uif.parse_markdown_sections(f.read())
         ui.run_javascript(f"document.title = '{sections[0]}'")
