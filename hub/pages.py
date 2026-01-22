@@ -289,64 +289,6 @@ def setup(client: Client, device_slug: str):
         uif.render_header(is_logged_in=True)
         idelem = uif.render_content(sections)
         return
-    text_for_enable_tab = [
-        (
-            "Initium amet, consectetur esse cillum dolore",
-            "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Proin varius, arcu in facilisis luctus, erat nisl vulputate purus, sed commodo mi ipsum sed nulla.",
-        ),
-        (
-            "Praeparatio",
-            "Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis.",
-        ),
-        (
-            "Consilium placerat, nisi at aliquam",
-            "Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt, neque porro quisquam.",
-        ),
-        (
-            "Cura sed arcu sed eros suscipit",
-            "Ut enim ad minima veniam, quis nostrum exercitationem ullam corporis suscipit laboriosam, nisi ut aliquid ex ea commodi consequatur, quis autem vel eum iure reprehenderit qui in ea voluptate velit esse.",
-        ),
-        (
-            "Forma",
-            "Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur, excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.",
-        ),
-        (
-            "Mutatio elit libero, a pharetra augue",
-            "Integer vitae justo non odio lacinia tincidunt. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Curabitur auctor, nunc vitae porta tristique, nisl nisl dictum sem, sit amet.",
-        ),
-        (
-            "Verificatio perspiciatis unde omnis iste natus",
-            "Morbi non nunc id lorem tincidunt tristique. Aenean placerat, nisi at aliquam hendrerit, lacus arcu viverra mauris, in dictum lectus tortor at odio. Quisque volutpat, justo in commodo vulputate, nisi.",
-        ),
-        (
-            "Acceptio ad minima",
-            "Aliquam erat volutpat. Etiam sed arcu sed eros suscipit luctus. Maecenas nec elit at nibh porta posuere. Vivamus mollis, nisi a blandit pellentesque, dolor magna dapibus ligula, at.",
-        ),
-        (
-            "Regulae posuere consectetur",
-            "Fusce dapibus, tellus ac cursus commodo, tortor mauris condimentum nibh, ut fermentum massa justo sit amet risus. Cras mattis consectetur purus sit amet fermentum, donec ullamcorper.",
-        ),
-        (
-            "Nexus etiam sed arcu sed",
-            "Praesent commodo cursus magna, vel scelerisque nisl consectetur et. Sed posuere consectetur est at lobortis. Aenean eu leo quam. Pellentesque ornare sem lacinia quam venenatis vestibulum.",
-        ),
-        (
-            "Confirmatio",
-            "Nulla vitae elit libero, a pharetra augue. Vestibulum id ligula porta felis euismod semper. Maecenas faucibus mollis interdum. Donec sed odio dui. Cras justo odio, dapibus ac facilisis.",
-        ),
-        (
-            "Ratio vitae elit libero, a pharetra augue",
-            "Curabitur blandit tempus porttitor. Etiam porta sem malesuada magna mollis euismod. Integer posuere erat a ante venenatis dapibus posuere velit aliquet. Donec ullamcorper nulla non metus auctor.",
-        ),
-        (
-            "Finis prope",
-            "Aenean lacinia bibendum nulla sed consectetur. Vivamus sagittis lacus vel augue laoreet rutrum faucibus dolor auctor. Vestibulum id ligula porta felis euismod semper. Donec id elit non mi porta gravida.",
-        ),
-        (
-            "Completum",
-            "Donec sed odio dui. Cras mattis consectetur purus sit amet fermentum. Nulla vitae elit libero, a pharetra augue. Etiam porta sem malesuada magna mollis euismod. Curabitur blandit tempus porttitor.",
-        ),
-    ]
     state = State()
     state.step['adopt'] = 0
     state.step['enable'] = 0
@@ -379,57 +321,10 @@ def setup(client: Client, device_slug: str):
         render_tab_buttons.refresh()
         panels.set_value(stage)
 
-    def render_stepper(stage: str, text_list):
-        with ui.stepper().props('vertical').classes('w-full max-w-5xl') as stepper:
-
-            def go_next() -> None:
-                state.step[stage] = clamp(state.step[stage] + 1, 0, len(text_list) - 1)
-                stepper.next()
-
-            def go_prev() -> None:
-                state.step[stage] = clamp(state.step[stage] - 1, 0, len(text_list) - 1)
-                stepper.previous()
-
-            def back_to_adopt_end() -> None:
-                state.adopt_i = 0  # FIXME: should be the last step on that tab
-                set_stage('adopt')
-
-            def done() -> None:
-                state.step[stage] = len(text_list) - 1
-                set_stage('add')
-
-            for i, (title, text) in enumerate(text_list):
-                with ui.step(title):
-                    ui.label(text)
-                    with ui.stepper_navigation():
-                        if i == 0:
-                            ui.button('Back', on_click=back_to_adopt_end).props('outline')
-                            ui.button('Next', on_click=go_next)
-                        elif i == len(text_list) - 1:
-                            ui.button('Back', on_click=go_prev).props('outline')
-                            ui.button('Done', on_click=done)
-                        else:
-                            ui.button('Back', on_click=go_prev).props('outline')
-                            ui.button('Next', on_click=go_next)
-            # ui.timer(0.01, once=True, callback=lambda: restore_by_next(stepper, state.step[stage]))
-        ui.keyboard(
-            on_key=lambda e: (
-                go_next()
-                if (e.action.keydown and e.key in ('Enter', 'ArrowRight'))
-                else (
-                    go_prev()
-                    if (e.action.keydown and e.key in ('Backspace', 'ArrowLeft'))
-                    else None
-                )
-            )
-        )
-
-    def render_adopt():
-        stage = 'adopt'
-        md_path = os.path.join(ui_path, 'setup-adopt.md')
+    def render_stepper(stage: str):
+        md_path = os.path.join(ui_path, f'setup-{stage}.md')
         with open(md_path, 'r', encoding='utf-8') as f:
             sections = uif.parse_markdown_sections(f.read())
-        # idelem = uif.render_content(sections)
         idelem: dict[str, object] = dict()  # map each element ID to its actual object
         step_count = 0
         for sec in sections[1:]:  # we need to know, in advance, how many steps there are
@@ -457,14 +352,6 @@ def setup(client: Client, device_slug: str):
                 state.step[stage] = clamp(state.step[stage] - 1, 0, step_count - 1)
                 stepper.previous()
 
-            def back_to_adopt_end() -> None:
-                state.adopt_i = 0  # FIXME: should be the last step on that tab
-                set_stage('adopt')
-
-            def done() -> None:
-                state.step[stage] = step_count - 1
-                set_stage('add')
-
             assert isinstance(sec, list)
             assert isinstance(sec[0], str)  # sec[] is a section header plus sections of text
             with stepper:
@@ -473,11 +360,11 @@ def setup(client: Client, device_slug: str):
                         uif.render_markdown_with_ctags(text, idelem, None)
                     with ui.stepper_navigation():
                         if step_no == 0:
-                            # ui.button('Back', on_click=back_to_adopt_end).props('outline')
+                            ui.button('Previous').props('outline')
                             ui.button('Next', on_click=go_next)
                         elif step_no == step_count - 1:
                             ui.button('Back', on_click=go_prev).props('outline')
-                            ui.button('Done', on_click=done)
+                            ui.button('Done')
                         else:
                             ui.button('Back', on_click=go_prev).props('outline')
                             ui.button('Next', on_click=go_next)
@@ -494,9 +381,7 @@ def setup(client: Client, device_slug: str):
                 )
             )
         )
-        conf = db.get_conf(db.hub_peer_id(device_id))
-        code = db.methodize(conf, 'linux.openwrt.gzb')
-        idelem['code_for_local_startup'].set_content(code)
+        return idelem
 
     def render_add_devices():
         ui.label('Add a device name below:').classes('text-lg font-medium')
@@ -567,9 +452,12 @@ def setup(client: Client, device_slug: str):
         'animated transition-prev="slide-right" transition-next="slide-left" keep-alive'
     ).classes('w-full') as panels:
         with ui.tab_panel('adopt'):
-            render_adopt()
+            idelem = render_stepper('adopt')
+            conf = db.get_conf(db.hub_peer_id(device_id))
+            code = db.methodize(conf, 'linux.openwrt.gzb')
+            idelem['code_for_local_startup'].set_content(code)
         with ui.tab_panel('enable'):
-            render_stepper('enable', text_for_enable_tab)
+            render_stepper('enable')
         with ui.tab_panel('add'):
             render_add_devices()
 
