@@ -304,7 +304,8 @@ def checkbox(label='', value=False, icon=None):
 def code_block(text='', language='python'):
     # docs: https://nicegui.io/documentation/code
     # languages from "Short name(s)" column here: https://pygments.org/languages/
-    return ui.code(content=text, language=language)
+    # the classes 'max-w-full overflow-x-auto' make it horizontally scrollable when needed
+    return ui.code(content=text, language=language).classes('max-w-full overflow-x-auto')
 
 
 def comment(text=''):  # for adding author comments within the .md file

@@ -42,7 +42,7 @@ Log in with **`root`** and the password you chose above.
 
 ## Copying startup code
 
-Copy the text from the block of code below (there's a button for this in the top-right corner).
+Copy the text from the block of code below (there's a button for this in the top-right corner of the code box).
 
 {{ code_block(id='code_for_local_startup', text='', language='sh') }}
 
