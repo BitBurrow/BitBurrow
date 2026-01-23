@@ -1,0 +1,55 @@
+pre_md: |-
+  Configure the network to allow in-bound VPN connections.
+steps:
+- path: ''
+  title: Step 1
+  md: |-
+    * Hi gradus peragenda sunt in "domo VPN".
+    * Scito hos gradus sequendo centrum BitBurrow plenam potestatem novi basis iteritoris accipere.
+    * Infra, "instrumentum tuum" significat telephonum, tabellam, vel computatrum quo nunc ad hunc locum interretialem coniungeris.
+  id: ant
+- path: /Next
+  title: Step 2
+  md: |-
+    * Hi gradus peragenda sunt in "domo VPN".
+    * Scito hos gradus sequendo centrum BitBurrow plenam potestatem novi basis iteritoris accipere.
+    * Infra, "instrumentum tuum" significat telephonum, tabellam, vel computatrum quo nunc ad hunc locum interretialem coniungeris.
+  id: mnt
+- path: /Next/Next
+  title: Step 3
+  md: |-
+    1. Iteritorem novum ad fontem electricum coniunge.
+    1. Fune Ethernet coniunge portum "WAN" novi iteritoris cum uno portuum "LAN" veteris iteritoris.
+  id: pli
+- path: /Next/Next/Step 4a
+  title: Step 4a
+  md: |-
+    Sequere instructiones ad linguam eligendam et novam tesseram creandam. Si tesseram ignoras, iteritor restituendus est. Instructiones ad restitutionem fabricam vide infra nexus externos.
+  id: cts
+- path: /Next/Next/Step 4b
+  title: Step 4b
+  md: |-
+    Si iteritor novus est, sequere instructiones ad linguam eligendam et novam tesseram creandam. Si tesseram ignoras, iteritor restituendus est. Instructiones ad restitutionem fabricam vide infra nexus externos.
+  id: ctm
+- path: /Next/Next/Step 4b/Next
+  title: Step 5b
+  md: |-
+    Si iteritor novus est, sequere instructiones ad linguam eligendam et novam tesseram creandam. Si tesseram ignoras, iteritor restituendus est. Instructiones ad restitutionem fabricam vide infra nexus externos.
+  id: ctq
+- path: /Next/Next/Step 4a/Next
+  title: Step 5a
+  md: |-
+    Si iteritor novus est, sequere instructiones ad linguam eligendam et novam tesseram creandam. Si tesseram ignoras, iteritor restituendus est. Instructiones ad restitutionem fabricam vide infra nexus externos.
+  id: ctv
+- path: /Next/Next/Step 4b/Next/Next
+  title: Step 6b
+  md: |-
+    Si iteritor novus est, sequere instructiones ad linguam eligendam et novam tesseram creandam. Si tesseram ignoras, iteritor restituendus est. Instructiones ad restitutionem fabricam vide infra nexus externos.
+  id: ctw
+- path: /Next/Next/Step 4a/Next/Next
+  title: Step 6a
+  md: |-
+    1. Preme Systema → Reboot → Reboot confirma.
+    1. Expecta paucos minutos dum iteritor reinitiat. Instrumentum tuum fortasse ad veterem iteritorem reconiungitur; si ita est, reconiunge ad novum iteritorem.
+  id: rtr
+

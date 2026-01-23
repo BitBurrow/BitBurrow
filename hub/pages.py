@@ -3,12 +3,16 @@ from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as T
 import logging
 from nicegui import app, ui, Client
 import os
+import re
+import yaml
 import hub.uif as uif
 import hub.db as db
 import hub.login_key as lk
 import hub.auth as auth
 import hub.config as conf
+import hub.util as util
 
+Berror = util.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
@@ -269,11 +273,6 @@ def home(client: Client):
 ###
 
 
-class State:
-    stage: str = None  # adopt | enable | add
-    step: dict[str, int] = dict()  # e.g. step_no['adopt'] is step number on 'adopt' tab
-
-
 @ui.page('/setup/{device_slug}')
 def setup(client: Client, device_slug: str):
     try:
@@ -289,16 +288,10 @@ def setup(client: Client, device_slug: str):
         uif.render_header(is_logged_in=True)
         idelem = uif.render_content(sections)
         return
-    state = State()
-    state.step['adopt'] = 0
-    state.step['enable'] = 0
-    state.stage = 'adopt'
-
-    def clamp(v: int, lo: int, hi: int) -> int:
-        return lo if v < lo else hi if v > hi else v
+    stage_state = 'adopt'
 
     def stage_chip(title: str, stage: str, n: int) -> None:
-        active = state.stage == stage
+        active = stage_state == stage
         props = 'unelevated' if active else 'outline'
         classes = 'stage-pill px-3 py-2 rounded-full whitespace-nowrap min-w-0 ' + (
             ' stage-pill--active' if active else ' stage-pill--inactive'
@@ -317,70 +310,74 @@ def setup(client: Client, device_slug: str):
             stage_chip('Add device', 'add', 3)
 
     def set_stage(stage: str) -> None:
-        state.stage = stage
+        nonlocal stage_state
+        stage_state = stage
         render_tab_buttons.refresh()
         panels.set_value(stage)
 
     def render_stepper(stage: str):
-        md_path = os.path.join(ui_path, f'setup-{stage}.md')
-        with open(md_path, 'r', encoding='utf-8') as f:
-            sections = uif.parse_markdown_sections(f.read())
+        yaml_path = os.path.join(ui_path, f'setup-{stage}.yaml')
+        with open(yaml_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f)
         idelem: dict[str, object] = dict()  # map each element ID to its actual object
-        step_count = 0
-        for sec in sections[1:]:  # we need to know, in advance, how many steps there are
-            if isinstance(sec, list):
-                step_count += 1
-        step_no = 0
-        stepper = None
-        before_after_state = -1  # -1/0/1 = before/in/after the list
-        for sec in sections[1:]:
-            if before_after_state in (-1, 1):
-                if isinstance(sec, str):  # text before or after the list
-                    uif.render_markdown_with_ctags(sec, idelem, None)
-                    continue
-                else:
-                    before_after_state += 1
-                    # ui.stepper() must be called after 'before' text, above
-                    stepper = ui.stepper().props('vertical').classes('w-full max-w-5xl')
-                    assert before_after_state != 2  # multiple lists on one page are not supported
+        uif.render_markdown_with_ctags(data['pre_md'], idelem, None)  # text above list
+        all_steps = data['steps']
+        path_map = dict()  # 'path' from here forward means the sequence of choices the user made
+        id_map = dict()
+        for s in all_steps:
+            if path_map.setdefault(s['path'], s) != s:
+                raise Berror(f"B19389 duplicate path '{s['path']}' in {yaml_path}")
+            if id_map.setdefault(s['id'], s) != s:
+                raise Berror(f"B33451 duplicate id '{s['id']}' in {yaml_path}")
+        for s in all_steps:  # use paths to create a tree structure
+            if len(s['path']) == 0:
+                continue  # root has no parent
+            parent_path = re.sub(r'/[^/]*$', '', s['path'])
+            parent = path_map[parent_path]
+            if 'children' not in parent:
+                parent['children'] = list()
+            parent['children'].append(s)
+            s['parent'] = parent
+        with ui.stepper().props('vertical').classes('w-full max-w-5xl') as stepper:
 
-            def go_next() -> None:
-                state.step[stage] = clamp(state.step[stage] + 1, 0, step_count - 1)
+            def on_click_other(child, from_step_el):
+
+                def delete_steps_after(step_el) -> None:
+                    children = list(stepper.default_slot.children)
+                    try:
+                        i = children.index(step_el)
+                    except ValueError:
+                        return
+                    for ch in children[i + 1 :]:
+                        stepper.remove(ch)
+
+                delete_steps_after(from_step_el)
+                build_steps_down(child)
                 stepper.next()
 
-            def go_prev() -> None:
-                state.step[stage] = clamp(state.step[stage] - 1, 0, step_count - 1)
-                stepper.previous()
-
-            assert isinstance(sec, list)
-            assert isinstance(sec[0], str)  # sec[] is a section header plus sections of text
-            with stepper:
-                with ui.step(sec[0]):
-                    for text in sec[1:]:  # text within this step
-                        uif.render_markdown_with_ctags(text, idelem, None)
-                    with ui.stepper_navigation():
-                        if step_no == 0:
-                            ui.button('Previous').props('outline')
-                            ui.button('Next', on_click=go_next)
-                        elif step_no == step_count - 1:
-                            ui.button('Back', on_click=go_prev).props('outline')
-                            ui.button('Done')
+            def build_steps_down(s):
+                while True:
+                    nextc = None
+                    with stepper:
+                        with ui.step(s['title']) as step:
+                            uif.render_markdown_with_ctags(s['md'], idelem, None)
+                            with ui.stepper_navigation():
+                                if 'parent' in s:
+                                    ui.button('Back', on_click=stepper.previous).props('outline')
+                                for c in s.get('children', list()):
+                                    label = c['path'].rsplit('/', 1)[-1]
+                                    if label == 'Next':
+                                        nextc = c
+                                        ui.button(label, on_click=stepper.next)
+                                    else:
+                                        l = lambda child=c, step=step: on_click_other(child, step)
+                                        ui.button(label, on_click=l)
+                        if nextc:
+                            s = nextc
                         else:
-                            ui.button('Back', on_click=go_prev).props('outline')
-                            ui.button('Next', on_click=go_next)
-                    step_no += 1  # next step
-            # ui.timer(0.01, once=True, callback=lambda: restore_by_next(stepper, state.step[stage]))
-        ui.keyboard(
-            on_key=lambda e: (
-                go_next()
-                if (e.action.keydown and e.key in ('Enter', 'ArrowRight'))
-                else (
-                    go_prev()
-                    if (e.action.keydown and e.key in ('Backspace', 'ArrowLeft'))
-                    else None
-                )
-            )
-        )
+                            break
+
+            build_steps_down(path_map[''])
         return idelem
 
     def render_add_devices():
@@ -453,9 +450,10 @@ def setup(client: Client, device_slug: str):
     ).classes('w-full') as panels:
         with ui.tab_panel('adopt'):
             idelem = render_stepper('adopt')
-            conf = db.get_conf(db.hub_peer_id(device_id))
-            code = db.methodize(conf, 'linux.openwrt.gzb')
-            idelem['code_for_local_startup'].set_content(code)
+            if elem := idelem.get('code_for_local_startup'):
+                conf = db.get_conf(db.hub_peer_id(device_id))
+                code = db.methodize(conf, 'linux.openwrt.gzb')
+                elem.set_content(code)
         with ui.tab_panel('enable'):
             render_stepper('enable')
         with ui.tab_panel('add'):
