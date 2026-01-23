@@ -273,6 +273,46 @@ def home(client: Client):
 ###
 
 
+class ElemRegistry(dict):  # lazy evaluation of idelem objects
+    def __init__(self):
+        super().__init__()
+        self._wait_once = {}  # key -> [callback(elem)]
+        self._watch_always = {}  # key -> [callback(elem)]
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        for cb in self._watch_always.get(key, ()):
+            cb(value)
+        waiters = self._wait_once.pop(key, None)
+        if waiters:
+            for cb in waiters:
+                cb(value)
+
+    def setdefault(self, key, default=None):
+        if key in self:
+            return self[key]
+        self[key] = default
+        return default
+
+    def update(self, *args, **kwargs):
+        other = dict(*args, **kwargs)
+        for k, v in other.items():
+            self[k] = v
+
+    def when_available(self, key, cb):
+        """Run once: now if present, otherwise when the element is first registered."""
+        if key in self:
+            cb(self[key])
+        else:
+            self._wait_once.setdefault(key, []).append(cb)
+
+    def on_register(self, key, cb):
+        """Run every time the key is registered (useful if steps are rebuilt)."""
+        self._watch_always.setdefault(key, []).append(cb)
+        if key in self:
+            cb(self[key])
+
+
 @ui.page('/setup/{device_slug}')
 def setup(client: Client, device_slug: str):
     try:
@@ -319,7 +359,7 @@ def setup(client: Client, device_slug: str):
         yaml_path = os.path.join(ui_path, f'setup-{stage}.yaml')
         with open(yaml_path, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f)
-        idelem: dict[str, object] = dict()  # map each element ID to its actual object
+        idelem = ElemRegistry()  # map each element ID to its actual object
         uif.render_markdown_with_ctags(data['pre_md'], idelem, None)  # text above list
         all_steps = data['steps']
         path_map = dict()  # 'path' from here forward means the sequence of choices the user made
@@ -450,10 +490,17 @@ def setup(client: Client, device_slug: str):
     ).classes('w-full') as panels:
         with ui.tab_panel('adopt'):
             idelem = render_stepper('adopt')
-            if elem := idelem.get('code_for_local_startup'):
-                conf = db.get_conf(db.hub_peer_id(device_id))
-                code = db.methodize(conf, 'linux.openwrt.gzb')
-                elem.set_content(code)
+            code_cache = {'value': None, 'done': False}
+
+            def set_local_startup_code(el):
+                if not code_cache['done']:
+                    conf = db.get_conf(db.hub_peer_id(device_id))
+                    code_cache['value'] = db.methodize(conf, 'linux.openwrt.gzb')
+                    code_cache['done'] = True
+                el.set_content(code_cache['value'])
+
+            # using 'idelem.when_available()' below fails on 2nd 'build_steps_down()' call
+            idelem.on_register('code_for_local_startup', set_local_startup_code)
         with ui.tab_panel('enable'):
             render_stepper('enable')
         with ui.tab_panel('add'):
