@@ -378,7 +378,8 @@ def setup(client: Client, device_slug: str):
                 parent['children'] = list()
             parent['children'].append(s)
             s['parent'] = parent
-        with ui.stepper().props('vertical').classes('w-full max-w-5xl') as stepper:
+        # 'header-nav' makes steps clickable (works, but possibly fragile after stepper.remove())
+        with ui.stepper().props('vertical header-nav').classes('w-full max-w-5xl') as stepper:
 
             def on_click_other(child, from_step_el):
 
