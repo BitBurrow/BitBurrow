@@ -45,7 +45,7 @@ router.
 
 Please enter your coupon code below (if it is not already filled in).
 
-{{ input(id='coupon_code', placeholder='Coupon', font_size='18px', icon='confirmation_number') }}
+{{ input(id='coupon_code', label='Coupon code', font_size='18px', icon='confirmation_number') }}
 
 {{ button(id='continue', text="Continue") }}
 

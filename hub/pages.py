@@ -197,7 +197,7 @@ def home(client: Client):
         with cards_container:
             with ui.column().classes(css):
                 idelem['base_name'] = uif.input(
-                    placeholder='Name',
+                    label='Name',
                     font_size='18px',
                     icon='router',
                     max_length=70,

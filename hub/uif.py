@@ -241,7 +241,8 @@ def input(
         props.append('readonly')  # QInput readonly prop
     if max_length:
         props.append(f'maxlength={max_length}')
-    obj = ui.input(label=label, placeholder=placeholder).props(' '.join(props)).classes('w-full')
+    classes = 'w-full max-w-xl'
+    obj = ui.input(label=label, placeholder=placeholder).props(' '.join(props)).classes(classes)
     if font_size:
         obj.style(f'font-size: {font_size}')
     if icon:
