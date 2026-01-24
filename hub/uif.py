@@ -501,12 +501,25 @@ def render_header(is_logged_in: bool):
         primary='#177245',  # our app color, "dark spring green"
         # see also 'theme.css'
     )
+    ui.add_head_html(  # in dark mode, prevent brief all-white page when switching pages
+        r'''
+            <meta name="color-scheme" content="dark light">
+            <style>
+              html, body { background: #ecf2ef; }
+              @media (prefers-color-scheme: dark) { html, body { background: #0f1412; } }
+            </style>
+        '''
+    )
     with ui.header().classes('app-header w-full'):  # top header bar
         with ui.row().classes('w-full items-center no-wrap'):
             logo_icon = ui.image('/ui/img/bitburrow.png').style('width: 4rem; height: auto;')
             logo_icon.on('click', lambda: ui.navigate.to('/home'))
             ui.space()
-            menu_icon = ui.icon('menu').classes('cursor-pointer text-white' ' scale-175')
+            menu_icon = (
+                ui.icon('menu')
+                .classes('cursor-pointer scale-175')
+                .style('color: var(--header-fg);')
+            )
             # or: ui.button('Menu').props('flat').style('color: var(--app-bg) !important;')
             with ui.menu().props('anchor="top right" self="bottom right"') as menu:
                 if is_logged_in:

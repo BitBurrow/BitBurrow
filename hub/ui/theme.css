@@ -1,13 +1,21 @@
 @layer components {
-  :root {
+  :root { /* light mode */
     --app-bg: #ecf2ef; /* a very light flavor of #177245 */
+    --app-fg: #1b1b1b; /* text */
+    --header-fg: #ffffff; /* header, icon text */
+  }
+  body.body--dark { /* dark mode */
+    --app-bg: #0f1412;
+    --app-fg: #e8efe9;
+    --header-fg: #e8efe9;
   }
   body {
     background-color: var(--app-bg);
+    color: var(--app-fg);
   }
   .q-tab-panels,
   .q-tab-panel {
-    background: transparent !important; /* tab panels same as background, not white */
+    background: transparent !important; /* tab panels same as background */
   }
   .q-stepper,
   .q-stepper__content,
@@ -16,5 +24,11 @@
   }
   .q-stepper {
     box-shadow: none !important; /* no surrounding shadow */
+  }
+  /* optional: make common 'surface' components not look like white cards in dark mode */
+  body.body--dark .q-card,
+  body.body--dark .q-menu {
+    background: #151b18 !important;
+    color: var(--app-fg) !important;
   }
 }
