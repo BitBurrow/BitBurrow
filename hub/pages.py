@@ -39,7 +39,6 @@ def welcome(client: Client):
 
     async def on_continue():
         coupon = lk.plain_login_key(idelem['coupon_code'].value.upper() or '')
-        idelem['coupon_code'].value = lk.styled_login_key(coupon)  # add dashes where needed
         try:
             aid = db.validate_login_key(coupon, allowed_kinds=db.coupon)
         except db.CredentialsError as e:
@@ -52,8 +51,13 @@ def welcome(client: Client):
         if e.args.get('key') == 'Enter':
             await on_continue()
 
+    async def on_blur():
+        coupon = lk.plain_login_key(idelem['coupon_code'].value.upper() or '')
+        idelem['coupon_code'].value = lk.styled_login_key(coupon)  # add dashes where needed
+
     idelem['continue'].on_click(callback=on_continue)
     idelem['coupon_code'].on('keydown', check_enter)  # pressing Enter submits form
+    idelem['coupon_code'].on('blur', on_blur)
 
 
 ###
@@ -123,7 +127,6 @@ def login(client: Client):
 
     async def on_continue():
         login_key = lk.plain_login_key(idelem['login_key'].value.upper() or '')
-        idelem['login_key'].value = lk.styled_login_key(login_key)  # add dashes where needed
         try:
             aid = db.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
         except db.CredentialsError as e:
@@ -135,8 +138,13 @@ def login(client: Client):
         if e.args.get('key') == 'Enter':
             await on_continue()
 
+    async def on_blur():
+        login_key = lk.plain_login_key(idelem['login_key'].value.upper() or '')
+        idelem['login_key'].value = lk.styled_login_key(login_key)  # add dashes where needed
+
     idelem['continue'].on_click(callback=on_continue)
     idelem['login_key'].on('keydown', check_enter)  # pressing Enter submits form
+    idelem['login_key'].on('blur', on_blur)
 
 
 ###
