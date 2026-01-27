@@ -15,8 +15,11 @@ from typing import Final
 #     → log(10^16)÷log(2) ≈ 53 bits of entropy
 # Plus Codes use base 20 ('23456789CFGHJMPQRVWX'): https://en.wikipedia.org/wiki/Open_Location_Code
 base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
+base28_set: Final[set] = set(base28_digits)
+base28_set_valid_input: Final[set] = set(base28_digits + base28_digits.lower() + '-')
 base20_digits: Final[str] = 'BCDFGHJKLMNPQRSTVWXZ'  # no numbers
 login_key_len: Final[int] = 18
+login_key_len_styled: Final[int] = 21
 login_len: Final[int] = 4  # digits from beginning of login_key, used like a username
 key_len: Final[int] = 14  # remaining digits of login_key, used like a password
 base28_digit: Final[str] = f'[{base28_digits}]'
@@ -35,9 +38,19 @@ def strip_login_key(k):
     return k.replace('-', '')
 
 
-def dress_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'
-    assert len(k) == login_key_len
-    return f'{k[0:4]}-{k[4:9]}-{k[9:13]}-{k[13:login_key_len]}'
+def styled_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'; okay for invalid 'k'
+    if len(k) >= 13:  # just before 3rd dash (or longer)
+        return f'{k[0:4]}-{k[4:9]}-{k[9:13]}-{k[13:login_key_len]}'
+    elif len(k) >= 9:
+        return f'{k[0:4]}-{k[4:9]}-{k[9:13]}'
+    elif len(k) >= 4:
+        return f'{k[0:4]}-{k[4:9]}'
+    else:
+        return k
+
+
+def has_invalid_chars(k: str):  # True if k contains any invalid characters ('-', lower-case okay)
+    return not (set(k) <= base28_set_valid_input)
 
 
 def generate_login_key_letters(n):  # same but letters only (for domain names)

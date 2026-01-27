@@ -5,6 +5,7 @@ import re
 import logging
 import zoneinfo
 import hub.auth as auth
+import hub.login_key as lk
 import hub.util as util
 
 Berror = util.Berror
@@ -226,14 +227,22 @@ def human_user_agent(ua: str) -> str:
 def input(
     placeholder: str = '',
     label: str = '',
-    icon=None,
+    icon: str = None,
     icon_position: str = 'left',
     readonly: bool = False,
     align: str = 'left',
-    font_size=None,  # e.g. '14px', '1rem'
+    font_size: str = None,  # e.g. '14px', '1rem'
     show_copy: bool = False,
-    max_length=None,
+    max_length: int = None,
+    login_key: bool = False,  # enforce login key or coupon code entry
 ):
+    def valid_login_key(v: str):
+        if lk.has_invalid_chars(v):
+            return f"Input character not valid here"
+        if len(v) > lk.login_key_len_styled:
+            return f"Input too long"
+        return None
+
     # docs: https://nicegui.io/documentation/input
     # names for icons: https://quasar.dev/vue-components/icon/#ionicons
     props = [f'input-class="text-{align}"']
@@ -241,8 +250,19 @@ def input(
         props.append('readonly')  # QInput readonly prop
     if max_length:
         props.append(f'maxlength={max_length}')
-    classes = 'w-full max-w-xl'
-    obj = ui.input(label=label, placeholder=placeholder).props(' '.join(props)).classes(classes)
+    classes = ['w-full', 'max-w-xl']
+    if login_key:
+        classes.append('text-uppercase')  # upper-case on client (.value is still mixed case)
+        # or this instead: classes.append('text-transform: uppercase')
+    obj = (
+        ui.input(
+            label=label,
+            placeholder=placeholder,
+            validation=valid_login_key if login_key else None,
+        )
+        .props(' '.join(props))
+        .classes(' '.join(classes))
+    )
     if font_size:
         obj.style(f'font-size: {font_size}')
     if icon:
