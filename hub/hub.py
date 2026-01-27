@@ -358,7 +358,9 @@ def entry_point():
         nicegui.app.on_startup(watch_tls_cert)
         nicegui.app.docs_url = None  # disable "Docs URLs" to help avoid being identified; see
         nicegui.app.redoc_url = None  # ... https://fastapi.tiangolo.com/tutorial/metadata/
-        pages.register_pages()
+        ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
+        nicegui.app.add_static_files('/ui', ui_path)
+        nicegui.ui.add_css(os.path.join(ui_path, 'theme.css'), shared=True)
         nicegui.ui.run(  # docs: https://nicegui.io/documentation/run
             host=conf.get('backend.ip'),
             port=conf.get('backend.web_port'),

@@ -1,10 +1,9 @@
 import asyncio
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import logging
-from nicegui import app, ui, Client
+from nicegui import ui, Client
 import os
 import re
-import yaml
 import hub.uif as uif
 import hub.db as db
 import hub.login_key as lk
@@ -15,7 +14,6 @@ import hub.util as util
 Berror = util.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
-ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
 
 ###
 ### page: /welcome
@@ -27,9 +25,7 @@ def welcome(client: Client):
     if auth.is_logged_in(client):
         ui.navigate.to('/home')
         return
-    md_path = os.path.join(ui_path, 'welcome.md')
-    with open(md_path, 'r', encoding='utf-8') as f:
-        sections = uif.parse_markdown_sections(f.read())
+    sections = uif.parse_markdown_sections('welcome')
     ui.run_javascript(f"document.title = '{sections[0]}'")
     qparam_coupon = client.request.query_params.get('coupon')
     uif.render_header(is_logged_in=False)
@@ -77,9 +73,7 @@ def confirm(client: Client):
         aid = db.validate_login_key(qparam_coupon, allowed_kinds=db.coupon)
     except db.CredentialsError as e:  # send them back to /welcome
         ui.navigate.to(f'/welcome?coupon={qparam_coupon}')
-    md_path = os.path.join(ui_path, 'confirm.md')
-    with open(md_path, 'r', encoding='utf-8') as f:
-        sections = uif.parse_markdown_sections(f.read())
+    sections = uif.parse_markdown_sections('confirm')
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=False)
     idelem = uif.render_content(sections)
@@ -118,9 +112,7 @@ def login(client: Client):
     if auth.is_logged_in(client):
         ui.navigate.to('/home')
         return
-    md_path = os.path.join(ui_path, 'login.md')
-    with open(md_path, 'r', encoding='utf-8') as f:
-        sections = uif.parse_markdown_sections(f.read())
+    sections = uif.parse_markdown_sections('login')
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=False)
     idelem = uif.render_content(sections)
@@ -158,9 +150,7 @@ def home(client: Client):
         lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
         return
-    md_path = os.path.join(ui_path, 'home.md')
-    with open(md_path, 'r', encoding='utf-8') as f:
-        sections = uif.parse_markdown_sections(f.read())
+    sections = uif.parse_markdown_sections('home')
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=True)
     idelem = uif.render_content(sections)
@@ -281,46 +271,6 @@ def home(client: Client):
 ###
 
 
-class ElemRegistry(dict):  # lazy evaluation of idelem objects
-    def __init__(self):
-        super().__init__()
-        self._wait_once = {}  # key -> [callback(elem)]
-        self._watch_always = {}  # key -> [callback(elem)]
-
-    def __setitem__(self, key, value):
-        super().__setitem__(key, value)
-        for cb in self._watch_always.get(key, ()):
-            cb(value)
-        waiters = self._wait_once.pop(key, None)
-        if waiters:
-            for cb in waiters:
-                cb(value)
-
-    def setdefault(self, key, default=None):
-        if key in self:
-            return self[key]
-        self[key] = default
-        return default
-
-    def update(self, *args, **kwargs):
-        other = dict(*args, **kwargs)
-        for k, v in other.items():
-            self[k] = v
-
-    def when_available(self, key, cb):
-        """Run once: now if present, otherwise when the element is first registered."""
-        if key in self:
-            cb(self[key])
-        else:
-            self._wait_once.setdefault(key, []).append(cb)
-
-    def on_register(self, key, cb):
-        """Run every time the key is registered (useful if steps are rebuilt)."""
-        self._watch_always.setdefault(key, []).append(cb)
-        if key in self:
-            cb(self[key])
-
-
 @ui.page('/setup/{device_slug}')
 def setup(client: Client, device_slug: str):
     try:
@@ -328,10 +278,9 @@ def setup(client: Client, device_slug: str):
     except db.CredentialsError:
         return
     if not (device_id := db.get_device_by_slug(device_slug, aid)):
-        md_path = os.path.join(ui_path, 'device-not-found.md')
-        with open(md_path, 'r', encoding='utf-8') as f:
-            md = f.read().replace('{device_slug}', device_slug)
-            sections = uif.parse_markdown_sections(md)
+        sections = uif.parse_markdown_sections('device-not-found')
+        for i, s in enumerate(sections):
+            sections[i] = s.replace('{device_slug}', device_slug)
         ui.run_javascript(f"document.title = '{sections[0]}'")
         uif.render_header(is_logged_in=True)
         idelem = uif.render_content(sections)
@@ -362,72 +311,6 @@ def setup(client: Client, device_slug: str):
         stage_state = stage
         render_tab_buttons.refresh()
         panels.set_value(stage)
-
-    def render_stepper(stage: str):
-        yaml_path = os.path.join(ui_path, f'setup-{stage}.yaml')
-        with open(yaml_path, 'r', encoding='utf-8') as f:
-            data = yaml.safe_load(f)
-        idelem = ElemRegistry()  # map each element ID to its actual object
-        uif.render_markdown_with_ctags(data['pre_md'], idelem, None)  # text above list
-        all_steps = data['steps']
-        path_map = dict()  # 'path' from here forward means the sequence of choices the user made
-        id_map = dict()
-        for s in all_steps:
-            if path_map.setdefault(s['path'], s) != s:
-                raise Berror(f"B19389 duplicate path '{s['path']}' in {yaml_path}")
-            if id_map.setdefault(s['id'], s) != s:
-                raise Berror(f"B33451 duplicate id '{s['id']}' in {yaml_path}")
-        for s in all_steps:  # use paths to create a tree structure
-            if len(s['path']) == 0:
-                continue  # root has no parent
-            parent_path = re.sub(r'/[^/]*$', '', s['path'])
-            parent = path_map[parent_path]
-            if 'children' not in parent:
-                parent['children'] = list()
-            parent['children'].append(s)
-            s['parent'] = parent
-        # 'header-nav' makes steps clickable (works, but possibly fragile after stepper.remove())
-        with ui.stepper().props('vertical header-nav').classes('w-full max-w-5xl') as stepper:
-
-            def on_click_other(child, from_step_el):
-
-                def delete_steps_after(step_el) -> None:
-                    children = list(stepper.default_slot.children)
-                    try:
-                        i = children.index(step_el)
-                    except ValueError:
-                        return
-                    for ch in children[i + 1 :]:
-                        stepper.remove(ch)
-
-                delete_steps_after(from_step_el)
-                build_steps_down(child)
-                stepper.next()
-
-            def build_steps_down(s):
-                while True:
-                    nextc = None
-                    with stepper:
-                        with ui.step(s['title']) as step:
-                            uif.render_markdown_with_ctags(s['md'], idelem, None)
-                            with ui.stepper_navigation():
-                                if 'parent' in s:
-                                    ui.button('Back', on_click=stepper.previous).props('outline')
-                                for c in s.get('children', list()):
-                                    label = c['path'].rsplit('/', 1)[-1]
-                                    if label == 'Next':
-                                        nextc = c
-                                        ui.button(label, on_click=stepper.next)
-                                    else:
-                                        l = lambda child=c, step=step: on_click_other(child, step)
-                                        ui.button(label, on_click=l)
-                        if nextc:
-                            s = nextc
-                        else:
-                            break
-
-            build_steps_down(path_map[''])
-        return idelem
 
     def render_add_devices():
         ui.label('Add a device name below:').classes('text-lg font-medium')
@@ -482,9 +365,7 @@ def setup(client: Client, device_slug: str):
             '''
         )
 
-    md_path = os.path.join(ui_path, 'setup.md')
-    with open(md_path, 'r', encoding='utf-8') as f:
-        sections = uif.parse_markdown_sections(f.read())
+    sections = uif.parse_markdown_sections('setup')
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=True)
     idelem = uif.render_content(sections)
@@ -498,7 +379,7 @@ def setup(client: Client, device_slug: str):
         'animated transition-prev="slide-right" transition-next="slide-left" keep-alive'
     ).classes('w-full') as panels:
         with ui.tab_panel('adopt'):
-            idelem = render_stepper('adopt')
+            idelem = uif.render_stepper('adopt')
             code_cache = {'value': None, 'done': False}
 
             def set_local_startup_code(el):
@@ -511,7 +392,7 @@ def setup(client: Client, device_slug: str):
             # using 'idelem.when_available()' below fails on 2nd 'build_steps_down()' call
             idelem.on_register('code_for_local_startup', set_local_startup_code)
         with ui.tab_panel('enable'):
-            render_stepper('enable')
+            uif.render_stepper('enable')
         with ui.tab_panel('add'):
             render_add_devices()
 
@@ -527,9 +408,7 @@ def login_sessions(client: Client):
         lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
         return
-    md_path = os.path.join(ui_path, 'login_sessions.md')
-    with open(md_path, 'r', encoding='utf-8') as f:
-        sections = uif.parse_markdown_sections(f.read())
+    sections = uif.parse_markdown_sections('login_sessions')
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=True)
     idelem = uif.render_content(sections)
@@ -619,8 +498,3 @@ def login_sessions(client: Client):
             ui.timer(3, lambda: ui.navigate.to('/login'), once=True)
 
     table.on('log_out', on_log_out)
-
-
-def register_pages():
-    app.add_static_files('/ui', ui_path)
-    ui.add_css(os.path.join(ui_path, 'theme.css'), shared=True)
