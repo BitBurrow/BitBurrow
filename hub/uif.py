@@ -235,6 +235,7 @@ def input(
     show_copy: bool = False,
     max_length: int = None,
     login_key: bool = False,  # enforce login key or coupon code entry
+    password: bool = False,
 ):
     def valid_login_key(v: str):
         if lk.has_invalid_chars(v):
@@ -259,6 +260,8 @@ def input(
             label=label,
             placeholder=placeholder,
             validation=valid_login_key if login_key else None,
+            password=password,
+            password_toggle_button=password,
         )
         .props(' '.join(props))
         .classes(' '.join(classes))
