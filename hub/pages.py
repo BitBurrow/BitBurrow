@@ -38,12 +38,12 @@ def welcome(client: Client):
         idelem['coupon_code'].set_value(qparam_coupon)
 
     async def on_continue():
-        coupon = lk.strip_login_key(idelem['coupon_code'].value or '')
+        coupon = lk.plain_login_key(idelem['coupon_code'].value.upper() or '')
+        idelem['coupon_code'].value = lk.styled_login_key(coupon)  # add dashes where needed
         try:
             aid = db.validate_login_key(coupon, allowed_kinds=db.coupon)
         except db.CredentialsError as e:
-            err_message = str(e).replace(db.lkocc_string, "coupon code")
-            ui.notify(err_message)
+            ui.notify(db.style_login_key_error_message(str(e), db.coupon))
             return
         idelem['continue'].disable()
         ui.navigate.to(f'/confirm?coupon={coupon}')
@@ -84,14 +84,14 @@ def confirm(client: Client):
         valid_for=TimeDelta(days=1),  # expire in 1 day if not confirmed
         parent_account_id=aid,  # coupon code used
     )
-    idelem['login_key'].set_value(lk.dress_login_key(login_key))
+    idelem['login_key'].set_value(lk.styled_login_key(login_key))
 
     async def on_continue():
         if not idelem['have_written_down'].value:
             ui.notify("Required input is missing")
             return
         idelem['continue'].disable()
-        idelem['login_key'].set_value(lk.dress_login_key('*' * lk.login_key_len))
+        idelem['login_key'].set_value(lk.styled_login_key('*' * lk.login_key_len))
         await asyncio.sleep(1)  # let user see the importantce of keeping the login key secret
         aid = db.update_account(  # validate the new account
             login=login_key,  # find account by 'login' portion only
@@ -122,12 +122,12 @@ def login(client: Client):
     idelem = uif.render_content(sections)
 
     async def on_continue():
-        login_key = lk.strip_login_key(idelem['login_key'].value or '')
+        login_key = lk.plain_login_key(idelem['login_key'].value.upper() or '')
+        idelem['login_key'].value = lk.styled_login_key(login_key)  # add dashes where needed
         try:
             aid = db.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
         except db.CredentialsError as e:
-            err_message = str(e).replace(db.lkocc_string, "login key")
-            ui.notify(err_message)
+            ui.notify(db.style_login_key_error_message(str(e), db.admin_or_manager))
             return
         auth.log_in(aid, login_key, idelem['keep_me_logged_in'].value, client.request)
 

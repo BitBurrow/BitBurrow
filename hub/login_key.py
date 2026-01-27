@@ -34,8 +34,8 @@ def generate_login_key(n):  # create n digits of a new login_key
     return ''.join(secrets.choice(base28_digits) for i in range(n))
 
 
-def strip_login_key(k):
-    return k.replace('-', '')
+def plain_login_key(k: str):  # strip '-' and all invalid characters
+    return ''.join(c for c in k if c in base28_set)
 
 
 def styled_login_key(k):  # display version, e.g. 'X88L-7V2BC-MM3P-RKVF2'; okay for invalid 'k'

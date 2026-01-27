@@ -71,7 +71,7 @@ class AccountKind(enum.Enum):
     COUPON = 700  # can create managers (that's all)
     MANAGER = 400  # can set up, edit, and delete bases and clients
     USER = 200  # can set up, edit, and delete clients for a specific intf_id on one base
-    NONE = 0  # not signed in
+    NONE = 0  # not valid
 
     def __str__(self):
         str_map = {
@@ -189,11 +189,17 @@ def key_portion(login_key):
 
 
 def validate_login_key(login_key, allowed_kinds=None) -> int:
-    """Verify the login key. Return the account.id or raise CredentialsError."""
-    if len(login_key) != lk.login_key_len:
-        raise CredentialsError(f"B64292 {lkocc_string} length must be {lk.login_key_len}")
+    """Verify the login key. Return the account.id or raise CredentialsError.
+
+    Use style_login_key_error_message() on the CredentialsError string for user display."""
+    if len(login_key) > lk.login_key_len:
+        raise CredentialsError(f"B64292 {lkocc_string} is too long")
+    if len(login_key) < lk.login_key_len:
+        if len(login_key) == 0:
+            raise CredentialsError(f"B15910 a {lkocc_string} is required")
+        raise CredentialsError(f"B77665 {lkocc_string} is not long enough")
     if not set(lk.base28_digits).issuperset(login_key):
-        raise CredentialsError(f"B51850 invalid {lkocc_string} characters")
+        raise CredentialsError(f"B51850 {lkocc_string} contains invalid characters")
     with Session(engine) as session:
         statement = select(Account).where(Account.login == login_portion(login_key))
         account = session.exec(statement).one_or_none()
@@ -208,32 +214,44 @@ def validate_login_key(login_key, allowed_kinds=None) -> int:
         try:
             hasher.verify(key_hash_to_test, key)
         except argon2.exceptions.VerifyMismatchError:
-            raise CredentialsError(
-                f"B54441 {lkocc_string} not found; " "make sure it was entered correctly"
-            )
+            raise CredentialsError(f"B54441 not a valid {lkocc_string}")
         if hasher.check_needs_rehash(key_hash_to_test):
             account.key_hash = hasher.hash(key)  # FIXME: untested
             session.add(account)
             session.commit()
             logger.info("B74657 rehashed {login_key}")
         if account.valid_until.replace(tzinfo=TimeZone.utc) < DateTime.now(TimeZone.utc):
-            raise CredentialsError(f"B18952 {lkocc_string} expired")
+            raise CredentialsError(f"B18952 this {lkocc_string} is expired")
         if allowed_kinds is not None:
             if account.kind not in allowed_kinds:
                 if account.kind in admin_or_manager and allowed_kinds == coupon:
                     raise CredentialsError(
-                        "B10052 this is a login key; please enter a coupon code "
-                        "or select 'Sign in' from the ⋮ menu"
+                        "B10052 you entered a login key, not a coupon code; choose 'Log in'"
+                        " from the ≡ menu and enter this again"
                     )
                 elif account.kind in coupon and allowed_kinds == admin_or_manager:
                     raise CredentialsError(
-                        "B20900 this is a coupon code; please enter a login key "
-                        " or seelct 'Enter a coupon code' from the ⋮ menu"
+                        "B20900 you entered a coupon code; please enter a login key"
+                        " or choose the 'create a new login key' link above"
                     )
+                elif account.kind == AccountKind.NONE:
+                    raise CredentialsError("B20592 account not yet valid")
                 else:
                     raise CredentialsError("B96593 invalid account kind")
         # FIXME: verify pubkey limit
         return account.id
+
+
+def style_login_key_error_message(err: str, allowed_kinds):  # make CredentialError user-friendly
+    if berror_code_parts := re.match(r'(B[0-9]{5}) (.*)', err):
+        err = berror_code_parts.group(2)  # remove Berror code
+        # alternate:  err = f"{berror_code_parts.group(2)} (error {berror_code_parts.group(1)})"
+    if AccountKind.COUPON in allowed_kinds:
+        kind_string = AccountKind.token_name(AccountKind.COUPON)
+    else:
+        kind_string = AccountKind.token_name(AccountKind.MANAGER)  # login key
+    replaced = err.replace(lkocc_string, kind_string)
+    return replaced[:1].upper() + replaced[1:]  # capitalize first letter
 
 
 def get_account_by_token(token: str | None, log_out=False) -> tuple[int, int, AccountKind]:
