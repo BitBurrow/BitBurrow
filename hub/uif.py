@@ -494,7 +494,7 @@ def render_expansion(title_md: str, within=None):
         e = ui.expansion(icon='chevron_right').props('dense').classes(exp_css)
     with e.add_slot('header'):
         # using ui.row() with ui.icon() and ui.markdown() split bullet when screen was narrow
-        content = f'■\u2000 {title_md.lstrip("# \t")}'  # EN QUAD to force more space after bullet
+        content = f'▶\u2000 **{title_md.lstrip("# \t")}**'  # EN QUAD to force space after bullet
         ui.markdown(content).classes('!m-0 !p-0 text-sm font-base')
     return e
 
