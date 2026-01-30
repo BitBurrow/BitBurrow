@@ -256,8 +256,9 @@ def input(
         props.append(f'maxlength={max_length}')
     classes = ['w-full', 'max-w-xl']
     if login_key:
-        classes.append('text-uppercase')  # upper-case on client (.value is still mixed case)
-        # or this instead: classes.append('text-transform: uppercase')
+        props.append('input-class="text-uppercase"')  # capitalize input (.value still mixed case)
+        # classes.append('text-uppercase')  # shows "COUPON CODE" rather than "Coupon code"
+        # or this instead: 'text-transform: uppercase'
     obj = (
         ui.input(
             label=label,
