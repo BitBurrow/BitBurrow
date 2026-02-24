@@ -1460,14 +1460,14 @@ icu = ["PyICU (>=1.0.0)"]
 
 [[package]]
 name = "nicegui"
-version = "3.7.0"
+version = "3.8.0"
 description = "Create web-based user interfaces with Python. The nice way."
 optional = false
 python-versions = "<4,>=3.10"
 groups = ["main"]
 files = [
-    {file = "nicegui-3.7.0-py3-none-any.whl", hash = "sha256:cf34435a2ee0aaf51d3065c769efe96b84859e7340b985340674dc2e3e0cb098"},
-    {file = "nicegui-3.7.0.tar.gz", hash = "sha256:ee981769577a55b1d8ab61a1129f15b7513571eedfd516309a081a47a19655a7"},
+    {file = "nicegui-3.8.0-py3-none-any.whl", hash = "sha256:22040fe3c07144dfcaf464a1e136f9a63137bb78f5ad43337fd232e446cb2823"},
+    {file = "nicegui-3.8.0.tar.gz", hash = "sha256:4badf3f8ef6d20119d25a2bee553fe5b224d2821a17853d54360fd3ae14e595c"},
 ]
 
 [package.dependencies]
@@ -1486,7 +1486,7 @@ orjson = {version = ">=3.11.5", markers = "platform_machine != \"i386\" and plat
 pydantic-core = ">=2.35.0"
 Pygments = ">=2.15.1,<3.0.0"
 python-engineio = ">=4.12.0"
-python-multipart = ">=0.0.18"
+python-multipart = ">=0.0.22"
 python-socketio = {version = ">=5.14.0", extras = ["asyncio-client"]}
 starlette = ">=0.49.1"
 typing-extensions = ">=4.0.0"
@@ -3219,4 +3219,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "9d3a7944e3e13e2f78dd94c4cb140a8c7f8e6622df1cd4a6839d76c7e6d668f9"
+content-hash = "c9f77d4feb19530aba8900e5c82073555e807bbdfcd21fb190f8cb7abdb822d4"
