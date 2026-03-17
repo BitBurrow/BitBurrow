@@ -168,7 +168,7 @@ local function read_text_file(path, empty_if_unreadable)
     end
     content = content:gsub('%s+$', '')
     log_debug("read " .. tostring(#content) .. " bytes from: " .. path)
-    if #content < 90 then
+    if #content > 0 and #content < 90 then
         log_debug("  data: " .. content:gsub('\n', '\\n'))
     end
     return content
@@ -440,7 +440,7 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
             remove_path(response_path)
             return nil
         end
-        local curl_command = 'curl --no-progress-meter '
+        local curl_command = 'curl -sS '
             .. '-X POST '
             .. shell_quote(rpc_url)
             .. ' -H '
@@ -604,7 +604,7 @@ local function do_ping(api_url, subd)
         )
         if not signature_b64 then break end
         log_debug("sending signed ping request to " .. rpc_url)
-        local curl_command = 'curl --no-progress-meter '
+        local curl_command = 'curl -sS '
             .. '-X POST '
             .. shell_quote(rpc_url)
             .. ' -H '
