@@ -16,6 +16,16 @@ local wg_privkey_path = config_dir .. 'wgbb1_private.key'
 local wg_pubkey_path = config_dir .. 'wgbb1_public.key'
 local pubkeys_uploaded_path = config_dir .. 'pubkeys_uploaded'
 local log_handle = nil
+local logging_level = 30  -- by default, show warnings, errors
+
+for i = 1, #arg do
+    local v = arg[i]:match("^%-(v+)$")
+    if v then
+        logging_level = logging_level - #v * 10
+    elseif arg[i] == "--verbose" then
+        logging_level = logging_level - 10
+    end
+end
 
 local function fail_early(message)
     io.stderr:write(message .. '\n')
@@ -56,13 +66,33 @@ local function close_log()
     log_handle = nil
 end
 
-local function log_line(line)
-    if not log_handle then  -- use stderr when log file is closed
-        io.stderr:write(line .. '\n')
+local function log(message, level)
+    if level < logging_level then
         return
     end
-    log_handle:write(os.date('!%Y-%m-%dT%H:%M:%SZ') .. ' ' .. line .. '\n')
-    log_handle:flush()
+    if logging_level < 30 then  -- send to stderr when -v used
+        io.stderr:write(message .. '\n')
+    end
+    if log_handle then
+        log_handle:write(os.date('!%Y-%m-%dT%H:%M:%SZ') .. ' ' .. message .. '\n')
+        log_handle:flush()
+    end
+end
+
+local function log_debug(message)
+    log(message, 10)
+end
+
+local function log_info(message)
+    log(message, 20)
+end
+
+local function log_warning(message)
+    log(message, 30)
+end
+
+local function log_error(message)
+    log(message, 40)
 end
 
 local function shell_quote(value)
@@ -79,15 +109,29 @@ end
 
 local function run_command(command, merge_stderr)
     -- returns the captured output after stripping trailing whitespace, or nil on failure
+    log_debug("running command: " .. command)
     local pipe = io.popen(command .. (merge_stderr and ' 2>&1' or ''), 'r')
     if not pipe then
-        log_line("B12747 unable to run: " .. command)
+        log_error("B12747 unable to run: " .. command)
         return nil
     end
     local output = pipe:read('*a') or ''
     local ok, why, code = pipe:close()
+    log_debug(
+        "command close status: ok="
+            .. tostring(ok)
+            .. ", why="
+            .. tostring(why)
+            .. ", code="
+            .. tostring(code)
+    )
     if command_succeeded(ok, why, code) then
         output = output:gsub('%s+$', '')
+        if output ~= '' then
+            log_debug("command succeeded: " .. output:gsub('\n', '\\n'))
+        else
+            log_debug("command succeeded with empty output")
+        end
         return output
     end
     local exit_code = code
@@ -96,9 +140,9 @@ local function run_command(command, merge_stderr)
     end
     if output ~= '' then
         output = output:gsub('%s+$', ''):gsub('\n', '\\n')
-        log_line("B11840 running " .. command .. " failed: " .. output)
+        log_error("B11840 running " .. command .. " failed: " .. output)
     else
-        log_line("B11545 running " .. command .. " failed with exit code " .. tostring(exit_code))
+        log_error("B11545 running " .. command .. " failed with exit code " .. tostring(exit_code))
     end
     return nil
 end
@@ -108,44 +152,54 @@ local function read_text_file(path, empty_if_unreadable)
     local handle = io.open(path, 'r')
     if not handle then
         if empty_if_unreadable then
+            log_debug("file unreadable, treating as empty: " .. path)
             return ''
         end
-        log_line("B41834 cannot read file: " .. path)
+        log_error("B41834 cannot read file: " .. path)
         return nil
     end
     local content, read_err = handle:read('*a')
     local close_ok, close_err = handle:close()
     if content == nil then
-        log_line("B21409 cannot read " .. path .. ": " .. tostring(read_err))
+        log_error("B21409 cannot read " .. path .. ": " .. tostring(read_err))
         return nil
     end
     if close_ok == nil then
-        log_line("B55281 cannot close " .. path .. ": " .. tostring(close_err))
+        log_error("B55281 cannot close " .. path .. ": " .. tostring(close_err))
         return nil
     end
     content = content:gsub('%s+$', '')
+    log_debug("read " .. tostring(#content) .. " bytes from: " .. path)
+    if #content < 90 then
+        log_debug("  data: " .. content:gsub('\n', '\\n'))
+    end
     return content
 end
 
 local function write_text_file(path, content, mode)
     -- returns true iff successful
+    log_debug("writing " .. tostring(#content) .. " bytes to: " .. path)
+    if #content < 90 then
+        log_debug("  data: " .. content:gsub('%s+$', ''):gsub('\n', '\\n'))
+    end
     local handle = io.open(path, 'w')
     if not handle then
-        log_line("B38727 cannot write file: " .. path)
+        log_error("B38727 cannot write file: " .. path)
         return nil
     end
     local write_ok, write_err = handle:write(content)
     local close_ok, close_err = handle:close()
     if not write_ok then
-        log_line("B93465 cannot write " .. path .. ": " .. tostring(write_err))
+        log_error("B93465 cannot write " .. path .. ": " .. tostring(write_err))
         return nil
     end
     if close_ok == nil then
-        log_line("B14993 cannot close " .. path .. ": " .. tostring(close_err))
+        log_error("B14993 cannot close " .. path .. ": " .. tostring(close_err))
         return nil
     end
     if mode then
         fs.chmod(path, mode)
+        log_debug("set permissions on " .. path .. " to " .. mode)
     end
     return true
 end
@@ -154,15 +208,17 @@ local function make_temp_path()
     -- returns new temp path, or nil on failure
     local path = run_command('mktemp /tmp/bitburrow.XXXXXX', true)
     if not path or path == '' then
-        log_line("B35286 mktemp failed")
+        log_error("B35286 mktemp failed")
         return nil
     end
+    log_debug("created temporary path: " .. path)
     return path
 end
 
 local function remove_path(path)
     -- remove the file or empty directory, ignoring all errors
     if path and path ~= '' then
+        log_debug("removing path: " .. path)
         os.remove(path)
     end
 end
@@ -207,8 +263,10 @@ end
 local function file_mtime(path)
     local stat = fs.stat(path)
     if not stat then
+        log_debug("mtime unavailable for " .. path)
         return nil
     end
+    log_debug("mtime for " .. path .. " is " .. tostring(stat.mtime))
     return stat.mtime
 end
 
@@ -222,15 +280,22 @@ local function sleep_with_jitter(base_seconds, jitter_fraction)
         max_seconds = min_seconds
     end
     local sleep_seconds = math.random(min_seconds, max_seconds)
+    log_debug(
+        "sleeping for " .. tostring(sleep_seconds) .. " seconds (base="
+            .. tostring(base_seconds) .. ", jitter=" .. tostring(jitter_fraction) .. ")"
+    )
     nixio.nanosleep(sleep_seconds, 0)
 end
 
 local function ensure_root_and_single_instance()
+    log_debug("checking for root privileges")
     if nixio.getuid() ~= 0 then
-        fail_early('must run as root')
+        fail_early("must run as root")
     end
+    log_debug("attempting to acquire lock directory " .. lock_dir)
     local mkdir_ok = fs.mkdir(lock_dir)
     if not mkdir_ok then
+        log_info("lock directory already exists, checking for active owner")
         local existing_pid = read_text_file(lock_pid_path, false)
         if existing_pid and existing_pid:match('^%d+$') then
             local kill_ok, why, code =
@@ -238,6 +303,9 @@ local function ensure_root_and_single_instance()
             if command_succeeded(kill_ok, why, code) then
                 fail_early("B49131 another instance is already running, pid: " .. existing_pid)
             end
+            log_info("stale lock detected for pid " .. existing_pid .. ", cleaning up")
+        else
+            log_info("lock directory exists but pid file is missing or invalid")
         end
         remove_path(lock_pid_path)
         fs.rmdir(lock_dir)
@@ -251,12 +319,15 @@ local function ensure_root_and_single_instance()
         fs.rmdir(lock_dir)
         fail_early("B79005 unable to acquire lock file")
     end
+    log_info("acquired single-instance lock with pid " .. tostring(nixio.getpid()))
 end
 
 local function ensure_auth_keys()
     if fs.access(auth_privkey_path) and fs.access(auth_pubkey_path) then
+        log_debug("auth_privkey and auth_pubkey both already exist")
         return true
     end
+    log_info("authentication keys are missing, generating new keypair")
     remove_path(auth_pubkey_path)
     -- note: OpenSSL 1.1.1 found on test routers can't sign with Ed25519 keys
     local output = run_command(
@@ -270,6 +341,7 @@ local function ensure_auth_keys()
         return nil
     end
     fs.chmod(auth_privkey_path, '0600')
+    log_debug("generated new auth_privkey: " .. auth_privkey_path)
     output = run_command(
         'openssl pkey -in '
             .. shell_quote(auth_privkey_path)
@@ -282,14 +354,17 @@ local function ensure_auth_keys()
         remove_path(auth_pubkey_path)
         return nil
     end
-    log_line("B04865 created " .. auth_privkey_path)
+    log_error("B04865 created " .. auth_privkey_path)
+    log_info("generated new auth_pubkey:  " .. auth_pubkey_path)
     return true
 end
 
 local function ensure_wg_keys()
     if fs.access(wg_privkey_path) and fs.access(wg_pubkey_path) then
+        log_debug("wg_privkey and wg_pubkey both already exist")
         return true
     end
+    log_info("WireGuard keys are missing, generating new keypair")
     remove_path(wg_pubkey_path)
     local output = run_command(
         'wg genkey |tee '
@@ -304,7 +379,8 @@ local function ensure_wg_keys()
         return nil
     end
     fs.chmod(wg_privkey_path, '0600')
-    log_line("B35050 created " .. wg_privkey_path)
+    log_info("generated new wg_privkey: " .. wg_privkey_path)
+    log_info("generated new wg_pubkey:  " .. wg_pubkey_path)
     return true
 end
 
@@ -314,6 +390,7 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
     local wg_mtime = file_mtime(wg_privkey_path) or 0
     local uploaded_mtime = file_mtime(pubkeys_uploaded_path) or 0
     if uploaded_mtime > auth_mtime and uploaded_mtime > wg_mtime then
+        log_info("public keys already marked as uploaded")
         return true  -- these public keys were previously uploaded
     end
     local retry_wait = 7
@@ -322,9 +399,17 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
     local auth_pubkey = read_text_file(auth_pubkey_path, false)
     local wg_pubkey = read_text_file(wg_pubkey_path, false)
     if not auth_pubkey or not wg_pubkey then
+        log_debug("cannot upload public keys because one or more key files could not be read")
         return nil
     end
+    log_info("public keys need upload to " .. rpc_url)
     while true do
+        log_debug(
+            "attempting bootstrap1 public key upload; retry_wait="
+                .. tostring(retry_wait)
+                .. ", retries_left="
+                .. tostring(retries_left)
+        )
         local request_path = make_temp_path()
         local response_path = make_temp_path()
         if not request_path or not response_path then
@@ -371,17 +456,23 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
         remove_path(request_path)
         remove_path(response_path)
         if curl_output and response_body then
+            log_debug("bootstrap response body: " .. response_body:gsub('\n', '\\n'))
             local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
             local has_result = response_body:match('"result"%s*:') ~= nil
             local has_error = response_body:match('"error"%s*:') ~= nil
             if has_jsonrpc and has_result and not has_error then
+                log_info("public key upload succeeded")
                 local touch_output = run_command('touch ' .. shell_quote(pubkeys_uploaded_path), true)
                 if not touch_output then
-                    log_line("B04717 bootstrap succeeded but could not touch pubkeys_uploaded")
+                    log_error("B04717 bootstrap succeeded but could not touch pubkeys_uploaded")
+                else
+                    log_debug("updated upload marker: " .. pubkeys_uploaded_path)
                 end
                 return true
             end
-            log_line("B23806 bootstrap failed: " .. response_body)
+            log_error("B23806 bootstrap failed: " .. response_body)
+        else
+            log_warning("bootstrap attempt failed without a usable response; will retry")
         end
         sleep_with_jitter(retry_wait, 0.5)
         retries_left = retries_left - 1
@@ -391,16 +482,19 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
                 retry_wait = 3600
             end
             retries_left = 2
+            log_info("increased bootstrap retry wait to " .. tostring(retry_wait) .. " seconds")
         end
     end
 end
 
 local function build_ping_request(subd)
     -- returns the request body, or nil on failure
+    log_debug("building ping request for subd " .. subd)
     local utc_time = run_command("date -u '+%Y-%m-%dT%H:%M:%SZ'", true)
     local uptime = run_command('uptime', true)
     local nonce = run_command('openssl rand -hex 16', true)
     if not utc_time or not uptime or not nonce then
+        log_warning('unable to build ping request because one or more inputs were unavailable')
         return nil
     end
     local request_body = '{'
@@ -422,11 +516,13 @@ local function build_ping_request(subd)
         .. '"'
         .. '}'
         .. '}'
+    log_debug("built ping request body (" .. tostring(#request_body) .. " bytes)")
     return request_body
 end
 
 local function do_ping(api_url, subd)
     -- returns the pingback response, or nil on failure
+    log_info("starting ping cycle")
     local request_body = build_ping_request(subd)
     if not request_body then
         return nil
@@ -461,7 +557,10 @@ local function do_ping(api_url, subd)
         if not created_value then break end
         local rpc_url = api_url .. 'devices/rpc'
         local authority = rpc_url:match('^https?://([^/]+)')
-        if not authority then break end
+        if not authority then
+            log_warning('could not parse authority from rpc url ' .. rpc_url)
+            break
+        end
         local keyid_value = http_quoted_string_escape(subd)
         local signature_input_value = 'sig1=("@method" "@authority" "@target-uri" "content-type" "content-digest" "date");created='
             .. created_value
@@ -506,6 +605,7 @@ local function do_ping(api_url, subd)
             true
         )
         if not signature_b64 then break end
+        log_debug("sending signed ping request to " .. rpc_url)
         local curl_command = 'curl --no-progress-meter '
             .. '-X POST '
             .. shell_quote(rpc_url)
@@ -527,24 +627,32 @@ local function do_ping(api_url, subd)
         if not curl_output then break end
         local response_body = read_text_file(response_path, true)
         if not response_body then break end
+        log_debug("ping response body: " .. response_body:gsub('\n', '\\n'))
         local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
         local has_error = response_body:match('"error"%s*:') ~= nil
         local pingback = response_body:match('"pingback"%s*:%s*"(([^"\\]|\\.)*)"')
         if has_jsonrpc and not has_error and pingback then
             result = json_unescape(pingback)
+            log_info("ping succeeded with pingback: " .. result)
+        else
+            log_warning("ping response was missing expected success fields")
         end
     until true
     remove_path(body_path)
     remove_path(sig_base_path)
     remove_path(sig_bin_path)
     remove_path(response_path)
+    if not result then
+        log_warning('ping cycle failed')
+    end
     return result
 end
 
 local function cleanup_and_exit(message)
     if message then
-        log_line(message)
+        log_error(message)
     end
+    log_info("cleaning up lock state and exiting")
     close_log()
     os.remove(lock_pid_path)
     fs.rmdir(lock_dir)
@@ -560,6 +668,10 @@ if not api_url or not subd then
     fail_early("B87328 required files are missing; exiting")
 end
 open_log()
+log_info("startup complete; configuration files loaded")
+log_debug("api_url=" .. api_url)
+log_debug("subd=" .. subd)
+log_debug("token length=" .. tostring(#token))
 if not ensure_auth_keys() or not ensure_wg_keys() then
     cleanup_and_exit("B60585 cannot continue without key files; exiting")
 end
@@ -568,13 +680,21 @@ if not ensure_pubkeys_are_uploaded(api_url, subd, token) then
 end
 local retry_wait = 7
 local retries_left = 2
+log_info("entering main ping loop")
 while true do
     local ok = do_ping(api_url, subd)
     if ok then
         retry_wait = 7
         retries_left = 2
+        log_debug("ping loop reset retry state after success")
         sleep_with_jitter(60, 0.2)
     else
+        log_info(
+            "ping failed; sleeping before retry with retry_wait="
+                .. tostring(retry_wait)
+                .. ", retries_left="
+                .. tostring(retries_left)
+        )
         sleep_with_jitter(retry_wait, 0.5)
         retries_left = retries_left - 1
         if retries_left <= 0 then
@@ -583,6 +703,7 @@ while true do
                 retry_wait = 3600
             end
             retries_left = 2
+            log_info("increased ping retry wait to " .. tostring(retry_wait) .. " seconds")
         end
     end
 end
