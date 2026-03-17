@@ -110,37 +110,35 @@ end
 local function run_command(command, merge_stderr)
     -- returns the captured output after stripping trailing whitespace, or nil on failure
     log_debug("running command: " .. command)
-    local pipe = io.popen(command .. (merge_stderr and ' 2>&1' or ''), 'r')
+    local wrapped = '{ '
+        .. command
+        .. (merge_stderr and ' 2>&1' or ' 2>/dev/null')
+        .. '; rc=$?; printf "\\n__EXIT__=%d\\n" "$rc"; }'
+    local pipe = io.popen(wrapped, 'r')
     if not pipe then
         log_error("B12747 unable to run: " .. command)
         return nil
     end
     local output = pipe:read('*a') or ''
-    local ok, why, code = pipe:close()
-    log_debug(
-        "command close status: ok="
-            .. tostring(ok)
-            .. ", why="
-            .. tostring(why)
-            .. ", code="
-            .. tostring(code)
-    )
-    if command_succeeded(ok, why, code) then
-        output = output:gsub('%s+$', '')
+    pipe:close()  -- old method of `local ok, why, code = pipe:close()` did not capture exit code
+    local exit_code = output:match('\n__EXIT__=(%d+)\n?$')
+    if not exit_code then
+        log_error("B60214 could not determine exit status for: " .. command)
+        return nil
+    end
+    exit_code = tonumber(exit_code)
+    output = output:gsub('\n__EXIT__=%d+\n?$', '')
+    output = output:gsub('%s+$', '')
+    if exit_code == 0 then
         if output ~= '' then
-            log_debug("command succeeded: " .. output:gsub('\n', '\\n'))
+            log_debug("  command succeeded: " .. output:gsub('\n', '\\n'))
         else
-            log_debug("command succeeded with empty output")
+            log_debug("  command succeeded with empty output")
         end
         return output
     end
-    local exit_code = code
-    if type(ok) == 'number' and why == nil and code == nil then
-        exit_code = ok
-    end
     if output ~= '' then
-        output = output:gsub('%s+$', ''):gsub('\n', '\\n')
-        log_error("B11840 running " .. command .. " failed: " .. output)
+        log_error("B11840 running " .. command .. " failed: " .. output:gsub('\n', '\\n'))
     else
         log_error("B11545 running " .. command .. " failed with exit code " .. tostring(exit_code))
     end
