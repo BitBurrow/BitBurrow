@@ -96,7 +96,7 @@ def confirm(client: Client):
             kind=db.AccountKind.MANAGER,  # it's now a full login key
             valid_for=TimeDelta(days=10950),
         )
-        auth.log_in(aid, login_key, idelem['keep_me_logged_in'].value, client.request)
+        auth.log_in(aid, idelem['keep_me_logged_in'].value, client.request)
 
     idelem['continue'].on_click(callback=on_continue)
     # do not store login_key anywhere
@@ -124,7 +124,7 @@ def login(client: Client):
         except db.CredentialsError as e:
             ui.notify(db.style_login_key_error_message(str(e), db.admin_or_manager))
             return
-        auth.log_in(aid, login_key, idelem['keep_me_logged_in'].value, client.request)
+        auth.log_in(aid, idelem['keep_me_logged_in'].value, client.request)
 
     async def check_enter(e):
         if e.args.get('key') == 'Enter':

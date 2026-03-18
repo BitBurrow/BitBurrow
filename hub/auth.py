@@ -147,15 +147,15 @@ def set_login_cookie(
     )
 
 
-def log_in(aid, login_key, keep_logged_in: bool, request):
+def log_in(account_id, keep_logged_in: bool, request):
     if keep_logged_in:  # keep user logged in for 30 days
-        server_token_timedelta = TimeDelta(days=30)
+        session_ttl = TimeDelta(days=30)
         cookie_seconds = 60 * 60 * 24 * 30
     else:  # keep logged in until client browser is closed (max 24 hours)
-        server_token_timedelta = TimeDelta(days=1)
+        session_ttl = TimeDelta(days=1)
         cookie_seconds = 0
-    login_key = db.new_login_session(aid, request, server_token_timedelta)
-    set_login_cookie(login_key, cookie_seconds)
+    token = db.new_login_session(account_id, request, session_ttl)
+    set_login_cookie(token, cookie_seconds)
 
 
 def log_out(redirect_to: str = '/login'):
