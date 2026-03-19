@@ -36,6 +36,10 @@ pytest = "^7.4.4"
 pytest-asyncio = "^0.23.4"
 pytest-timeout = "^2.3.1"
 
+
+[tool.poetry.group.lint.dependencies]
+black = "^26.3.1"
+
 [tool.poetry.scripts]
 bbhub = "hub.hub:entry_point"
 
