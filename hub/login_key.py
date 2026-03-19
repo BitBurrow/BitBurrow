@@ -6,7 +6,6 @@ import re
 import secrets
 from typing import Final
 
-
 # login key, e.g. 'X88L7V2BCMM3PRKVF2'
 #     → log(28^18)÷log(2) ≈ 87 bits of entropy
 # 6 words from 4000-word dictionary, e.g. 'OstrichPrecipiceWeldLinkRoastedLeopard'

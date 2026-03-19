@@ -105,9 +105,8 @@ def migrate(domain='', public_ip=''):  # update config data to current format
         digits = '23456789bcdfghjklmnpqrstvwxz'
         site_code = ''.join(secrets.choice(digits) for i in range(7))
         wg_port = net.random_free_port(use_udp=True, avoid=[5353])
-        new_branch = yaml.safe_load(
-            textwrap.dedent(  # section: help
-                f'''
+        # section: help
+        new_branch = yaml.safe_load(textwrap.dedent(f'''
                     notes:
                     - This is the BitBurrow configuration file. Edit this file to configure
                       the BitBurrow hub.
@@ -151,13 +150,10 @@ def migrate(domain='', public_ip=''):  # update config data to current format
                         files.
                     programmatic_use_only: Don't change this. It is used internally by bbhub to
                       update this config file.
-                '''
-            ).lstrip()
-        )
+                ''').lstrip())
         insert_item_before('programmatic_use_only', 'help', new_branch)
-        new_branch = yaml.safe_load(
-            textwrap.dedent(  # section: frontend
-                f'''
+        # section: frontend
+        new_branch = yaml.safe_load(textwrap.dedent(f'''
                     domain: {domain}
                     site_code: {site_code}
                     web_port: 8443
@@ -165,24 +161,18 @@ def migrate(domain='', public_ip=''):  # update config data to current format
                     wg_port: {wg_port}
                     ips:
                     - {public_ip}
-                '''
-            ).lstrip()
-        )
+                ''').lstrip())
         insert_item_before('programmatic_use_only', 'frontend', new_branch)
-        new_branch = yaml.safe_load(
-            textwrap.dedent(  # section: backend
-                f'''
+        # section: backend
+        new_branch = yaml.safe_load(textwrap.dedent(f'''
                     web_port: 8443
                     web_proto: https
                     wg_port: {wg_port}
                     ip: ''
-                '''
-            ).lstrip()
-        )
+                ''').lstrip())
         insert_item_before('programmatic_use_only', 'backend', new_branch)
-        new_branch = yaml.safe_load(
-            textwrap.dedent(  # section: path
-                f'''
+        # section: path
+        new_branch = yaml.safe_load(textwrap.dedent(f'''
                     db: data.sqlite
                     log: ~/.cache/bitburrow/
                     log_level: 3
@@ -192,9 +182,7 @@ def migrate(domain='', public_ip=''):  # update config data to current format
                     restart_on_change:
                     - config.yaml
                     restart_on_change_interval: 60
-                '''
-            ).lstrip()
-        )
+                ''').lstrip())
         insert_item_before('programmatic_use_only', 'path', new_branch)
         cfv += 1
         set('programmatic_use_only', cfv)

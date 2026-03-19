@@ -8,7 +8,6 @@ import logging
 import os
 import yaml
 
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 

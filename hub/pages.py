@@ -331,8 +331,7 @@ def setup(client: Client, device_slug: str):
         device_list = ui.column().classes('w-full max-w-5xl gap-3')
 
     def add_custom_css():  # style for render_tab_buttons()
-        ui.add_head_html(
-            '''
+        ui.add_head_html('''
                 <style>
                 .stage-pill {
                   max-width: 32vw;
@@ -362,8 +361,7 @@ def setup(client: Client, device_slug: str):
                   background: currentColor;
                 }
                 </style>
-            '''
-        )
+            ''')
 
     sections = uif.parse_markdown_sections('setup')
     ui.run_javascript(f"document.title = '{sections[0]}'")

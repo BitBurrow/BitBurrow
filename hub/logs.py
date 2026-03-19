@@ -43,9 +43,7 @@ def logging_config(
     file_log_level=logging.INFO,
 ):
     # docs: https://docs.python.org/3/library/logging.config.html
-    config_data = yaml.safe_load(
-        textwrap.dedent(
-            '''
+    config_data = yaml.safe_load(textwrap.dedent('''
                 version: 1
                 disable_existing_loggers: false
                 formatters:
@@ -85,9 +83,7 @@ def logging_config(
                         handlers:
                         - console
                         - file
-            '''
-        )
-    )
+            '''))
     # set log level in config_data to current level
     config_data['handlers']['console']['level'] = logging.getLevelName(console_log_level)
     config_data['handlers']['file']['level'] = logging.getLevelName(file_log_level)

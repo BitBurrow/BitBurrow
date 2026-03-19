@@ -80,10 +80,8 @@ def copy_data_from_old_db_to_new(new_db_path: str, old_db_path: str) -> None:
                 ).fetchone()
                 if not old_exists:
                     continue
-                conn.execute(
-                    f'''INSERT INTO "{table}" ({cols_csv})
-                    SELECT {selects_csv} FROM old_db."{table}";'''
-                )
+                conn.execute(f'''INSERT INTO "{table}" ({cols_csv})
+                    SELECT {selects_csv} FROM old_db."{table}";''')
         finally:
             conn.commit()
             conn.execute('''DETACH DATABASE old_db;''')

@@ -23,8 +23,7 @@ ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
 def enable_external_links_new_tab():
     """Add JavaScript to the page to make external links open in a new browser tab."""
 
-    ui.run_javascript(
-        r'''
+    ui.run_javascript(r'''
             (function() {
               if (window.__ng_ext_link_handler_installed) return;
               window.__ng_ext_link_handler_installed = true;
@@ -55,8 +54,7 @@ def enable_external_links_new_tab():
               window.__ng_ext_link_handler = handler;
               document.addEventListener('click', handler, true);
             })();
-        '''
-    )
+        ''')
 
 
 ###
@@ -572,15 +570,14 @@ def render_header(is_logged_in: bool):
         primary='#177245',  # our app color, "dark spring green"
         # see also 'theme.css'
     )
-    ui.add_head_html(  # in dark mode, prevent brief all-white page when switching pages
-        r'''
+    # in dark mode, prevent brief all-white page when switching pages
+    ui.add_head_html(r'''
             <meta name="color-scheme" content="dark light">
             <style>
               html, body { background: #ecf2ef; }
               @media (prefers-color-scheme: dark) { html, body { background: #0f1412; } }
             </style>
-        '''
-    )
+        ''')
     with ui.header().classes('app-header w-full'):  # top header bar
         with ui.row().classes('w-full items-center no-wrap'):
             logo_icon = ui.image('/ui/img/bitburrow.png').style('width: 4rem; height: auto;')
