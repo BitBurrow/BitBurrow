@@ -192,7 +192,7 @@ async def watch_tls_cert() -> None:
         if rep_count == 0:
             await asyncio.sleep(20)  # check cert 20 seconds after startup
         else:
-            frontend_site = f'{conf.get('frontend.domain')}:{conf.get("frontend.web_port")}'
+            frontend_site = f'{conf.get('frontend.domain')}:{conf.get('frontend.web_port')}'
             iaddr = net.default_listen_address(conf.get('backend.ip'))
             backend_site = f'{iaddr}:{conf.get("backend.web_port")}'
             if conf.get('backend.web_proto') == 'http':  # only check the public-facing domain
@@ -336,9 +336,6 @@ def entry_point():
     try:
         version_string = f"{util.app_version()}_{migrate_db.db_schema_version}_{conf.config_fv}"
         address_list = net.all_local_ips(conf.get('backend.ip'), ipv6_enclosure='[]')
-        public_port = conf.get('frontend.web_port')
-        port_spec = '' if public_port == 443 else ':' + str(public_port)
-        base_url = f"{conf.get('frontend.web_proto')}://{conf.get('frontend.domain')}{port_spec}"
         logger.info(f"❚ Starting BitBurrow hub")
         logger.info(f"❚   version string: {version_string}")
         logger.info(f"❚   admin accounts: {db.account_count(db.AccountKind.ADMIN)}")
@@ -347,8 +344,7 @@ def entry_point():
         logger.info(f"❚   user accounts: {db.account_count(db.AccountKind.USER)}")
         for address in address_list:
             logger.info(f"❚   listening on: {scheme}://{address}:{conf.get('backend.web_port')}")
-        logger.info(f"❚   frontend URL: {base_url}/welcome")
-        # FIXME: logger.info(f"❚   public URL: {base_url}{conf.get('frontend.site_code')}/welcome")
+        logger.info(f"❚   frontend URL: {conf.base_url()}/welcome")
     except sqlalchemy.exc.OperationalError as e:
         logger.error(f"B50313 DB error (may need to increase db_schema_version): {e}")
         sys.exit(1)

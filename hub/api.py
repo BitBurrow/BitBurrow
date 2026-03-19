@@ -7,13 +7,26 @@ from fastapi import (
     WebSocket,
     HTTPException,
 )
+from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from sqlmodel import Session, SQLModel, select
 import logging
 import hub.db as db
 import hub.transmutation as transmutation
+import hub.config as conf
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
+
+
+jsonrpc_path = '/api/v1'
+bootstrap0_path = '/bootstrap0'
+
+
+def device_bootstrap_code(account_id) -> str:
+    """Return a shell script, e.g. for /etc/rc.local, to begin adopting a BitBurrow base router"""
+    server_token_timedelta = TimeDelta(hours=1)  # base router must call API within 1 hour
+    token = db.new_ott(account_id, server_token_timedelta)
+    return f'echo {token} >/tmp/YVB6IEH; curl {conf.base_url()}{bootstrap0_path} |sh'
 
 
 ###

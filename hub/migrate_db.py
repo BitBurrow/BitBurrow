@@ -3,7 +3,7 @@ import os
 import sqlite3
 import tempfile
 from contextlib import contextmanager
-from typing import Iterable
+from sqlalchemy import update
 from sqlmodel import SQLModel, create_engine, Session, select
 import hub.db as db
 import hub.login_key as lk
@@ -20,7 +20,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 29
+db_schema_version = 30
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -130,6 +130,13 @@ def migrate(db_path: str) -> None:
                 db.set_unique_value(session, device, "subd", retry=200, valuef=subd)
             session.commit()
         current_version = 27
+    if current_version < 30:  # version 29 → 30: add LoginSession.kind
+        engine = create_engine(f"sqlite:///{db_path}")
+        with Session(engine) as session:
+            statement = update(db.LoginSession).values(kind=db.LoginSessionKind.COOKIE)
+            session.exec(statement)
+            session.commit()
+        current_version = 30
     # if current_version < ...
     #     ...
     #     current_version = ...

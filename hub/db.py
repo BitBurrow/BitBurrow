@@ -254,7 +254,7 @@ def style_login_key_error_message(err: str, allowed_kinds):  # make CredentialEr
     return replaced[:1].upper() + replaced[1:]  # capitalize first letter
 
 
-def get_account_by_token(token: str | None, log_out=False) -> tuple[int, int, AccountKind]:
+def get_account_by_token(token: str | None, ls_kind, log_out=False) -> tuple[int, int, AccountKind]:
     """Validate a client token.
 
     Optionally invalidate the login session. Return the LoginSession.id
@@ -265,7 +265,10 @@ def get_account_by_token(token: str | None, log_out=False) -> tuple[int, int, Ac
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     with Session(engine) as session:
         login_session = session.exec(
-            select(LoginSession).where(LoginSession.token_hash == token_hash)
+            select(LoginSession).where(
+                LoginSession.token_hash == token_hash,
+                LoginSession.kind == ls_kind,
+            )
         ).one_or_none()
         if not login_session:
             raise CredentialsError(f"B05076 login session not found")
@@ -285,9 +288,17 @@ def get_account_by_token(token: str | None, log_out=False) -> tuple[int, int, Ac
 ###
 
 
+class LoginSessionKind(enum.Enum):
+    TRASH = 0  # not valid; scheduled for deletion
+    DISABLED = 10  # not yet valid
+    COOKIE = 20  # stored in user's web browser
+    DEVICE_OTT = 30  # used as one-time-token to bootstrap a base router
+
+
 class LoginSession(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     account_id: int = Field(foreign_key='account.id')
+    kind: LoginSessionKind = LoginSessionKind.DISABLED
     token_hash: str = Field(index=True, unique=True)
     created_at: DateTime = Field(
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
@@ -310,6 +321,7 @@ def new_login_session(aid: int, request: fastapi.Request, valid_for: TimeDelta) 
     """Create a new session and return its token."""
     ls = LoginSession()
     ls.account_id = aid  # account.id
+    ls.kind = LoginSessionKind.COOKIE
     token = secrets.token_urlsafe(32)  # 256-bit random token
     ls.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     ls.valid_until = DateTime.now(TimeZone.utc) + valid_for
@@ -322,14 +334,32 @@ def new_login_session(aid: int, request: fastapi.Request, valid_for: TimeDelta) 
     return token
 
 
+def new_ott(aid: int, valid_for: TimeDelta) -> str:
+    """Create a new one-time-token for authenticating a new base router."""
+    ls = LoginSession()
+    ls.account_id = aid  # account.id
+    ls.kind = LoginSessionKind.DEVICE_OTT
+    token = secrets.token_urlsafe(32)  # 256-bit random token
+    ls.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    ls.valid_until = DateTime.now(TimeZone.utc) + valid_for
+    ls.ip = ''
+    ls.user_agent = 'OTT'
+    with Session(engine) as session:
+        session.add(ls)
+        session.commit()
+    logger.info(f"B89001 created new device OTT {aid}")
+    return token
+
+
 def log_out(lsid: int) -> None:
     """Log out (invalidate) the given login session."""
     with Session(engine) as session:
-        ls = session.exec(select(LoginSession).where(LoginSession.id == lsid)).first()
+        ls: LoginSession = session.exec(select(LoginSession).where(LoginSession.id == lsid)).first()
         if ls:
+            ls.kind = LoginSessionKind.TRASH
             now = DateTime.now(TimeZone.utc)
             ls.last_activity = now
-            ls.valid_until = now
+            ls.valid_until = now  # not strictly necessary because we set ls.kind to TRASH
             session.add(ls)
             session.commit()
 

@@ -15,7 +15,7 @@ def is_logged_in(client: Client):
     """If the client is logged in, redirect client browser."""
     token = client.request.cookies.get(SESSION_COOKIE_NAME)
     try:
-        lsid, aid, kind = db.get_account_by_token(token)
+        lsid, aid, kind = db.get_account_by_token(token, db.LoginSessionKind.COOKIE)
     except db.CredentialsError:
         return False
     return True
@@ -25,7 +25,7 @@ def require_login(client: Client, redirect: str = '/login') -> tuple[int, int, d
     """If the client is logged in, return tuple about user, else redirect client browser."""
     token = client.request.cookies.get(SESSION_COOKIE_NAME)
     try:
-        lsid, aid, kind = db.get_account_by_token(token)
+        lsid, aid, kind = db.get_account_by_token(token, db.LoginSessionKind.COOKIE)
     except db.CredentialsError:
         ui.notify('Please log in first.', color='warning')
         ui.timer(3, lambda: ui.navigate.to(redirect), once=True)
@@ -76,7 +76,7 @@ def logout(request: Request, redirect: str = Body('/login', embed=True)):
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
         try:
-            lsid, aid, kind = db.get_account_by_token(token)
+            lsid, aid, kind = db.get_account_by_token(token, db.LoginSessionKind.COOKIE)
             db.log_out(lsid)  # invalidate login session in DB
         except db.CredentialsError:
             pass  # expired or invalid token
