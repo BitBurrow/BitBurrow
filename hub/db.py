@@ -388,9 +388,9 @@ class Device(SQLModel, table=True):
     id: Optional[int] = Field(primary_key=True, default=None)
     account_id: Optional[int] = Field(index=True, foreign_key='account.id')  # device admin--manager
     name: str = ''  # e.g. "Base SPW" but user can modify
-    name_slug: Optional[str] = Field(default=None, index=True)  # URL-safe version of name
+    name_slug: Optional[str] = Field(index=True)  # URL-safe version of name
     # for bases, subd is the left-most label of FQDN, e.g. y99g in y99g.vxm.example.org
-    subd: Optional[str] = Field(default=None, index=True, unique=True)
+    subd: Optional[str] = Field(index=True, unique=True)
     account: Optional[Account] = Relationship(back_populates="devices")
     comment: str = ""
 
@@ -423,16 +423,16 @@ class Intf(SQLModel, table=True):
     base_intf_id: Optional[int] = Field(index=True, foreign_key='intf.id')
     wg_privkey: str = Field(index=True, unique=True, nullable=False)
     wg_pubkey: str = Field(index=True, unique=True, nullable=False)
-    backend_port: int | None = Field(default=None)
+    backend_port: int | None
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
     frontend_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
     # 'other' is a dict of all other config options, official and custom
-    keepalive: int | None = Field(default=None)
+    keepalive: int | None
     other: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
-    last_endpoint: str | None = Field(default=None)
-    last_handshake: int | None = Field(default=None)  # seconds past Unix epoch
-    ssh_privkey: str | None = Field(default=None)
-    ssh_pubkey: str | None = Field(default=None)
+    last_endpoint: str | None
+    last_handshake: int | None  # seconds past Unix epoch
+    ssh_privkey: str | None
+    ssh_pubkey: str | None
     comment: str = ""
     default_method: IntfMethod = IntfMethod.NONE
     model_config = ConfigDict(arbitrary_types_allowed=True)  # for Column(JSON)
