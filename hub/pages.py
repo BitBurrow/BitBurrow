@@ -192,15 +192,21 @@ def home(client: Client):
         css = 'w-full max-w-xl mx-auto'
         cards_container.clear()
         with cards_container:
-            with ui.column().classes(css):
-                idelem['base_name'] = uif.input(
-                    label='Name',
-                    font_size='18px',
-                    icon='router',
-                    max_length=70,
-                )
-                idelem['new_base'] = uif.button(text="New base router", align='center')
-                idelem['new_base'].on_click(callback=on_add_item)
+            with ui.card().classes(f'{css} text-center'):
+                if len(cards) < 1:
+                    ui.label("You don't have any base routers.")
+                    ui.label("To set up a base router, type a name for it below.")
+                else:
+                    ui.label("To set up a new base router, type a name for it below.")
+                with ui.column().classes(css):
+                    idelem['base_name'] = uif.input(
+                        label='Base router name',
+                        font_size='18px',
+                        icon='router',
+                        max_length=70,
+                    )
+                    idelem['new_base'] = uif.button(text="Set up", align='right')
+                    idelem['new_base'].on_click(callback=on_add_item)
             for card in cards:
                 with ui.card().classes(css):
                     with ui.column().classes('min-w-0 gap-0'):

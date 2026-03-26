@@ -307,10 +307,8 @@ def image(source='', align='left', alt='', width=None):
 
 
 def button(text='', align='left'):
-    if align == 'left':
-        return ui.button(text)
-    else:
-        return ui.button(text).classes('mx-auto' if align == 'center' else 'mr-auto')
+    cls = {'center': 'mx-auto', 'right': 'ml-auto'}.get(align, '')
+    return ui.button(text).classes(cls) if cls else ui.button(text)
 
 
 def floating_button(icon=''):
