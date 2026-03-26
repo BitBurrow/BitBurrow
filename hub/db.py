@@ -391,8 +391,19 @@ class Device(SQLModel, table=True):
     name_slug: Optional[str] = Field(index=True)  # URL-safe version of name
     # for bases, subd is the left-most label of FQDN, e.g. y99g in y99g.vxm.example.org
     subd: Optional[str] = Field(index=True, unique=True)
+    ott_id: Optional[int] = Field(foreign_key='loginsession.id')  # one-time token for adopting
+    auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Optional[Account] = Relationship(back_populates="devices")
     comment: str = ""
+
+    def bootstrap_state(self):
+        if self.auth_pubkey == '':
+            if self.ott_id is None:
+                return "ready to set up"  # device exists in DB
+            else:
+                return "awaiting base router connection"  # OTT has been created and viewed
+        else:
+            return "authenticated"  # OTT verified; auth_pubkey accepted
 
 
 ###
