@@ -407,46 +407,6 @@ def split_at_ctags(text: str) -> list[str]:
     return ctags
 
 
-class ElemRegistry(dict):  # lazy evaluation of idelem objects
-    def __init__(self):
-        super().__init__()
-        self._wait_once = {}  # key -> [callback(elem)]
-        self._watch_always = {}  # key -> [callback(elem)]
-
-    def __setitem__(self, key, value):
-        super().__setitem__(key, value)
-        for cb in self._watch_always.get(key, ()):
-            cb(value)
-        waiters = self._wait_once.pop(key, None)
-        if waiters:
-            for cb in waiters:
-                cb(value)
-
-    def setdefault(self, key, default=None):
-        if key in self:
-            return self[key]
-        self[key] = default
-        return default
-
-    def update(self, *args, **kwargs):
-        other = dict(*args, **kwargs)
-        for k, v in other.items():
-            self[k] = v
-
-    def when_available(self, key, cb):
-        """Run once: now if present, otherwise when the element is first registered."""
-        if key in self:
-            cb(self[key])
-        else:
-            self._wait_once.setdefault(key, []).append(cb)
-
-    def on_register(self, key, cb):
-        """Run every time the key is registered (useful if steps are rebuilt)."""
-        self._watch_always.setdefault(key, []).append(cb)
-        if key in self:
-            cb(self[key])
-
-
 def render_markdown_with_ctags(md: str, idelem: dict[str, object], within=None):
     splits = split_at_ctags(md)
     for split in splits:
@@ -626,12 +586,26 @@ def render_content(sections):
     return idelem
 
 
-def render_stepper(stage: str):
+def render_stepper(stage: str, idelem_lambdas=None):
+    if idelem_lambdas is None:
+        idelem_lambdas = dict()
     yaml_path = os.path.join(ui_path, f'setup-{stage}.yaml')
     with open(yaml_path, 'r', encoding='utf-8') as f:
         data = yaml.safe_load(f)
-    idelem = ElemRegistry()  # map each element ID to its actual object
-    render_markdown_with_ctags(data['pre_md'], idelem, None)  # text above list
+    idelem = dict()  # map of maps
+    done_set_contents = set()
+
+    def set_contents(step_id):
+        if step_id in done_set_contents:
+            return  # already set for this step
+        for obj_id, obj in idelem[step_id].items():
+            if obj_id in idelem_lambdas:
+                idelem_lambdas[obj_id](obj)
+        done_set_contents.add(step_id)
+
+    idelem['pre_md'] = dict()  # for this section, map for each element ID to its actual object
+    render_markdown_with_ctags(data['pre_md'], idelem['pre_md'], None)  # text above list
+    set_contents('pre_md')
     all_steps = data['steps']
     path_map = dict()  # 'path' from here forward means the sequence of choices the user made
     id_map = dict()
@@ -640,6 +614,7 @@ def render_stepper(stage: str):
             raise Berror(f"B19389 duplicate path '{s['path']}' in {yaml_path}")
         if id_map.setdefault(s['id'], s) != s:
             raise Berror(f"B33451 duplicate id '{s['id']}' in {yaml_path}")
+        idelem[s['id']] = dict()
     for s in all_steps:  # use paths to create a tree structure
         if len(s['path']) == 0:
             continue  # root has no parent
@@ -671,8 +646,8 @@ def render_stepper(stage: str):
             while True:
                 nextc = None
                 with stepper:
-                    with ui.step(s['title']) as step:
-                        render_markdown_with_ctags(s['md'], idelem, None)
+                    with ui.step(s['id']).props(f'title={s["title"]}') as step:
+                        render_markdown_with_ctags(s['md'], idelem[s['id']], None)
                         with ui.stepper_navigation():
                             if 'parent' in s:
                                 ui.button('Back', on_click=stepper.previous).props('outline')
@@ -689,5 +664,14 @@ def render_stepper(stage: str):
                     else:
                         break
 
+        def on_step_change(e):
+            step_id = e.value
+            s = id_map.get(step_id)
+            if s:
+                set_contents(s['id'])
+            else:
+                logger.warning(f"B74741 unknown step {step_id!r} (should probably never happen)")
+
+        stepper.on_value_change(on_step_change)
         build_steps_down(path_map[''])
     return idelem

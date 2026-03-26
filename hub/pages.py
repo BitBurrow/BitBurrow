@@ -2,8 +2,7 @@ import asyncio
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import logging
 from nicegui import ui, Client
-import os
-import re
+import hub.api as api
 import hub.uif as uif
 import hub.db as db
 import hub.login_key as lk
@@ -367,6 +366,9 @@ def setup(client: Client, device_slug: str):
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=True)
     idelem = uif.render_content(sections)
+    idelem_lambdas = {
+        'code_for_local_startup': lambda obj: obj.set_content(api.device_bootstrap_code(aid)),
+    }
     add_custom_css()
     render_tab_buttons()
     with ui.tabs().classes('hidden') as tabs:
@@ -377,18 +379,7 @@ def setup(client: Client, device_slug: str):
         'animated transition-prev="slide-right" transition-next="slide-left" keep-alive'
     ).classes('w-full') as panels:
         with ui.tab_panel('adopt'):
-            idelem = uif.render_stepper('adopt')
-            code_cache = {'value': None, 'done': False}
-
-            def set_local_startup_code(el):
-                if not code_cache['done']:
-                    conf = db.get_conf(db.hub_peer_id(device_id))
-                    code_cache['value'] = db.methodize(conf, 'linux.openwrt.gzb')
-                    code_cache['done'] = True
-                el.set_content(code_cache['value'])
-
-            # using 'idelem.when_available()' below fails on 2nd 'build_steps_down()' call
-            idelem.on_register('code_for_local_startup', set_local_startup_code)
+            uif.render_stepper('adopt', idelem_lambdas)
         with ui.tab_panel('enable'):
             uif.render_stepper('enable')
         with ui.tab_panel('add'):
