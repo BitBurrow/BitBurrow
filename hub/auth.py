@@ -154,7 +154,7 @@ def log_in(account_id, keep_logged_in: bool, request):
     else:  # keep logged in until client browser is closed (max 24 hours)
         session_ttl = TimeDelta(days=1)
         cookie_seconds = 0
-    token = db.new_login_session(account_id, request, session_ttl)
+    token = db.new_login_session(account_id, session_ttl, metadata=request)
     set_login_cookie(token, cookie_seconds)
 
 

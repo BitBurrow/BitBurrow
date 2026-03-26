@@ -317,37 +317,29 @@ class LoginSession(SQLModel, table=True):
     user_agent: str
 
 
-def new_login_session(aid: int, request: fastapi.Request, valid_for: TimeDelta) -> str:
-    """Create a new session and return its token."""
+def new_login_session(
+    aid: int, valid_for: TimeDelta, metadata: fastapi.Request | None = None
+) -> str:
+    """Create a new session and return its token.
+
+    For a web session, metadata=request. For a base router one-time token, metadata=None."""
     ls = LoginSession()
     ls.account_id = aid  # account.id
-    ls.kind = LoginSessionKind.COOKIE
     token = secrets.token_urlsafe(32)  # 256-bit random token
     ls.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     ls.valid_until = DateTime.now(TimeZone.utc) + valid_for
-    ls.ip = request.client.host if request.client else '0.0.0.0'
-    ls.user_agent = request.headers.get('User-Agent', '')
+    if metadata is not None:  # http login session
+        ls.kind = LoginSessionKind.COOKIE
+        ls.ip = metadata.client.host if metadata.client else '0.0.0.0'
+        ls.user_agent = metadata.headers.get('User-Agent', '')
+    else:  # one-time token
+        ls.kind = LoginSessionKind.DEVICE_OTT
+        ls.ip = ''
+        ls.user_agent = 'OTT'
     with Session(engine) as session:
         session.add(ls)
         session.commit()
-    logger.info(f"B81232 created new login session for account {aid}")
-    return token
-
-
-def new_ott(aid: int, valid_for: TimeDelta) -> str:
-    """Create a new one-time-token for authenticating a new base router."""
-    ls = LoginSession()
-    ls.account_id = aid  # account.id
-    ls.kind = LoginSessionKind.DEVICE_OTT
-    token = secrets.token_urlsafe(32)  # 256-bit random token
-    ls.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    ls.valid_until = DateTime.now(TimeZone.utc) + valid_for
-    ls.ip = ''
-    ls.user_agent = 'OTT'
-    with Session(engine) as session:
-        session.add(ls)
-        session.commit()
-    logger.info(f"B89001 created new device OTT {aid}")
+    logger.info(f"B81232 new {"login session" if metadata else "device OTT"} for account {aid}")
     return token
 
 

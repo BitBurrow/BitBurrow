@@ -111,7 +111,7 @@ steps:
   title: Copying startup code
   md: |-
     Copy the text from the block of code below. You can use the button in the top-
-    right corner of the code box for this.
+    right corner of the code box for this. **Note: this code is only valid for 9 hours**.
 
     {{ code_block(id='code_for_local_startup', text='', language='sh') }}
   id: csc

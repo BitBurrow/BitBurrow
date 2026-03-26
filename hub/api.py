@@ -24,8 +24,8 @@ bootstrap0_path = '/bootstrap0'
 
 def device_bootstrap_code(account_id) -> str:
     """Return a shell script, e.g. for /etc/rc.local, to begin adopting a BitBurrow base router"""
-    server_token_timedelta = TimeDelta(hours=1)  # base router must call API within 1 hour
-    token = db.new_ott(account_id, server_token_timedelta)
+    server_token_timedelta = TimeDelta(hours=9)  # base router must call API within 9 hours
+    token = db.new_login_session(account_id, server_token_timedelta)
     return f'echo {token} >/tmp/YVB6IEH; curl {conf.base_url()}{bootstrap0_path} |sh'
 
 
