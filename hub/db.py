@@ -14,6 +14,7 @@ import sqlite3
 from sqlmodel import Field, Session, SQLModel, select, JSON, Column, Relationship, func
 import subprocess
 import tempfile
+import threading
 from typing import Optional, Any
 import urllib.parse
 import hub.login_key as lk
@@ -319,12 +320,13 @@ class LoginSession(SQLModel, table=True):
 
 def new_login_session(
     aid: int, valid_for: TimeDelta, metadata: fastapi.Request | None = None
-) -> str:
-    """Create a new session and return its token.
+) -> tuple[str, int]:
+    """Create a new session and return its token and ID.
 
-    For a web session, metadata=request. For a base router one-time token, metadata=None."""
+    Returns the new token and the new LoginSession.id. For a web session,
+    metadata=request. For a base router one-time token, metadata=None."""
     ls = LoginSession()
-    ls.account_id = aid  # account.id
+    ls.account_id = aid
     token = secrets.token_urlsafe(32)  # 256-bit random token
     ls.token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     ls.valid_until = DateTime.now(TimeZone.utc) + valid_for
@@ -339,8 +341,10 @@ def new_login_session(
     with Session(engine) as session:
         session.add(ls)
         session.commit()
-    logger.info(f"B81232 new {"login session" if metadata else "device OTT"} for account {aid}")
-    return token
+        session.refresh(ls)
+    creation = "login session" if metadata else "device OTT"
+    logger.info(f"B81232 new {creation} {ls.id} for account {aid}")
+    return token, ls.id
 
 
 def log_out(lsid: int) -> None:
@@ -951,6 +955,61 @@ def delete_device(id: int) -> None:
         logger.info(f"B74506 deleting Device {id}")
         session.delete(device)
         session.commit()
+
+
+def device_bootstrap_code(device_id, api_path) -> str:
+    """Return a shell script, e.g. for /etc/rc.local, to begin adopting a BitBurrow base router"""
+    if not hasattr(device_bootstrap_code, 'cache'):
+        device_bootstrap_code.cache = dict()
+        device_bootstrap_code.cache_lock = threading.Lock()
+    now = DateTime.now(TimeZone.utc)
+    with device_bootstrap_code.cache_lock:
+        with Session(engine) as session:
+            device: Device = session.exec(
+                select(Device).where(Device.id == device_id)
+            ).one_or_none()
+            if not device:
+                raise Berror(f"B24371 cannot find device {device_id}")
+            if device.ott_id is not None:
+                ls: LoginSession = session.exec(
+                    select(LoginSession).where(LoginSession.id == device.ott_id)
+                ).one_or_none()
+                if not ls:
+                    device.ott_id = None
+            if device.ott_id is not None:
+                assert ls.kind == LoginSessionKind.DEVICE_OTT
+                if ls.valid_until.replace(tzinfo=TimeZone.utc) < now:
+                    device.ott_id = None
+            if device.ott_id is not None:  # OTT is valid
+                cached = device_bootstrap_code.cache.get(device_id)
+                if cached is not None:
+                    expires_at, value = cached
+                    if expires_at > now:
+                        return value
+                    del device_bootstrap_code.cache[device_id]
+                    logger.warning(f"B72353 device {device_id} OTT is valid but cache expired")
+                else:
+                    logger.warning(f"B21159 device {device_id} cached OTT is None")
+                    # we shouldn't get here, but if we do, abandon the old OTT
+                    log_out(device.ott_id)
+            # create a new OTT
+            server_token_timedelta = TimeDelta(minutes=45)  # max time for base router to call API
+            token, ls_id = new_login_session(device.account_id, server_token_timedelta)
+            device.ott_id = ls_id
+            session.commit()
+            value = (
+                f'T=/tmp/YVB6IEHQ2\n'
+                + f'echo {token[0:22]}>$T\n'
+                + f'echo {token[22:]}>>$T\n'
+                + f'D={conf.base_url()}\n'
+                + f'curl $D{api_path} |sh\n'
+                + f'\n'
+            )
+            cache_ttl = TimeDelta(
+                hours=1
+            )  # in RAM for 60 minutes (safely longer than OTT validity)
+            device_bootstrap_code.cache[device_id] = (now + cache_ttl, value)
+            return value
 
 
 def hub_peer_id(device_id) -> int | None:

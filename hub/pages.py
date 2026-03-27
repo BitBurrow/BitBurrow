@@ -374,7 +374,9 @@ def setup(client: Client, device_slug: str):
     uif.render_header(is_logged_in=True)
     idelem = uif.render_content(sections)
     idelem_lambdas = {
-        'code_for_local_startup': lambda obj: obj.set_content(api.device_bootstrap_code(aid)),
+        'code_for_local_startup': lambda obj: obj.set_content(
+            db.device_bootstrap_code(device_id, api.bootstrap0_path)
+        ),
     }
     add_custom_css()
     render_tab_buttons()
