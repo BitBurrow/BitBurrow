@@ -989,9 +989,9 @@ def device_bootstrap_code(device_id, api_path) -> str:
                     del device_bootstrap_code.cache[device_id]
                     logger.warning(f"B72353 device {device_id} OTT is valid but cache expired")
                 else:
-                    logger.warning(f"B21159 device {device_id} cached OTT is None")
-                    # we shouldn't get here, but if we do, abandon the old OTT
-                    log_out(device.ott_id)
+                    logger.warning(f"B21159 device {device_id} cached OTT lost; hub restarted?")
+                # we shouldn't get here, but if we do, abandon the old OTT
+                log_out(device.ott_id)
             # create a new OTT
             server_token_timedelta = TimeDelta(minutes=45)  # max time for base router to call API
             token, ls_id = new_login_session(device.account_id, server_token_timedelta)
