@@ -282,7 +282,8 @@ def setup(client: Client, device_slug: str):
         lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
         return
-    if not (device_id := db.get_device_by_slug(device_slug, aid)):
+    device_id = db.get_device_by_slug(device_slug, aid)
+    if not device_id:
         sections = uif.parse_markdown_sections('device-not-found')
         for i, s in enumerate(sections):
             sections[i] = s.replace('{device_slug}', device_slug)
@@ -321,7 +322,7 @@ def setup(client: Client, device_slug: str):
         ui.label('Add a device name below:').classes('text-lg font-medium')
         name = ui.input(label='Device name').classes('w-full max-w-xl')
 
-        def add_device() -> None:
+        def on_add_device() -> None:
             v = (name.value or '').strip()
             if not v:
                 return
@@ -331,7 +332,7 @@ def setup(client: Client, device_slug: str):
                     ui.label(v).classes('text-base')
             name.value = ''
 
-        ui.button('Add device', on_click=add_device)
+        ui.button('Add device', on_click=on_add_device)
         ui.separator().classes('w-full max-w-5xl my-6')
         device_list = ui.column().classes('w-full max-w-5xl gap-3')
 

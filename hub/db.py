@@ -350,10 +350,11 @@ def log_out(lsid: int) -> None:
         if ls:
             ls.kind = LoginSessionKind.TRASH
             now = DateTime.now(TimeZone.utc)
-            ls.last_activity = now
             ls.valid_until = now  # not strictly necessary because we set ls.kind to TRASH
             session.add(ls)
             session.commit()
+        else:
+            logger.warning(f"B22609 LoginSession {lsid} has gone AWOL")
 
 
 def iter_get_login_session_by_account_id(aid: int | None):
