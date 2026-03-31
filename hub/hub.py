@@ -18,7 +18,7 @@ import hub.db as db
 import hub.net as net
 import hub.migrate_db as migrate_db
 import hub.util as util
-import hub.pages as pages
+import hub.api as api
 
 Berror = util.Berror
 logger = logging.getLogger(__name__)
@@ -357,6 +357,7 @@ def entry_point():
         ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
         nicegui.app.add_static_files('/ui', ui_path)
         nicegui.ui.add_css(os.path.join(ui_path, 'theme.css'), shared=True)
+        nicegui.app.include_router(api.router)
         nicegui.ui.run(  # docs: https://nicegui.io/documentation/run
             host=conf.get('backend.ip'),
             port=conf.get('backend.web_port'),
