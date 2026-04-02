@@ -287,6 +287,33 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       enabled: yes
       state: restarted
     when: (domain is defined) and (bind_options.changed or bind_zone_config.changed or bind_zone_file.changed)
+
+  - name: Wildcard TLS cert 🦶1--create temp file
+    tempfile:
+      state: file
+      suffix: .sh
+    register: certbot_tmp
+
+  - name: Wildcard TLS cert 🦶2--build certbot script
+    command:
+      cmd: "{{ bbhub }} tls-cert-script"
+    become_user: bitburrow
+    register: certbot_script
+
+  - name: Wildcard TLS cert 🦶3--write temp file
+    copy:
+      dest: "{{ certbot_tmp.path }}"
+      content: "{{ certbot_script.stdout }}"
+      mode: "0700"
+
+  - name: Wildcard TLS cert 🦶4--run script
+    shell: |-
+      {{ certbot_tmp.path }}
+
+  - name: Wildcard TLS cert 🦶5--clean up
+    file:
+      path: "{{ certbot_tmp.path }}"
+      state: absent
 _EOF3703_
 
 ## enable `ssh localhost` and run Ansible script

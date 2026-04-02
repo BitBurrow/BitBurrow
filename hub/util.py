@@ -255,15 +255,18 @@ def port_forward_script():
 
 def tls_cert_script():  # script to run certbot for wildcard TLS cert
     if conf.get('backend.web_proto') != 'https':
-        raise Berror(f"B20080 'backend.web_proto' in config file must be 'https'")
+        print("# TLS is not enabled ('backend.web_proto' in config file must be 'https')")
+        return
     # note: backslashes are not escaped
     script = r'''
         #!/bin/bash
-        ##
-        sudo apt install -y acl  # see `setfacl` below and https://stackoverflow.com/a/56379678
+        set -e
+        sudo apt-get install -y acl  # see `setfacl` below and https://stackoverflow.com/a/56379678
         sudo snap install --classic certbot
+        # debugging: bbhub test all
         # debugging: sudo certbot renew --dry-run
         # debugging: sudo systemctl list-timers snap.certbot.renew.timer
+        # to delete an old domain: sudo certbot delete --cert-name vxm.example.org -n
         cat <<"_EOF9981_" |sudo -u bind tee /opt/certbot_hook.sh  # hook file
         #!/bin/bash
         DNS_ZONE={domain}
@@ -276,15 +279,15 @@ def tls_cert_script():  # script to run certbot for wildcard TLS cert
         EOM
         sleep 5
         _EOF9981_
-        sudo chmod 550 /opt/certbot_hook.sh
-        if ! [ -f /etc/letsencrypt/.registered ]; then  # once it completes successfully, never run again
-        sudo certbot certonly -n --agree-tos \
-            --manual --manual-auth-hook=/opt/certbot_hook.sh \
-            --preferred-challenge=dns \
-            --register-unsafely-without-email \
-            -d '*.'{domain} -d {domain} \
-            --server https://acme-v02.api.letsencrypt.org/directory \
-            && sudo touch /etc/letsencrypt/.registered
+        sudo chmod 770 /opt/certbot_hook.sh  # 550 will cause tee to fail on next run
+        if ! [ -f /etc/letsencrypt/{domain}.registered ]; then  # once it completes successfully, never run again
+            sudo certbot certonly -n --agree-tos \
+                --manual --manual-auth-hook=/opt/certbot_hook.sh \
+                --preferred-challenge=dns \
+                --register-unsafely-without-email \
+                -d '*.'{domain} -d {domain} \
+                --server https://acme-v02.api.letsencrypt.org/directory \
+                && sudo touch /etc/letsencrypt/{domain}.registered
         fi
         # fix permissions so bbhub can read cert
         sudo setfacl -Rm d:user:bitburrow:rx,user:bitburrow:rx /etc/letsencrypt/
