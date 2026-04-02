@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 
 
-jsonrpc_path = '/api/v1'
-bootstrap0_path = '/bootstrap0'
+jsonrpc_route = '/api/v1'
+adopt5p_route = '/5p'
 hub_path = os.path.dirname(os.path.abspath(__file__))
 requests_by_ip = dict()
 rate_lock = threading.Lock()
@@ -41,17 +41,18 @@ def check_rate_limit(ip_address: str) -> None:
         requests_by_ip[ip_address] = recent_requests
 
 
-@router.get(bootstrap0_path, response_class=PlainTextResponse)
-def get_bootstrap0(request: Request) -> PlainTextResponse:
+@router.get(adopt5p_route, response_class=PlainTextResponse)
+def get_adopt5p_script(request: Request) -> PlainTextResponse:
     ip_address = request.client.host if request.client else '0.0.0.0'
     check_rate_limit(ip_address)
-    bootstrap0_file = os.path.join(hub_path, 'bootstrap0.sh')
+    adopt5p_path = os.path.join(hub_path, 'adopt5p.sh')
     try:
-        with open(bootstrap0_file, 'r', encoding='utf-8') as f:
+        with open(adopt5p_path, 'r', encoding='utf-8') as f:
             content = f.read()
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail='bootstrap0 not found') from exc
-    api_url = conf.base_url() + jsonrpc_path
+        logger.error(f"B98850 cannot open: {adopt5p_path}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    api_url = conf.base_url() + jsonrpc_route
     substituted = content.replace('{api_url}', api_url)
     return PlainTextResponse(
         content=substituted,

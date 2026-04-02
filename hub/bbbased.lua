@@ -403,7 +403,7 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
     log_info("public keys need upload to " .. rpc_url)
     while true do
         log_debug(
-            "attempting bootstrap1 public key upload; retry_wait="
+            "attempting adopt6c public key upload; retry_wait="
                 .. tostring(retry_wait)
                 .. ", retries_left="
                 .. tostring(retries_left)
@@ -418,7 +418,7 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
         local request_body = '{'
             .. '"jsonrpc":"2.0",'
             .. '"id":1,'
-            .. '"method":"bootstrap1",'
+            .. '"method":"adopt6c",'
             .. '"params":{'
             .. '"subd":"'
             .. json_escape(subd)
@@ -454,7 +454,7 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
         remove_path(request_path)
         remove_path(response_path)
         if curl_output and response_body then
-            log_debug("bootstrap response body: " .. response_body:gsub('\n', '\\n'))
+            log_debug("adopt6c response body: " .. response_body:gsub('\n', '\\n'))
             local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
             local has_result = response_body:match('"result"%s*:') ~= nil
             local has_error = response_body:match('"error"%s*:') ~= nil
@@ -462,15 +462,15 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
                 log_info("public key upload succeeded")
                 local touch_output = run_command('touch ' .. shell_quote(pubkeys_uploaded_path), true)
                 if not touch_output then
-                    log_error("B04717 bootstrap succeeded but could not touch pubkeys_uploaded")
+                    log_error("B04717 adopt6c succeeded but could not touch pubkeys_uploaded")
                 else
                     log_debug("updated upload marker: " .. pubkeys_uploaded_path)
                 end
                 return true
             end
-            log_error("B23806 bootstrap failed: " .. response_body)
+            log_error("B23806 adopt6c failed: " .. response_body)
         else
-            log_warning("bootstrap attempt failed without a usable response; will retry")
+            log_warning("adopt6c attempt failed without a usable response; will retry")
         end
         sleep_with_jitter(retry_wait, 0.5)
         retries_left = retries_left - 1
@@ -480,7 +480,7 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
                 retry_wait = 3600
             end
             retries_left = 2
-            log_info("increased bootstrap retry wait to " .. tostring(retry_wait) .. " seconds")
+            log_info("increased adopt6c retry wait to " .. tostring(retry_wait) .. " seconds")
         end
     end
 end

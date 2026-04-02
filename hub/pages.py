@@ -374,8 +374,8 @@ def setup(client: Client, device_slug: str):
     uif.render_header(is_logged_in=True)
     idelem = uif.render_content(sections)
     idelem_lambdas = {
-        'code_for_local_startup': lambda obj: obj.set_content(
-            db.device_bootstrap_code(device_id, api.bootstrap0_path)
+        'adopt5c_code': lambda obj: obj.set_content(
+            db.get_adopt5c_code(device_id, api.adopt5p_route)
         ),
     }
     add_custom_css()

@@ -8,7 +8,7 @@ steps:
     * **Manual**: Sign in to the router's web interface using a web browser.
 
     You can return to this step and choose again later.
-  id: aom
+  id: adopt0n
 - path: /Automatic
   title: Before you start
   md: |-
@@ -20,12 +20,12 @@ steps:
       website.
     * The *existing router* is the router that already provides internet at
       this location.
-  id: ant
+  id: adopt1d
 - path: /Automatic/Next
   title: Under construction
   md: |-
     Automatic connection is not yet implemented. Please use the Manual option.
-  id: puc
+  id: adopt1g
 - path: /Manual
   title: Before you start
   md: |-
@@ -37,7 +37,7 @@ steps:
       website.
     * The *existing router* is the router that already provides internet at
       this location.
-  id: mnt
+  id: adopt2d
 - path: /Manual/Next
   title: Plugging in
   md: |-
@@ -46,7 +46,7 @@ steps:
     1. Plug the other end of the Ethernet cable into one of the unused "LAN" ports on the
        existing router.
     1. Plug the new base router into wall power.
-  id: pli
+  id: adopt2g
 - path: /Manual/Next/Next
   title: Connecting WiFi
   md: |-
@@ -54,7 +54,7 @@ steps:
     1. Connect to the new base router's WiFi. The WiFi name is usually in the form
        `GL-SFT1200-xxx` where `SFT1200` is the model and `xxx` is a 3-digit number.
        The default WiFi password is **`goodlife`**.
-  id: ctw
+  id: adopt2j
 - path: /Manual/Next/Next/Next
   title: Opening router web interface
   md: |-
@@ -62,7 +62,7 @@ steps:
     1. Go to [http://192.168.8.1](http://192.168.8.1). If this doesn't bring up a
        page, check the bottom of the router or the manual for the address of the
        router admin page.
-  id: btr
+  id: adopt2m
 - path: /Manual/Next/Next/Next/Next
   title: Signing in to the base router
   md: |-
@@ -77,7 +77,7 @@ steps:
          reset?](https://docs.gl-inet.com/router/en/4/faq/repair_network_or_reset_firmware/)
        * YouTube tutorial: [How to Reset GL.iNet Router to Factory Default
          2022](https://www.youtube.com/watch?v=ON6PtGH_HJw)
-  id: lir
+  id: adopt2p
 - path: /Manual/Next/Next/Next/Next/Next
   title: Navigating to LuCI
   md: |-
@@ -90,12 +90,12 @@ steps:
         *  **Go To LuCI**
         * **192.168.8.1/cgi-bin/luci**
         * **Install Now** → **Go To LuCI**
-  id: ntl
+  id: adopt2s
 - path: /Manual/Next/Next/Next/Next/Next/Next
   title: Signing in to LuCI
   md: |-
     Log in with the username **`root`** and the password you created earlier.
-  id: lil
+  id: adopt2u
 - path: /Manual/Next/Next/Next/Next/Next/Next/Next
   title: Navigating to Local Startup
   md: |-
@@ -106,22 +106,23 @@ steps:
           Choose this if there.
         * Otherwise, scroll down to the "Local Startup" section near the bottom of the
           page.
-  id: fls
+  id: adopt2x
+# note: adopt3* and adopt4* are reserved for possible future adoption methods
 - path: /Manual/Next/Next/Next/Next/Next/Next/Next/Next
   title: Copying startup code
   md: |-
     Copy the text from the block of code below. You can use the button in the top-
     right corner of the code box for this. **Note: this code is only valid for 45 minutes**.
 
-    {{ code_block(id='code_for_local_startup', text='', language='sh') }}
-  id: csc
+    {{ code_block(id='adopt5c_code', text='', language='sh') }}
+  id: adopt5c
 - path: /Manual/Next/Next/Next/Next/Next/Next/Next/Next/Next
   title: Pasting startup code
   md: |-
     1. Paste this text at the *very beginning* of the existing text in the **Local
        Startup** text box.
     1. Choose **Submit**.
-  id: psc
+  id: adopt5f
 - path: /Manual/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
   title: Rebooting the router
   md: |-
@@ -129,5 +130,5 @@ steps:
     1. Wait a couple of minutes for the reboot.
     1. If your device automatically reconnects to the existing router's WiFi,
        reconnect to the new base router's WiFi to continue.
-  id: rtr
+  id: adopt5i
 

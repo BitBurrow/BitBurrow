@@ -293,7 +293,7 @@ class LoginSessionKind(enum.Enum):
     TRASH = 0  # not valid; scheduled for deletion
     DISABLED = 10  # not yet valid
     COOKIE = 20  # stored in user's web browser
-    DEVICE_OTT = 30  # used as one-time-token to bootstrap a base router
+    DEVICE_OTT = 30  # used as one-time-token to bootstrap a base router (adopt6c)
 
 
 class LoginSession(SQLModel, table=True):
@@ -393,14 +393,27 @@ class Device(SQLModel, table=True):
     account: Optional[Account] = Relationship(back_populates="devices")
     comment: str = ""
 
-    def bootstrap_state(self):
+    def adopt_state(self):
+        """Return an approximate adoption state.
+
+        Key adopt steps:
+        * adopt0c device created
+        * adopt1* automatic via phone app; see ui/setup-adopt.yaml
+        * adopt2* manual via router web ui; see ui/setup-adopt.yaml
+        * adopt5a OTT created
+        * adopt5c shell code copied by user
+        * adopt5p "adopt5p.sh" launched
+        * adopt5s "bbbased.lua" downloaded
+        * adopt5w "bbbased.lua" launched
+        * adopt6c OTT verified; auth_pubkey from base router accepted
+        """
         if self.auth_pubkey == '':
             if self.ott_id is None:
-                return "ready to set up"  # device exists in DB
+                return "adopt0c"  # device exists in DB
             else:
-                return "awaiting base router connection"  # OTT has been created and viewed
+                return "adopt5a"  # OTT has been created
         else:
-            return "authenticated"  # OTT verified; auth_pubkey accepted
+            return "adopt6c"  # OTT verified; auth_pubkey accepted
 
 
 ###
@@ -957,13 +970,13 @@ def delete_device(id: int) -> None:
         session.commit()
 
 
-def device_bootstrap_code(device_id, api_path) -> str:
+def get_adopt5c_code(device_id, api_path) -> str:
     """Return a shell script, e.g. for /etc/rc.local, to begin adopting a BitBurrow base router"""
-    if not hasattr(device_bootstrap_code, 'cache'):
-        device_bootstrap_code.cache = dict()
-        device_bootstrap_code.cache_lock = threading.Lock()
+    if not hasattr(get_adopt5c_code, 'cache'):
+        get_adopt5c_code.cache = dict()
+        get_adopt5c_code.cache_lock = threading.Lock()
     now = DateTime.now(TimeZone.utc)
-    with device_bootstrap_code.cache_lock:
+    with get_adopt5c_code.cache_lock:
         with Session(engine) as session:
             device: Device = session.exec(
                 select(Device).where(Device.id == device_id)
@@ -981,12 +994,12 @@ def device_bootstrap_code(device_id, api_path) -> str:
                 if ls.valid_until.replace(tzinfo=TimeZone.utc) < now:
                     device.ott_id = None
             if device.ott_id is not None:  # OTT is valid
-                cached = device_bootstrap_code.cache.get(device_id)
+                cached = get_adopt5c_code.cache.get(device_id)
                 if cached is not None:
                     expires_at, value = cached
                     if expires_at > now:
                         return value
-                    del device_bootstrap_code.cache[device_id]
+                    del get_adopt5c_code.cache[device_id]
                     logger.warning(f"B72353 device {device_id} OTT is valid but cache expired")
                 else:
                     logger.warning(f"B21159 device {device_id} cached OTT lost; hub restarted?")
@@ -1008,7 +1021,7 @@ def device_bootstrap_code(device_id, api_path) -> str:
             cache_ttl = TimeDelta(
                 hours=1
             )  # in RAM for 60 minutes (safely longer than OTT validity)
-            device_bootstrap_code.cache[device_id] = (now + cache_ttl, value)
+            get_adopt5c_code.cache[device_id] = (now + cache_ttl, value)
             return value
 
 
