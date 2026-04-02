@@ -18,6 +18,7 @@ import hub.db as db
 import hub.net as net
 import hub.migrate_db as migrate_db
 import hub.util as util
+import hub.pages as pages  # may appear unused, but UI won't work without this
 import hub.api as api
 
 Berror = util.Berror
