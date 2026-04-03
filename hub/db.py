@@ -342,8 +342,6 @@ def new_login_session(
         session.add(ls)
         session.commit()
         session.refresh(ls)
-    creation = "login session" if metadata else "device OTT"
-    logger.info(f"B81232 new {creation} {ls.id} for account {aid}")
     return token, ls.id
 
 
@@ -402,6 +400,7 @@ class Device(SQLModel, table=True):
         * adopt2* manual via router web ui; see ui/setup-adopt.yaml
         * adopt5a OTT created
         * adopt5c shell code copied by user
+        * adopt5l "adopt5p.sh" downloaded
         * adopt5p "adopt5p.sh" launched
         * adopt5s "bbbased.lua" downloaded
         * adopt5w "bbbased.lua" launched
@@ -890,6 +889,9 @@ def new_device(account_id, is_base: bool, name: str) -> str:
             hub_peer_id = new_intf(device_id=device.id, base_intf_id=hub_id)
             hub_peer_conf = get_conf_activate_peer(hub_peer_id)
             methodize(hub_peer_conf, 'local.linux')
+            logger.info(f"B16979 base {device.subd} completed adopt0c (device {device.id} created)")
+        else:
+            logger.debug(f"B04560 device {device.id} created")
         return device.name_slug
 
 
@@ -1010,12 +1012,15 @@ def get_adopt5c_code(device_id, api_path) -> str:
             token, ls_id = new_login_session(device.account_id, server_token_timedelta)
             device.ott_id = ls_id
             session.commit()
+            logger.info(f"B87566 base {device.subd} completed adopt5a (OTT {ls_id} created)")
+            # note: if token[0] or token[22] is '-', echo still just echos, i.e. it
+            # doesn't complain about an invalid option :-)
             value = (
                 f'T=/tmp/YVB6IEHQ2\n'
                 + f'echo {token[0:22]}>$T\n'
                 + f'echo {token[22:]}>>$T\n'
                 + f'D={conf.base_url()}\n'
-                + f'curl $D{api_path} |sh\n'
+                + f'curl $D{api_path.format(subd=device.subd)} |sh\n'
                 + f'\n'
             )
             cache_ttl = TimeDelta(

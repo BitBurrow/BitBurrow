@@ -1,9 +1,13 @@
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from fastapi import Request, Response, Body, APIRouter
 from fastapi.responses import RedirectResponse
+import logging
 from nicegui import ui, app, Client
 import os
 import hub.db as db
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 
 SECURE_COOKIES = bool(int(os.environ.get('SECURE_COOKIES', '0')))
 CSRF_COOKIE_NAME = '__Host-csrf' if SECURE_COOKIES else 'csrf'
@@ -154,7 +158,8 @@ def log_in(account_id, keep_logged_in: bool, request):
     else:  # keep logged in until client browser is closed (max 24 hours)
         session_ttl = TimeDelta(days=1)
         cookie_seconds = 0
-    token, _ = db.new_login_session(account_id, session_ttl, metadata=request)
+    token, ls_id = db.new_login_session(account_id, session_ttl, metadata=request)
+    logger.info(f"B06525 new login session {ls_id} for account {account_id}")
     set_login_cookie(token, cookie_seconds)
 
 

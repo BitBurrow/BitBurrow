@@ -12,7 +12,8 @@ logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, 
 
 
 jsonrpc_route = '/api/v1'
-adopt5p_route = '/5p'
+adopt5p_route = "/5p/{subd}"  # adopt5p.sh
+adopt5w_route = "/5w/{subd}"  # bbbased.lua
 hub_path = os.path.dirname(os.path.abspath(__file__))
 requests_by_ip = dict()
 rate_lock = threading.Lock()
@@ -42,9 +43,10 @@ def check_rate_limit(ip_address: str) -> None:
 
 
 @router.get(adopt5p_route, response_class=PlainTextResponse)
-def get_adopt5p_script(request: Request) -> PlainTextResponse:
+def get_adopt5p_script(request: Request, subd: str) -> PlainTextResponse:
     ip_address = request.client.host if request.client else '0.0.0.0'
     check_rate_limit(ip_address)
+    # we do not verify subd; 'adopt5p.sh' does not contain any secrets
     adopt5p_path = os.path.join(hub_path, 'adopt5p.sh')
     try:
         with open(adopt5p_path, 'r', encoding='utf-8') as f:
@@ -52,10 +54,12 @@ def get_adopt5p_script(request: Request) -> PlainTextResponse:
     except FileNotFoundError as exc:
         logger.error(f"B98850 cannot open: {adopt5p_path}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
-    api_url = conf.base_url() + jsonrpc_route
-    substituted = content.replace('{api_url}', api_url)
+    download_url = conf.base_url() + adopt5w_route
+    content = content.replace('{download_url}', download_url)
+    content = content.replace('{subd}', subd)
+    logger.info(f"B28592 base {subd} completed adopt5l from {ip_address}")
     return PlainTextResponse(
-        content=substituted,
+        content=content,
         media_type='text/plain; charset=utf-8',
         headers={'Cache-Control': 'no-store'},
     )
