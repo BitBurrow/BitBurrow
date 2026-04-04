@@ -57,9 +57,8 @@ def get_adopt5p_script(request: Request, subd: str) -> PlainTextResponse:
     except FileNotFoundError as exc:
         logger.error(f"B98850 cannot open: {adopt5p_path}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
-    download_url = conf.base_url() + adopt5w_route
-    content = content.replace('{download_url}', download_url)
-    content = content.replace('{subd}', subd)
+    content = content.replace('{download_url}', conf.base_url() + adopt5w_route.format(subd=subd))
+    content = content.replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
     logger.info(f"B28592 base {subd} completed adopt5l from {ip_address}")
     return PlainTextResponse(
         content=content,
