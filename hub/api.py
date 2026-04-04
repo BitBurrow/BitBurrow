@@ -1,8 +1,9 @@
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
-from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Request, HTTPException, status
+from fastapi.responses import Response, PlainTextResponse
 import os
 import logging
+import re
 import threading
 import hub.db as db
 import hub.config as conf
@@ -14,6 +15,7 @@ logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, 
 jsonrpc_route = '/api/v1'
 adopt5p_route = "/5p/{subd}"  # adopt5p.sh
 adopt5w_route = "/5w/{subd}"  # bbbased.lua
+log_err_route = "/er/{subd}"  # errors from base router
 hub_path = os.path.dirname(os.path.abspath(__file__))
 requests_by_ip = dict()
 rate_lock = threading.Lock()
@@ -47,6 +49,7 @@ def get_adopt5p_script(request: Request, subd: str) -> PlainTextResponse:
     ip_address = request.client.host if request.client else '0.0.0.0'
     check_rate_limit(ip_address)
     # we do not verify subd; 'adopt5p.sh' does not contain any secrets
+    subd = re.sub(r"[^a-zA-Z0-9]", "", subd)[:8]  # minimal security precaution
     adopt5p_path = os.path.join(hub_path, 'adopt5p.sh')
     try:
         with open(adopt5p_path, 'r', encoding='utf-8') as f:
@@ -63,3 +66,11 @@ def get_adopt5p_script(request: Request, subd: str) -> PlainTextResponse:
         media_type='text/plain; charset=utf-8',
         headers={'Cache-Control': 'no-store'},
     )
+
+
+@router.post(log_err_route)
+async def log_error(subd: str, request: Request) -> Response:
+    body = await request.body()
+    body_text = body.decode("utf-8", errors="replace")
+    logger.error(f"base {subd} {body_text}")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
