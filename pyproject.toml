@@ -26,7 +26,7 @@ python-dateutil = "^2.8.2"
 typing-inspect = "^0.9.0"
 pydantic = "^2.10.2"
 htmy = "^0.7.4"
-nicegui = "^3.9.0"
+nicegui = "^3.10.0"
 psutil = "^7.2.1"
 robotframework-browser = {extras = ["bb"], version = "^19.12.3"}
 
