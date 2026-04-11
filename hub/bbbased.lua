@@ -7,8 +7,8 @@ local config_dir = '/etc/bitburrow/'
 local log_path = '/tmp/bitburrow.log'
 local lock_dir = '/tmp/bbbased.lock/'
 local lock_pid_path = lock_dir .. 'pid'
-local api_url_path = config_dir .. 'api_url'
-local subd_path = config_dir .. 'subd'
+local api_url = '{api_url}'
+local subd = '{subd}'
 local token_path = config_dir .. 'token'
 local auth_privkey_path = config_dir .. 'client_rsapss.pem'
 local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
@@ -382,7 +382,7 @@ local function ensure_wg_keys()
     return true
 end
 
-local function ensure_pubkeys_are_uploaded(api_url, subd, token)
+local function ensure_pubkeys_are_uploaded(token)
     -- return true on success; retry forever on communication failure; return nil on permanent failure
     local auth_mtime = file_mtime(auth_privkey_path) or 0
     local wg_mtime = file_mtime(wg_privkey_path) or 0
@@ -393,14 +393,13 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
     end
     local retry_wait = 7
     local retries_left = 2
-    local rpc_url = api_url .. 'devices/rpc'
     local auth_pubkey = read_text_file(auth_pubkey_path, false)
     local wg_pubkey = read_text_file(wg_pubkey_path, false)
     if not auth_pubkey or not wg_pubkey then
         log_debug("cannot upload public keys because one or more key files could not be read")
         return nil
     end
-    log_info("public keys need upload to " .. rpc_url)
+    log_info("public keys need upload to " .. api_url)
     while true do
         log_debug(
             "attempting adopt6c public key upload; retry_wait="
@@ -442,7 +441,7 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
         end
         local curl_command = 'curl -sS '
             .. '-X POST '
-            .. shell_quote(rpc_url)
+            .. shell_quote(api_url)
             .. ' -H '
             .. shell_quote('Content-Type: application/json')
             .. ' --data-binary @'
@@ -485,7 +484,7 @@ local function ensure_pubkeys_are_uploaded(api_url, subd, token)
     end
 end
 
-local function build_ping_request(subd)
+local function build_ping_request()
     -- returns the request body, or nil on failure
     log_debug("building ping request for subd " .. subd)
     local utc_time = run_command("date -u '+%Y-%m-%dT%H:%M:%SZ'", true)
@@ -518,7 +517,7 @@ local function build_ping_request(subd)
     return request_body
 end
 
-local function do_ping(api_url, subd)
+local function do_ping()
     -- returns the pingback response, or nil on failure
     log_info("starting ping cycle")
     local request_body = build_ping_request(subd)
@@ -553,10 +552,9 @@ local function do_ping(api_url, subd)
         if not date_header then break end
         local created_value = run_command("date -u '+%s'", true)
         if not created_value then break end
-        local rpc_url = api_url .. 'devices/rpc'
-        local authority = rpc_url:match('^https?://([^/]+)')
+        local authority = api_url:match('^https?://([^/]+)')
         if not authority then
-            log_warning('could not parse authority from rpc url ' .. rpc_url)
+            log_warning('could not parse authority from api url ' .. api_url)
             break
         end
         local keyid_value = http_quoted_string_escape(subd)
@@ -566,19 +564,11 @@ local function do_ping(api_url, subd)
             .. keyid_value
             .. '";alg="rsa-pss-sha256"'
         local signature_base = '"@method": POST\n'
-            .. '"@authority": '
-            .. authority
-            .. '\n'
-            .. '"@target-uri": '
-            .. rpc_url
-            .. '\n'
+            .. '"@authority": ' .. authority .. '\n'
+            .. '"@target-uri": ' .. api_url .. '\n'
             .. '"content-type": application/json\n'
-            .. '"content-digest": '
-            .. content_digest_header
-            .. '\n'
-            .. '"date": '
-            .. date_header
-            .. '\n'
+            .. '"content-digest": ' .. content_digest_header .. '\n'
+            .. '"date": ' .. date_header .. '\n'
             .. '"@signature-params": ("@method" "@authority" "@target-uri" "content-type" "content-digest" "date");created='
             .. created_value
             .. ';keyid="'
@@ -603,10 +593,10 @@ local function do_ping(api_url, subd)
             true
         )
         if not signature_b64 then break end
-        log_debug("sending signed ping request to " .. rpc_url)
+        log_debug("sending signed ping request to " .. api_url)
         local curl_command = 'curl -sS '
             .. '-X POST '
-            .. shell_quote(rpc_url)
+            .. shell_quote(api_url)
             .. ' -H '
             .. shell_quote('Content-Type: application/json')
             .. ' -H '
@@ -659,12 +649,7 @@ end
 
 ensure_root_and_single_instance()
 math.randomseed(os.time() + nixio.getpid())
-local api_url = read_text_file(api_url_path, false)
-local subd = read_text_file(subd_path, false)
 local token = read_text_file(token_path, true)
-if not api_url or not subd then
-    fail_early("B87328 required files are missing; exiting")
-end
 open_log()
 log_info("startup complete; configuration files loaded")
 log_debug("api_url=" .. api_url)
@@ -673,14 +658,14 @@ log_debug("token length=" .. tostring(#token))
 if not ensure_auth_keys() or not ensure_wg_keys() then
     cleanup_and_exit("B60585 cannot continue without key files; exiting")
 end
-if not ensure_pubkeys_are_uploaded(api_url, subd, token) then
+if not ensure_pubkeys_are_uploaded(token) then
     cleanup_and_exit("B36017 cannot continue with uploading keys")
 end
 local retry_wait = 7
 local retries_left = 2
 log_info("entering main ping loop")
 while true do
-    local ok = do_ping(api_url, subd)
+    local ok = do_ping()
     if ok then
         retry_wait = 7
         retries_left = 2

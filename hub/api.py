@@ -88,11 +88,18 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
 def get_adopt5s_script(request: Request, subd: str) -> PlainTextResponse:
     # we do not verify subd; 'bbbased.lua' does not contain any secrets
     subd = re.sub(r"[^a-zA-Z0-9]", "", subd)[:8]  # minimal security precaution
+    expand_braces = lambda s: s.replace(
+        '{api_url}',
+        conf.base_url() + jsonrpc_route,
+    ).replace(
+        '{subd}',
+        subd,
+    )
     return get_file(
         request,
         subd,
         'bbbased.lua',
-        lambda s: s,
+        expand_braces,
         "B76218 base {subd} completed adopt5s from {ip_address}",
     )
 
