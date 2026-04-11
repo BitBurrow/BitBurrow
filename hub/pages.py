@@ -375,7 +375,7 @@ def setup(client: Client, device_slug: str):
     idelem = uif.render_content(sections)
     idelem_lambdas = {
         'adopt5c_code': lambda obj: obj.set_content(
-            db.get_adopt5c_code(device_id, api.adopt5p_route)
+            db.get_adopt5c_code(device_id, api.adopt5l_route)
         ),
     }
     add_custom_css()

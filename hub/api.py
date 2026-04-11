@@ -13,8 +13,8 @@ logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, 
 
 
 jsonrpc_route = '/api/v1'
-adopt5p_route = "/5p/{subd}"  # adopt5p.sh
-adopt5w_route = "/5w/{subd}"  # bbbased.lua
+adopt5l_route = "/5l/{subd}"  # download adopt5p.sh
+adopt5s_route = "/5s/{subd}"  # download bbbased.lua
 log_err_route = "/er/{subd}"  # errors from base router
 hub_path = os.path.dirname(os.path.abspath(__file__))
 requests_by_ip = dict()
@@ -44,26 +44,56 @@ def check_rate_limit(ip_address: str) -> None:
         requests_by_ip[ip_address] = recent_requests
 
 
-@router.get(adopt5p_route, response_class=PlainTextResponse)
-def get_adopt5p_script(request: Request, subd: str) -> PlainTextResponse:
+def get_file(
+    request: Request, subd: str, filename: str, expand, info_msg: str
+) -> PlainTextResponse:
     ip_address = request.client.host if request.client else '0.0.0.0'
     check_rate_limit(ip_address)
-    # we do not verify subd; 'adopt5p.sh' does not contain any secrets
-    subd = re.sub(r"[^a-zA-Z0-9]", "", subd)[:8]  # minimal security precaution
-    adopt5p_path = os.path.join(hub_path, 'adopt5p.sh')
+    file_path = os.path.join(hub_path, filename)
     try:
-        with open(adopt5p_path, 'r', encoding='utf-8') as f:
+        with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
     except FileNotFoundError as exc:
-        logger.error(f"B98850 cannot open: {adopt5p_path}")
+        logger.error(f"B98850 cannot open: {file_path}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
-    content = content.replace('{download_url}', conf.base_url() + adopt5w_route.format(subd=subd))
-    content = content.replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
-    logger.info(f"B28592 base {subd} completed adopt5l from {ip_address}")
+    logger.info(info_msg.format(subd=subd, ip_address=ip_address))
     return PlainTextResponse(
-        content=content,
+        content=expand(content),
         media_type='text/plain; charset=utf-8',
         headers={'Cache-Control': 'no-store'},
+    )
+
+
+@router.get(adopt5l_route, response_class=PlainTextResponse)
+def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
+    # we do not verify subd; 'adopt5p.sh' does not contain any secrets
+    subd = re.sub(r"[^a-zA-Z0-9]", "", subd)[:8]  # minimal security precaution
+    expand_braces = lambda s: s.replace(
+        '{download_url}',
+        conf.base_url() + adopt5s_route.format(subd=subd),
+    ).replace(
+        '{log_err_route}',
+        conf.base_url() + log_err_route.format(subd=subd),
+    )
+    return get_file(
+        request,
+        subd,
+        'adopt5p.sh',
+        expand_braces,
+        "B28592 base {subd} completed adopt5l from {ip_address}",
+    )
+
+
+@router.get(adopt5s_route, response_class=PlainTextResponse)
+def get_adopt5s_script(request: Request, subd: str) -> PlainTextResponse:
+    # we do not verify subd; 'bbbased.lua' does not contain any secrets
+    subd = re.sub(r"[^a-zA-Z0-9]", "", subd)[:8]  # minimal security precaution
+    return get_file(
+        request,
+        subd,
+        'bbbased.lua',
+        lambda s: s,
+        "B76218 base {subd} completed adopt5s from {ip_address}",
     )
 
 
