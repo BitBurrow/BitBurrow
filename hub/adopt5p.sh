@@ -8,7 +8,7 @@ bbbased_path=''
 lua_exe=''
 
 log_error() {
-    echo "===== log_error $1"
+    echo ">>>>> log_error $1"
     if command -v curl >/dev/null 2>&1; then
         curl -f --max-time 60 -X POST --data "$1" "$log_err_route" >/dev/null 2>&1 || true
         return 0
@@ -18,7 +18,7 @@ log_error() {
 }
 
 download() {
-    echo "===== download $1 $2"
+    echo ">>>>> download $1 $2"
     if command -v curl >/dev/null 2>&1; then
         curl -f --max-time 120 -o "$2" "$1" >/dev/null 2>&1
         return $?
@@ -31,7 +31,7 @@ download() {
 }
 
 find_packager_exe() {
-    echo "===== find_packager_exe"
+    echo ">>>>> find_packager_exe"
     packager_exe=''
     for cmd in opkg apt-get apk dnf yum pacman zypper; do
         if command -v "$cmd" >/dev/null 2>&1; then
@@ -44,7 +44,7 @@ find_packager_exe() {
 }
 
 run_as_root() {
-    echo "===== run_as_root $1"
+    echo ">>>>> run_as_root $1"
     if [ "$(id -u)" -eq 0 ]; then
         "$@"
         return $?
@@ -67,7 +67,7 @@ run_as_root() {
 }
 
 find_lua_exe() {
-    echo "===== find_lua_exe"
+    echo ">>>>> find_lua_exe"
     lua_exe=''
     for cmd in lua luajit lua5.5 lua55 lua5.4 lua54 lua5.3 lua53 lua5.2 lua52 lua5.1 lua51; do
         if command -v "$cmd" >/dev/null 2>&1; then
@@ -79,7 +79,7 @@ find_lua_exe() {
 }
 
 packager() {
-    echo "===== packager $1 $2"
+    echo ">>>>> packager $1 $2"
     case "$packager_exe:$1" in
         opkg:update)
             run_as_root opkg update
@@ -130,7 +130,7 @@ packager() {
 }
 
 make_temp_path() {
-    echo "===== make_temp_path"
+    echo ">>>>> make_temp_path"
     temp_path="$(mktemp -d "${TMPDIR:-/tmp}/bbbased.XXXXXX" 2>/dev/null)" && return 0
     temp_path="/tmp/bbbased.$$"
     mkdir -p "$temp_path"
@@ -189,7 +189,7 @@ while [ "$loop_count" -le 3 ]; do
     sleep 75
     loop_count=$((loop_count + 1))
 done
-if ! find_lua_exe; then
+if [ "$loop_count" -gt 3 ]; then
     log_error "B59241 cannot install lua"
 fi
 
@@ -203,13 +203,13 @@ while [ "$loop_count" -le 10 ]; do
     sleep 75
     loop_count=$((loop_count + 1))
 done
-if [ ! -s "$bbbased_path" ]; then
-    log_error "B29909 cannot download $download_url"
-fi
 
 ### run Lua script
 if [ -s "$bbbased_path" ]; then
+    echo ">>>>> run $lua_exe $bbbased_path"
     exec "$lua_exe" "$bbbased_path"
     log_error "B65151 cannot run: exec $lua_exe $bbbased_path"
     "$lua_exe" "$bbbased_path"
+else
+    log_error "B29909 cannot download $download_url"
 fi
