@@ -22,33 +22,10 @@ rate_lock = threading.Lock()
 router = APIRouter()
 
 
-def check_rate_limit(ip_address: str) -> None:
-    now = DateTime.now(TimeZone.utc)
-    window_start = now - TimeDelta(minutes=1)
-    stale_before = now - TimeDelta(minutes=2)
-    with rate_lock:
-        stale_ips = list()
-        for stored_ip, timestamps in requests_by_ip.items():
-            fresh_timestamps = [dt for dt in timestamps if dt > stale_before]
-            if fresh_timestamps:
-                requests_by_ip[stored_ip] = fresh_timestamps
-            else:
-                stale_ips.append(stored_ip)
-        for stored_ip in stale_ips:
-            del requests_by_ip[stored_ip]
-        recent_requests = requests_by_ip.get(ip_address, list())
-        recent_requests = [dt for dt in recent_requests if dt > window_start]
-        if len(recent_requests) >= 2:
-            raise HTTPException(status_code=429, detail='Too many requests')
-        recent_requests.append(now)
-        requests_by_ip[ip_address] = recent_requests
-
-
 def get_file(
     request: Request, subd: str, filename: str, expand, info_msg: str
 ) -> PlainTextResponse:
     ip_address = request.client.host if request.client else '0.0.0.0'
-    check_rate_limit(ip_address)
     file_path = os.path.join(hub_path, filename)
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
