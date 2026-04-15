@@ -32,9 +32,7 @@ robotframework-browser = {extras = ["bb"], version = "^19.12.3"}
 
 [tool.poetry.group.dev.dependencies]
 black = "^26.3.1"
-pytest = "^7.4.4"
-pytest-asyncio = "^0.23.4"
-pytest-timeout = "^2.3.1"
+pytest = "^9.0.3"
 
 
 [tool.poetry.group.lint.dependencies]
@@ -46,8 +44,4 @@ bbhub = "hub.hub:entry_point"
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
-
-[tool.pytest.ini_options]
-norecursedirs = "desktop"
-asyncio_mode = "auto"
 
