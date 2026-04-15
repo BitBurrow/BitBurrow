@@ -3,13 +3,13 @@
 local nixio = require('nixio')
 local fs = require('nixio.fs')
 
-local config_dir = '/etc/bitburrow/'
-local log_path = '/tmp/bitburrow.log'
-local lock_dir = '/tmp/bbbased.lock/'
-local lock_pid_path = lock_dir .. 'pid'
 local api_url = '{api_url}'
 local subd = '{subd}'
-local token_path = config_dir .. 'token'
+local token_path = '/tmp/{ott_filename}'
+local config_dir = '/etc/bb' .. subd .. '/'
+local log_path = '/tmp/bb' .. subd .. '.log'
+local lock_dir = '/tmp/bb' .. subd .. '.lock/'
+local lock_pid_path = lock_dir .. 'pid'
 local auth_privkey_path = config_dir .. 'client_rsapss.pem'
 local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
 local wg_privkey_path = config_dir .. 'wgbb1_private.key'

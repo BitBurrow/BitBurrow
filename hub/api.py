@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 
 
+adopt5l_route = '/5l/{subd}'  # download adopt5p.sh
+adopt5s_route = '/5s/{subd}'  # download bbbased.lua
+log_err_route = '/er/{subd}'  # errors from base router
 jsonrpc_route = '/api/v1'
-adopt5l_route = "/5l/{subd}"  # download adopt5p.sh
-adopt5s_route = "/5s/{subd}"  # download bbbased.lua
-log_err_route = "/er/{subd}"  # errors from base router
 hub_path = os.path.dirname(os.path.abspath(__file__))
 requests_by_ip = dict()
 rate_lock = threading.Lock()
@@ -46,12 +46,8 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
     # we do not verify subd; 'adopt5p.sh' does not contain any secrets
     subd = re.sub(r"[^a-zA-Z0-9]", "", subd)[:8]  # minimal security precaution
     expand_braces = lambda s: s.replace(
-        '{download_url}',
-        conf.base_url() + adopt5s_route.format(subd=subd),
-    ).replace(
-        '{log_err_route}',
-        conf.base_url() + log_err_route.format(subd=subd),
-    )
+        '{download_url}', conf.base_url() + adopt5s_route.format(subd=subd)
+    ).replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
     return get_file(
         request,
         subd,
@@ -65,12 +61,10 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
 def get_adopt5s_script(request: Request, subd: str) -> PlainTextResponse:
     # we do not verify subd; 'bbbased.lua' does not contain any secrets
     subd = re.sub(r"[^a-zA-Z0-9]", "", subd)[:8]  # minimal security precaution
-    expand_braces = lambda s: s.replace(
-        '{api_url}',
-        conf.base_url() + jsonrpc_route,
-    ).replace(
-        '{subd}',
-        subd,
+    expand_braces = (
+        lambda s: s.replace('{api_url}', conf.base_url() + jsonrpc_route)
+        .replace('{subd}', subd)
+        .replace('{ott_filename}', db.ott_filename(subd))
     )
     return get_file(
         request,

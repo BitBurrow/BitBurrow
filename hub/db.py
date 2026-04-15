@@ -1,4 +1,5 @@
 import argon2
+import base64
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import enum
 import fastapi
@@ -391,7 +392,7 @@ class Device(SQLModel, table=True):
     account: Optional[Account] = Relationship(back_populates="devices")
     comment: str = ""
 
-    def adopt_state(self):
+    def adopt_state(self) -> str:
         """Return an approximate adoption state.
 
         Key adopt steps:
@@ -413,6 +414,12 @@ class Device(SQLModel, table=True):
                 return "adopt5a"  # OTT has been created
         else:
             return "adopt6c"  # OTT verified; auth_pubkey accepted
+
+
+def ott_filename(subd: str) -> str:  # a random-ish 8 characters that is unique to this device
+    fingerprint = f'{subd}/{conf.base_url()}'
+    hash = hashlib.md5(fingerprint.encode('utf-8')).digest()
+    return base64.urlsafe_b64encode(hash).decode()[0:8]
 
 
 ###
@@ -972,7 +979,7 @@ def delete_device(id: int) -> None:
         session.commit()
 
 
-def get_adopt5c_code(device_id, api_path) -> str:
+def get_adopt5c_code(device_id, api_path: str) -> str:
     """Return a shell script, e.g. for /etc/rc.local, to begin adopting a BitBurrow base router"""
     if not hasattr(get_adopt5c_code, 'cache'):
         get_adopt5c_code.cache = dict()
@@ -1016,7 +1023,7 @@ def get_adopt5c_code(device_id, api_path) -> str:
             # note: if token[0] or token[22] is '-', echo still just echos, i.e. it
             # doesn't complain about an invalid option :-)
             value = (
-                f'T=/tmp/YVB6IEHQ2\n'
+                f'T=/tmp/{ott_filename(device.subd)}\n'
                 + f'echo {token[0:22]}>$T\n'
                 + f'echo {token[22:]}>>$T\n'
                 + f'D={conf.base_url()}\n'
