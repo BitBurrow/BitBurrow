@@ -28,6 +28,14 @@ for i = 1, #arg do
     end
 end
 
+local function displayable(str, max_len)
+    if not max_len then
+        max_len = 20
+    end
+    local elipse = (#str > max_len) and '...' or ''
+    return str:sub(1, max_len):gsub('\n', '\\n'):gsub('\t', '\\t') .. elipse
+end
+
 local function fail_early(message)
     io.stderr:write('>>>>> ' .. message .. '\n')
     os.exit(1)
@@ -100,7 +108,7 @@ local function http_quoted_string_escape(value)
     return value
 end
 
-local function run_command(command, merge_stderr, failure_okay)
+local function run_command(command, merge_stderr, failure_ok)
     -- return the captured output after stripping trailing whitespace, or nil on failure
     log_debug("running command: " .. command)
     local wrapped = '{ '
@@ -124,19 +132,19 @@ local function run_command(command, merge_stderr, failure_okay)
     output = output:gsub('%s+$', '')
     if exit_code == 0 then
         if output ~= '' then
-            log_debug("  command succeeded: " .. output:gsub('\n', '\\n'))
+            log_debug("--command succeeded: " .. displayable(output))
         else
-            log_debug("  command succeeded with empty output")
+            log_debug("--command succeeded with empty output")
         end
         return output
     end
     local msg
     if output ~= '' then
-        msg = "B11840 running " .. command .. " failed: " .. output:gsub('\n', '\\n')
+        msg = "B11840 running " .. command .. " failed: " .. displayable(output)
     else
         msg = "B11545 running " .. command .. " failed with exit code " .. tostring(exit_code)
     end
-    if failure_okay then
+    if failure_ok then
         log_debug(msg)
     else
         log_error(msg)
@@ -148,17 +156,18 @@ local function trim_trailing_slashes(path)
     return (path:gsub('/+$', ''))
 end     
 
-local function make_temp_path(in_dir, failure_okay)
+local function make_temp_path(in_dir, failure_ok)
     -- create a temp file and return its path, or nil on failure; all args optional
     if in_dir == nil then
         in_dir = '/tmp'
     else
         in_dir = trim_trailing_slashes(in_dir)
     end
-    local path = run_command('mktemp ' .. shell_quote(in_dir .. '/' .. bbsubd .. '.XXXXXX'), true)
-    -- alternative `os.tmpname()` less flexible, possibly less reliable
+    local cmd = 'mktemp ' .. shell_quote(in_dir .. '/' .. bbsubd .. '.XXXXXX')
+    local path = run_command(cmd, true, failure_ok)
+    -- alternative `os.tmpname()` is less flexible, possibly less reliable
     if not path or path == '' then
-        if not failure_okay then
+        if not failure_ok then
             log_error("B35286 mktemp failed")
         end
         return nil
@@ -173,6 +182,17 @@ local function remove_path(path)
         log_debug("removing path: " .. path)
         os.remove(path)
     end
+end
+
+local function mkdir(path, mode)
+    -- return true iff successful or already existed; mode is optional
+    if run_command('mkdir -p ' .. shell_quote(path), true, true) then
+        if mode then
+            fs.chmod(path, mode)
+        end
+        return true
+    end
+    return nil
 end
 
 local function dirname(path)
@@ -221,18 +241,14 @@ local function read_text_file(path, empty_if_unreadable)
     end
     content = content:gsub('%s+$', '')
     log_debug("read " .. tostring(#content) .. " bytes from: " .. path)
-    if #content > 0 and #content < 90 then
-        log_debug("  data: " .. content:gsub('\n', '\\n'))
-    end
+    log_debug("--data: " .. displayable(content))
     return content
 end
 
 local function write_text_file(path, content, mode)
     -- return true iff successful
     log_debug("writing " .. tostring(#content) .. " bytes to: " .. path)
-    if #content < 90 then
-        log_debug("  data: " .. content:gsub('%s+$', ''):gsub('\n', '\\n'))
-    end
+    log_debug("--data: " .. displayable(content))
     local handle = io.open(path, 'w')
     if not handle then
         log_error("B38727 cannot write file: " .. path)
@@ -384,6 +400,8 @@ local function install_init_service(lua_path, init_path)
         log_info("successfully reinstalled; exiting")
     end
     -- new service should run now; don't use this here: dofile(lua_path)
+    remove_path(running_path)
+    remove_path(dirname(running_path))  -- temp directory should be empty; does nothing if not
     return false
 end
 
@@ -429,7 +447,8 @@ local function ensure_root_and_single_instance()
         log_error("B79005 cannot acquire lock file")
         return nil
     end
-    log_info("acquired single-instance lock with pid " .. tostring(nixio.getpid()))
+    log_info("acquired lock, pid " .. tostring(nixio.getpid()))
+    return true
 end
 
 local function cleanup_and_exit(message)
@@ -510,6 +529,18 @@ local function sleep_with_jitter(base_seconds, jitter_fraction)
     )
     nixio.nanosleep(sleep_seconds, 0)
 end
+
+--
+-- keys management
+--
+
+math.randomseed(os.time() + nixio.getpid())
+local config_dir = '/etc/' .. bbsubd .. '/'
+local auth_privkey_path = config_dir .. 'client_rsapss.pem'
+local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
+local wg_privkey_path = config_dir .. 'wgbb1_private.key'
+local wg_pubkey_path = config_dir .. 'wgbb1_public.key'
+local pubkeys_uploaded_path = config_dir .. 'pubkeys_uploaded'
 
 local function ensure_auth_keys()
     if fs.access(auth_privkey_path) and fs.access(auth_pubkey_path) then
@@ -644,7 +675,7 @@ local function ensure_pubkeys_are_uploaded(token)
         remove_path(request_path)
         remove_path(response_path)
         if curl_output and response_body then
-            log_debug("adopt6c response body: " .. response_body:gsub('\n', '\\n'))
+            log_debug("adopt6c response body: " .. displayable(response_body))
             local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
             local has_result = response_body:match('"result"%s*:') ~= nil
             local has_error = response_body:match('"error"%s*:') ~= nil
@@ -658,7 +689,7 @@ local function ensure_pubkeys_are_uploaded(token)
                 end
                 return true
             end
-            log_error("B23806 adopt6c failed: " .. response_body)
+            log_error("B23806 adopt6c failed: " .. displayable(response_body, 65))
         else
             log_warning("adopt6c attempt failed without a usable response; will retry")
         end
@@ -806,13 +837,13 @@ local function do_ping()
         if not curl_output then break end
         local response_body = read_text_file(response_path, true)
         if not response_body then break end
-        log_debug("ping response body: " .. response_body:gsub('\n', '\\n'))
+        log_debug("ping response body: " .. displayable(response_body))
         local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
         local has_error = response_body:match('"error"%s*:') ~= nil
         local pingback = response_body:match('"pingback"%s*:%s*"(([^"\\]|\\.)*)"')
         if has_jsonrpc and not has_error and pingback then
             result = json_unescape(pingback)
-            log_info("ping succeeded with pingback: " .. result)
+            log_info("ping succeeded with pingback: " .. displayable(result))
         else
             log_warning("ping response was missing expected success fields")
         end
@@ -849,24 +880,12 @@ if not ensure_root_and_single_instance() then
 end
 
 --
--- init globals
---
-
-math.randomseed(os.time() + nixio.getpid())
-local config_dir = '/etc/' .. bbsubd .. '/'
-local auth_privkey_path = config_dir .. 'client_rsapss.pem'
-local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
-local wg_privkey_path = config_dir .. 'wgbb1_private.key'
-local wg_pubkey_path = config_dir .. 'wgbb1_public.key'
-local pubkeys_uploaded_path = config_dir .. 'pubkeys_uploaded'
-
---
 -- collect authentication details
 --
 
 local token = read_text_file(token_path, true)
-log_info("startup complete; configuration files loaded")
 log_debug("token length=" .. tostring(#token))
+mkdir(config_dir, '0700')
 if not ensure_auth_keys() or not ensure_wg_keys() then
     cleanup_and_exit("B60585 cannot continue without key files; exiting")
 end
