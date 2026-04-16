@@ -16,9 +16,10 @@ local token_path = '/tmp/{ott_filename}'
 --
 
 local bbsubd = 'bb' .. subd
-local log_path = '/tmp/' .. bbsubd .. '.log'
+local log_path = nil  -- to enable, use: log_path = '/tmp/' .. bbsubd .. '.log'
 local log_handle = nil
 local logging_level = 30  -- by default, show warnings, errors
+logging_level = 20  -- for dev, use level info
 for i = 1, #arg do
     local v = arg[i]:match("^%-(v+)$")
     if v then
@@ -37,11 +38,12 @@ local function displayable(str, max_len)
 end
 
 local function fail_early(message)
-    io.stderr:write('>>>>> ' .. message .. '\n')
+    io.stderr:write(message .. '\n')
     os.exit(1)
 end
 
 local function open_log()
+    if not log_path then return end  -- use logread instead
     local handle = io.open(log_path, 'w')
     if not handle then
         fail_early("B62762 cannot create: " .. log_path)
@@ -65,8 +67,8 @@ local function log(message, level)
     if level < logging_level then
         return
     end
-    if logging_level < 30 then  -- send to stderr when -v used
-        io.stderr:write('>>>>> ' .. message .. '\n')
+    if not log_path or logging_level < 30 or not log_path then  -- when using logread or -v
+        io.stderr:write(message .. '\n')  -- send to stderr
     end
     if log_handle then
         log_handle:write(os.date('!%Y-%m-%dT%H:%M:%SZ') .. ' ' .. message .. '\n')
@@ -91,6 +93,7 @@ local function log_error(message)
 end
 
 open_log()
+log_warning("starting BitBurrow base daemon (log level " .. logging_level .. ")")
 
 --
 -- paths
@@ -132,7 +135,7 @@ local function run_command(command, merge_stderr, failure_ok)
     output = output:gsub('%s+$', '')
     if exit_code == 0 then
         if output ~= '' then
-            log_debug("--command succeeded: " .. displayable(output))
+            log_debug("--command succeeded: " .. displayable(output, 60))
         else
             log_debug("--command succeeded with empty output")
         end
@@ -140,7 +143,7 @@ local function run_command(command, merge_stderr, failure_ok)
     end
     local msg
     if output ~= '' then
-        msg = "B11840 running " .. command .. " failed: " .. displayable(output)
+        msg = "B11840 running " .. command .. " failed: " .. displayable(output, 60)
     else
         msg = "B11545 running " .. command .. " failed with exit code " .. tostring(exit_code)
     end
@@ -241,14 +244,14 @@ local function read_text_file(path, empty_if_unreadable)
     end
     content = content:gsub('%s+$', '')
     log_debug("read " .. tostring(#content) .. " bytes from: " .. path)
-    log_debug("--data: " .. displayable(content))
+    log_debug("--data: " .. displayable(content, 20))  -- 20 to not show entire private key
     return content
 end
 
 local function write_text_file(path, content, mode)
     -- return true iff successful
     log_debug("writing " .. tostring(#content) .. " bytes to: " .. path)
-    log_debug("--data: " .. displayable(content))
+    log_debug("--data: " .. displayable(content, 60))
     local handle = io.open(path, 'w')
     if not handle then
         log_error("B38727 cannot write file: " .. path)
@@ -371,8 +374,8 @@ local function install_init_service(lua_path, init_path)
         '    procd_open_instance',
         '    procd_set_param command /usr/bin/lua ' .. lua_path,
         '    procd_set_param respawn',
-        '    procd_set_param stdout 0',
-        '    procd_set_param stderr 0',
+        '    procd_set_param stdout 1', -- 1 means make output viewable via `logread`
+        '    procd_set_param stderr 1',
         '    procd_close_instance',
         '}',
         '',
@@ -675,7 +678,7 @@ local function ensure_pubkeys_are_uploaded(token)
         remove_path(request_path)
         remove_path(response_path)
         if curl_output and response_body then
-            log_debug("adopt6c response body: " .. displayable(response_body))
+            log_debug("adopt6c response body: " .. displayable(response_body, 60))
             local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
             local has_result = response_body:match('"result"%s*:') ~= nil
             local has_error = response_body:match('"error"%s*:') ~= nil
@@ -689,7 +692,7 @@ local function ensure_pubkeys_are_uploaded(token)
                 end
                 return true
             end
-            log_error("B23806 adopt6c failed: " .. displayable(response_body, 65))
+            log_error("B23806 adopt6c failed: " .. displayable(response_body, 60))
         else
             log_warning("adopt6c attempt failed without a usable response; will retry")
         end
@@ -837,13 +840,13 @@ local function do_ping()
         if not curl_output then break end
         local response_body = read_text_file(response_path, true)
         if not response_body then break end
-        log_debug("ping response body: " .. displayable(response_body))
+        log_debug("ping response body: " .. displayable(response_body, 60))
         local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
         local has_error = response_body:match('"error"%s*:') ~= nil
         local pingback = response_body:match('"pingback"%s*:%s*"(([^"\\]|\\.)*)"')
         if has_jsonrpc and not has_error and pingback then
             result = json_unescape(pingback)
-            log_info("ping succeeded with pingback: " .. displayable(result))
+            log_info("ping succeeded with pingback: " .. displayable(result, 60))
         else
             log_warning("ping response was missing expected success fields")
         end
