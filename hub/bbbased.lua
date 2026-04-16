@@ -174,17 +174,63 @@ local function write_text_file(path, content, mode)
     return true
 end
 
-local function make_temp_path(in_dir)
-    -- create a temp file and return its path, or nil on failure; in_dir is optional
+local function file_copy(src_path, dst_path, mode)
+    -- return true iff successful
+    local src, err = io.open(src_path, 'rb')
+    if not src then
+        log_error("B78553 cannot open " .. src_path .. " (" .. tostring(err) .. ")")
+        return nil
+    end
+    local tmp_path = make_temp_path(dirname(dst_path))
+    if not tmp_path then
+        src:close()
+        return nil
+    end
+    local dst, err = io.open(tmp_path, 'wb')
+    while true do
+        local chunk = src:read(8192)
+        if not chunk then break end
+        local ok, werr = dst:write(chunk)
+        if not ok then
+            log_error("B79472 write to " .. tmp_path .. " failed (" .. tostring(werr) .. ")")
+            src:close()
+            dst:close()
+            remove_path(tmp_path)
+            return nil
+        end
+    end
+    src:close()
+    dst:close()
+    if not run_command(string.format('chmod %s %q', mode, tmp_path)) then
+        remove_path(tmp_path)
+        return nil
+    end
+    local ok, rerr = os.rename(tmp_path, dst_path)
+    if not ok then
+        log_error("B77653 rename to " .. dst_path .. " failed (" .. tostring(rerr) .. ")")
+        remove_path(tmp_path)
+        return nil
+    end
+    return true
+end
+
+local function trim_trailing_slashes(path)
+    return (path:gsub('/+$', ''))
+end     
+
+local function make_temp_path(in_dir, failure_okay)
+    -- create a temp file and return its path, or nil on failure; all args optional
     if in_dir == nil then
         in_dir = '/tmp'
     else
         in_dir = trim_trailing_slashes(in_dir)
     end
-    local path = run_command('mktemp ' .. shell_quote(in_dir .. '/bb' .. subd .. '.XXXXXX'), true)
+    local path = run_command('mktemp ' .. shell_quote(in_dir .. '/' .. bbsubd .. '.XXXXXX'), true)
     -- alternative `os.tmpname()` less flexible, possibly less reliable
     if not path or path == '' then
-        log_error("B35286 mktemp failed")
+        if not failure_okay then
+            log_error("B35286 mktemp failed")
+        end
         return nil
     end
     log_debug("created temporary path: " .. path)
@@ -197,6 +243,113 @@ local function remove_path(path)
         log_debug("removing path: " .. path)
         os.remove(path)
     end
+end
+
+local function dirname(path)
+    -- return path after stripping the filename and final slash
+    local dir = path:match('^(.*)/[^/]*$')
+    if dir == nil or dir == '' then
+        return '.'
+    end
+    return dir
+end
+
+local function is_writable(path)
+    -- return true iff we have write permission in path
+    temp_path = make_temp_path(path, true)
+    if not temp_path then
+        return nil
+    end
+    remove_path(temp_path)
+    return true
+end
+
+local function find_install_dir()
+    local home = os.getenv('HOME') or ''
+    local try1_paths = {
+        '/usr/local/sbin/',
+        '/usr/sbin/',
+        '/sbin/',
+        '/usr/local/bin/',
+        '/usr/bin/',
+        '/bin/',
+        home .. '/.local/bin/',
+        home .. '/bin/',
+    }
+    local try2_paths = {
+        home .. '/.local/bin/',
+        home .. '/bin/',
+    }
+    for _, path in ipairs(try1_paths) do
+        if is_writable(path) then
+            return path
+        end
+    end
+    for _, path in ipairs(try2_paths) do
+        run_command('mkdir -p ' .. path, true, true)
+        if is_writable(path) then
+            return path
+        end
+    end
+    log_error("B95830 cannot find_install_dir(); home is " .. home)
+    return ''
+end
+
+local function install_init_service(lua_path, init_path)
+    -- return true iff already installed and running as a service
+    -- return nil on failure
+    -- return false after successful install or reinstall (running under /tmp)
+    local running_path = arg and arg[0] or ''
+    if running_path == '' then
+        log_error("B72200 cannot find running_path")
+        return nil
+    end
+    if running_path == '' or running_path:sub(1, 5) ~= '/tmp/' then
+        log_debug("already installed (running as " .. running_path .. ")")
+        return true
+    end
+    local temp_path = make_temp_path()
+    local init_text = table.concat({
+        '#!/bin/sh /etc/rc.common',
+        '',
+        'START=95',
+        'STOP=10',
+        'USE_PROCD=1',
+        '',
+        'start_service() {',
+        '    procd_open_instance',
+        '    procd_set_param command /usr/bin/lua ' .. lua_path,
+        '    procd_set_param respawn',
+        '    procd_set_param stdout 0',
+        '    procd_set_param stderr 0',
+        '    procd_close_instance',
+        '}',
+        '',
+    }, '\n')
+    if not write_text_file(temp_path, init_text) then
+        remove_path(temp_path)
+        return nil
+    end
+    if not file_copy(temp_path, init_path, '0755') then
+        remove_path(temp_path)
+        return nil
+    end
+    remove_path(temp_path)
+    if not file_copy(running_path, lua_path, '0644') then return nil end
+    if not run_command(shell_quote(init_path) .. ' enabled') then
+        if not run_command(shell_quote(init_path) .. ' enable') then
+            return nil
+        end
+    end
+    if not run_command(shell_quote(init_path) .. ' running') then
+        if not run_command(shell_quote(init_path) .. ' start') then return nil end
+        log_info("successfully installed; exiting")
+    else
+        if not run_command(shell_quote(init_path) .. ' restart') then return nil end
+        log_info("successfully reinstalled; exiting")
+    end
+    -- new service should run now; don't use this here: dofile(lua_path)
+    return false
 end
 
 local function json_escape(value)
