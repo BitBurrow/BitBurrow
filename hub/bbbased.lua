@@ -3,12 +3,33 @@
 local nixio = require('nixio')
 local fs = require('nixio.fs')
 
+--
+-- hard-coded at time of downloaded in get_adopt5s_script()
+--
+
 local api_url = '{api_url}'
 local subd = '{subd}'
 local token_path = '/tmp/{ott_filename}'
 
+--
+-- logging
+--
+
+local bbsubd = 'bb' .. subd
+local log_path = '/tmp/' .. bbsubd .. '.log'
+local log_handle = nil
+local logging_level = 30  -- by default, show warnings, errors
+for i = 1, #arg do
+    local v = arg[i]:match("^%-(v+)$")
+    if v then
+        logging_level = logging_level - #v * 10
+    elseif arg[i] == "--verbose" then
+        logging_level = logging_level - 10
+    end
+end
+
 local function fail_early(message)
-    io.stderr:write(message .. '\n')
+    io.stderr:write('>>>>> ' .. message .. '\n')
     os.exit(1)
 end
 
@@ -37,7 +58,7 @@ local function log(message, level)
         return
     end
     if logging_level < 30 then  -- send to stderr when -v used
-        io.stderr:write(message .. '\n')
+        io.stderr:write('>>>>> ' .. message .. '\n')
     end
     if log_handle then
         log_handle:write(os.date('!%Y-%m-%dT%H:%M:%SZ') .. ' ' .. message .. '\n')
@@ -60,6 +81,12 @@ end
 local function log_error(message)
     log(message, 40)
 end
+
+open_log()
+
+--
+-- paths
+--
 
 local function shell_quote(value)
     return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
@@ -116,6 +143,60 @@ local function run_command(command, merge_stderr, failure_okay)
     end
     return nil
 end
+
+local function trim_trailing_slashes(path)
+    return (path:gsub('/+$', ''))
+end     
+
+local function make_temp_path(in_dir, failure_okay)
+    -- create a temp file and return its path, or nil on failure; all args optional
+    if in_dir == nil then
+        in_dir = '/tmp'
+    else
+        in_dir = trim_trailing_slashes(in_dir)
+    end
+    local path = run_command('mktemp ' .. shell_quote(in_dir .. '/' .. bbsubd .. '.XXXXXX'), true)
+    -- alternative `os.tmpname()` less flexible, possibly less reliable
+    if not path or path == '' then
+        if not failure_okay then
+            log_error("B35286 mktemp failed")
+        end
+        return nil
+    end
+    log_debug("created temporary path: " .. path)
+    return path
+end
+
+local function remove_path(path)
+    -- remove the file or empty directory, ignoring all errors
+    if path and path ~= '' then
+        log_debug("removing path: " .. path)
+        os.remove(path)
+    end
+end
+
+local function dirname(path)
+    -- return path after stripping the filename and final slash
+    local dir = path:match('^(.*)/[^/]*$')
+    if dir == nil or dir == '' then
+        return '.'
+    end
+    return dir
+end
+
+local function is_writable(path)
+    -- return true iff we have write permission in path
+    temp_path = make_temp_path(path, true)
+    if not temp_path then
+        return nil
+    end
+    remove_path(temp_path)
+    return true
+end
+
+--
+-- file i/o
+--
 
 local function read_text_file(path, empty_if_unreadable)
     -- return file contents, or nil on failure
@@ -214,55 +295,9 @@ local function file_copy(src_path, dst_path, mode)
     return true
 end
 
-local function trim_trailing_slashes(path)
-    return (path:gsub('/+$', ''))
-end     
-
-local function make_temp_path(in_dir, failure_okay)
-    -- create a temp file and return its path, or nil on failure; all args optional
-    if in_dir == nil then
-        in_dir = '/tmp'
-    else
-        in_dir = trim_trailing_slashes(in_dir)
-    end
-    local path = run_command('mktemp ' .. shell_quote(in_dir .. '/' .. bbsubd .. '.XXXXXX'), true)
-    -- alternative `os.tmpname()` less flexible, possibly less reliable
-    if not path or path == '' then
-        if not failure_okay then
-            log_error("B35286 mktemp failed")
-        end
-        return nil
-    end
-    log_debug("created temporary path: " .. path)
-    return path
-end
-
-local function remove_path(path)
-    -- remove the file or empty directory, ignoring all errors
-    if path and path ~= '' then
-        log_debug("removing path: " .. path)
-        os.remove(path)
-    end
-end
-
-local function dirname(path)
-    -- return path after stripping the filename and final slash
-    local dir = path:match('^(.*)/[^/]*$')
-    if dir == nil or dir == '' then
-        return '.'
-    end
-    return dir
-end
-
-local function is_writable(path)
-    -- return true iff we have write permission in path
-    temp_path = make_temp_path(path, true)
-    if not temp_path then
-        return nil
-    end
-    remove_path(temp_path)
-    return true
-end
+--
+-- installation
+--
 
 local function find_install_dir()
     local home = os.getenv('HOME') or ''
@@ -352,6 +387,66 @@ local function install_init_service(lua_path, init_path)
     return false
 end
 
+--
+-- process management
+--
+
+local lock_dir = '/tmp/' .. bbsubd .. '.lock/'
+local lock_pid_path = lock_dir .. 'pid'
+
+local function ensure_root_and_single_instance()
+    -- return true iff it's okay to continue, nil on error
+    log_debug("checking for root privileges")
+    if nixio.getuid() ~= 0 then
+        log_error("B97106 must run as root")
+        return nil
+    end
+    log_debug("attempting to acquire lock directory " .. lock_dir)
+    local mkdir_ok = fs.mkdir(lock_dir)
+    if not mkdir_ok then
+        log_info("lock directory already exists, checking for active owner")
+        local existing_pid = read_text_file(lock_pid_path, false)
+        if existing_pid and existing_pid:match('^%d+$') then
+            if run_command('kill -0 ' .. existing_pid, true, true) then
+                log_error("B49131 another instance is already running, pid: " .. existing_pid)
+                return nil
+            end
+            log_info("stale lock detected for pid " .. existing_pid .. ", cleaning up")
+        else
+            log_info("lock directory exists but pid file is missing or invalid")
+        end
+        remove_path(lock_pid_path)
+        fs.rmdir(lock_dir)
+        mkdir_ok = fs.mkdir(lock_dir)
+        if not mkdir_ok then
+            log_error("B36202 cannot acquire lock directory")
+            return nil
+        end
+    end
+    local pid_written = write_text_file(lock_pid_path, tostring(nixio.getpid()) .. '\n', '0600')
+    if not pid_written then
+        fs.rmdir(lock_dir)
+        log_error("B79005 cannot acquire lock file")
+        return nil
+    end
+    log_info("acquired single-instance lock with pid " .. tostring(nixio.getpid()))
+end
+
+local function cleanup_and_exit(message)
+    if message then
+        log_error(message)
+    end
+    log_info("cleaning up lock state and exiting")
+    close_log()
+    remove_path(lock_pid_path)
+    fs.rmdir(lock_dir)
+    os.exit(1)
+end
+
+--
+-- helper functions
+--
+
 local function json_escape(value)
     value = tostring(value)
     value = value:gsub('\\', '\\\\')
@@ -414,39 +509,6 @@ local function sleep_with_jitter(base_seconds, jitter_fraction)
             .. tostring(base_seconds) .. ", jitter=" .. tostring(jitter_fraction) .. ")"
     )
     nixio.nanosleep(sleep_seconds, 0)
-end
-
-local function ensure_root_and_single_instance()
-    log_debug("checking for root privileges")
-    if nixio.getuid() ~= 0 then
-        fail_early("must run as root")
-    end
-    log_debug("attempting to acquire lock directory " .. lock_dir)
-    local mkdir_ok = fs.mkdir(lock_dir)
-    if not mkdir_ok then
-        log_info("lock directory already exists, checking for active owner")
-        local existing_pid = read_text_file(lock_pid_path, false)
-        if existing_pid and existing_pid:match('^%d+$') then
-            if run_command('kill -0 ' .. existing_pid, true, true) then
-                fail_early("B49131 another instance is already running, pid: " .. existing_pid)
-            end
-            log_info("stale lock detected for pid " .. existing_pid .. ", cleaning up")
-        else
-            log_info("lock directory exists but pid file is missing or invalid")
-        end
-        remove_path(lock_pid_path)
-        fs.rmdir(lock_dir)
-        mkdir_ok = fs.mkdir(lock_dir)
-        if not mkdir_ok then
-            fail_early("B36202 cannot acquire lock directory")
-        end
-    end
-    local pid_written = write_text_file(lock_pid_path, tostring(nixio.getpid()) .. '\n', '0600')
-    if not pid_written then
-        fs.rmdir(lock_dir)
-        fail_early("B79005 cannot acquire lock file")
-    end
-    log_info("acquired single-instance lock with pid " .. tostring(nixio.getpid()))
 end
 
 local function ensure_auth_keys()
@@ -765,51 +827,62 @@ local function do_ping()
     return result
 end
 
-local function cleanup_and_exit(message)
-    if message then
-        log_error(message)
-    end
-    log_info("cleaning up lock state and exiting")
-    close_log()
-    os.remove(lock_pid_path)
-    fs.rmdir(lock_dir)
-    os.exit(1)
+--
+-- if running from /tmp, install or reinstall as a service and exit
+--
+
+local install_path = find_install_dir() .. bbsubd .. '.lua'
+local install_attempt = install_init_service(install_path, '/etc/init.d/' .. bbsubd)
+if install_attempt == nil then
+    cleanup_and_exit("B21488 cannot install as a service")
+end
+if install_attempt == false then
+    cleanup_and_exit("B32020 successfuly installed; exiting")
 end
 
-local config_dir = '/etc/bb' .. subd .. '/'
-local log_path = '/tmp/bb' .. subd .. '.log'
-local lock_dir = '/tmp/bb' .. subd .. '.lock/'
-local lock_pid_path = lock_dir .. 'pid'
+--
+-- if already running in another process, exit
+--
+
+if not ensure_root_and_single_instance() then
+    cleanup_and_exit("B41990 invalid instance; exiting")
+end
+
+--
+-- init globals
+--
+
+math.randomseed(os.time() + nixio.getpid())
+local config_dir = '/etc/' .. bbsubd .. '/'
 local auth_privkey_path = config_dir .. 'client_rsapss.pem'
 local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
 local wg_privkey_path = config_dir .. 'wgbb1_private.key'
 local wg_pubkey_path = config_dir .. 'wgbb1_public.key'
 local pubkeys_uploaded_path = config_dir .. 'pubkeys_uploaded'
-local log_handle = nil
-local logging_level = 30  -- by default, show warnings, errors
 
-for i = 1, #arg do
-    local v = arg[i]:match("^%-(v+)$")
-    if v then
-        logging_level = logging_level - #v * 10
-    elseif arg[i] == "--verbose" then
-        logging_level = logging_level - 10
-    end
-end
-ensure_root_and_single_instance()
-math.randomseed(os.time() + nixio.getpid())
+--
+-- collect authentication details
+--
+
 local token = read_text_file(token_path, true)
-open_log()
 log_info("startup complete; configuration files loaded")
-log_debug("api_url=" .. api_url)
-log_debug("subd=" .. subd)
 log_debug("token length=" .. tostring(#token))
 if not ensure_auth_keys() or not ensure_wg_keys() then
     cleanup_and_exit("B60585 cannot continue without key files; exiting")
 end
+
+--
+-- register with hub
+--
+
 if not ensure_pubkeys_are_uploaded(token) then
     cleanup_and_exit("B36017 cannot continue with uploading keys")
 end
+
+--
+-- loop forever
+--
+
 local retry_wait = 7
 local retries_left = 2
 log_info("entering main ping loop")
