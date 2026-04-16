@@ -6,44 +6,10 @@ local fs = require('nixio.fs')
 local api_url = '{api_url}'
 local subd = '{subd}'
 local token_path = '/tmp/{ott_filename}'
-local config_dir = '/etc/bb' .. subd .. '/'
-local log_path = '/tmp/bb' .. subd .. '.log'
-local lock_dir = '/tmp/bb' .. subd .. '.lock/'
-local lock_pid_path = lock_dir .. 'pid'
-local auth_privkey_path = config_dir .. 'client_rsapss.pem'
-local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
-local wg_privkey_path = config_dir .. 'wgbb1_private.key'
-local wg_pubkey_path = config_dir .. 'wgbb1_public.key'
-local pubkeys_uploaded_path = config_dir .. 'pubkeys_uploaded'
-local log_handle = nil
-local logging_level = 30  -- by default, show warnings, errors
-
-for i = 1, #arg do
-    local v = arg[i]:match("^%-(v+)$")
-    if v then
-        logging_level = logging_level - #v * 10
-    elseif arg[i] == "--verbose" then
-        logging_level = logging_level - 10
-    end
-end
 
 local function fail_early(message)
     io.stderr:write(message .. '\n')
     os.exit(1)
-end
-
-local function command_succeeded(ok, why, code)
-    -- normalize return values for os.execute() and pipe:close() across Lua versions
-    if ok == true then
-        return true
-    end
-    if why == 'exit' and code == 0 then
-        return true
-    end
-    if type(ok) == 'number' and why == nil and code == nil and ok == 0 then
-        return true
-    end
-    return nil
 end
 
 local function open_log()
@@ -107,8 +73,8 @@ local function http_quoted_string_escape(value)
     return value
 end
 
-local function run_command(command, merge_stderr)
-    -- returns the captured output after stripping trailing whitespace, or nil on failure
+local function run_command(command, merge_stderr, failure_okay)
+    -- return the captured output after stripping trailing whitespace, or nil on failure
     log_debug("running command: " .. command)
     local wrapped = '{ '
         .. command
@@ -116,7 +82,7 @@ local function run_command(command, merge_stderr)
         .. '; rc=$?; printf "\\n__EXIT__=%d\\n" "$rc"; }'
     local pipe = io.popen(wrapped, 'r')
     if not pipe then
-        log_error("B12747 unable to run: " .. command)
+        log_error("B12747 cannot run: " .. command)
         return nil
     end
     local output = pipe:read('*a') or ''
@@ -137,16 +103,22 @@ local function run_command(command, merge_stderr)
         end
         return output
     end
+    local msg
     if output ~= '' then
-        log_error("B11840 running " .. command .. " failed: " .. output:gsub('\n', '\\n'))
+        msg = "B11840 running " .. command .. " failed: " .. output:gsub('\n', '\\n')
     else
-        log_error("B11545 running " .. command .. " failed with exit code " .. tostring(exit_code))
+        msg = "B11545 running " .. command .. " failed with exit code " .. tostring(exit_code)
+    end
+    if failure_okay then
+        log_debug(msg)
+    else
+        log_error(msg)
     end
     return nil
 end
 
 local function read_text_file(path, empty_if_unreadable)
-    -- returns file contents, or nil on failure
+    -- return file contents, or nil on failure
     local handle = io.open(path, 'r')
     if not handle then
         if empty_if_unreadable then
@@ -159,11 +131,11 @@ local function read_text_file(path, empty_if_unreadable)
     local content, read_err = handle:read('*a')
     local close_ok, close_err = handle:close()
     if content == nil then
-        log_error("B21409 cannot read " .. path .. ": " .. tostring(read_err))
+        log_error("B21409 cannot read " .. path .. " (" .. tostring(read_err) .. ")")
         return nil
     end
     if close_ok == nil then
-        log_error("B55281 cannot close " .. path .. ": " .. tostring(close_err))
+        log_error("B55281 cannot close " .. path .. " (" .. tostring(close_err) .. ")")
         return nil
     end
     content = content:gsub('%s+$', '')
@@ -175,7 +147,7 @@ local function read_text_file(path, empty_if_unreadable)
 end
 
 local function write_text_file(path, content, mode)
-    -- returns true iff successful
+    -- return true iff successful
     log_debug("writing " .. tostring(#content) .. " bytes to: " .. path)
     if #content < 90 then
         log_debug("  data: " .. content:gsub('%s+$', ''):gsub('\n', '\\n'))
@@ -188,11 +160,11 @@ local function write_text_file(path, content, mode)
     local write_ok, write_err = handle:write(content)
     local close_ok, close_err = handle:close()
     if not write_ok then
-        log_error("B93465 cannot write " .. path .. ": " .. tostring(write_err))
+        log_error("B93465 cannot write " .. path .. " (" .. tostring(write_err) .. ")")
         return nil
     end
     if close_ok == nil then
-        log_error("B14993 cannot close " .. path .. ": " .. tostring(close_err))
+        log_error("B14993 cannot close " .. path .. " (" .. tostring(close_err) .. ")")
         return nil
     end
     if mode then
@@ -202,9 +174,15 @@ local function write_text_file(path, content, mode)
     return true
 end
 
-local function make_temp_path()
-    -- returns new temp path, or nil on failure
-    local path = run_command('mktemp /tmp/bitburrow.XXXXXX', true)
+local function make_temp_path(in_dir)
+    -- create a temp file and return its path, or nil on failure; in_dir is optional
+    if in_dir == nil then
+        in_dir = '/tmp'
+    else
+        in_dir = trim_trailing_slashes(in_dir)
+    end
+    local path = run_command('mktemp ' .. shell_quote(in_dir .. '/bb' .. subd .. '.XXXXXX'), true)
+    -- alternative `os.tmpname()` less flexible, possibly less reliable
     if not path or path == '' then
         log_error("B35286 mktemp failed")
         return nil
@@ -296,9 +274,7 @@ local function ensure_root_and_single_instance()
         log_info("lock directory already exists, checking for active owner")
         local existing_pid = read_text_file(lock_pid_path, false)
         if existing_pid and existing_pid:match('^%d+$') then
-            local kill_ok, why, code =
-                os.execute('kill -0 ' .. existing_pid .. ' >/dev/null 2>&1')
-            if command_succeeded(kill_ok, why, code) then
+            if run_command('kill -0 ' .. existing_pid, true, true) then
                 fail_early("B49131 another instance is already running, pid: " .. existing_pid)
             end
             log_info("stale lock detected for pid " .. existing_pid .. ", cleaning up")
@@ -309,13 +285,13 @@ local function ensure_root_and_single_instance()
         fs.rmdir(lock_dir)
         mkdir_ok = fs.mkdir(lock_dir)
         if not mkdir_ok then
-            fail_early("B36202 unable to acquire lock directory")
+            fail_early("B36202 cannot acquire lock directory")
         end
     end
     local pid_written = write_text_file(lock_pid_path, tostring(nixio.getpid()) .. '\n', '0600')
     if not pid_written then
         fs.rmdir(lock_dir)
-        fail_early("B79005 unable to acquire lock file")
+        fail_early("B79005 cannot acquire lock file")
     end
     log_info("acquired single-instance lock with pid " .. tostring(nixio.getpid()))
 end
@@ -485,13 +461,13 @@ local function ensure_pubkeys_are_uploaded(token)
 end
 
 local function build_ping_request()
-    -- returns the request body, or nil on failure
+    -- return the request body, or nil on failure
     log_debug("building ping request for subd " .. subd)
     local utc_time = run_command("date -u '+%Y-%m-%dT%H:%M:%SZ'", true)
     local uptime = run_command('uptime', true)
     local nonce = run_command('openssl rand -hex 16', true)
     if not utc_time or not uptime or not nonce then
-        log_warning('unable to build ping request because one or more inputs were unavailable')
+        log_warning('cannot build ping request because one or more inputs were unavailable')
         return nil
     end
     local request_body = '{'
@@ -518,7 +494,7 @@ local function build_ping_request()
 end
 
 local function do_ping()
-    -- returns the pingback response, or nil on failure
+    -- return the pingback response, or nil on failure
     log_info("starting ping cycle")
     local request_body = build_ping_request(subd)
     if not request_body then
@@ -647,6 +623,26 @@ local function cleanup_and_exit(message)
     os.exit(1)
 end
 
+local config_dir = '/etc/bb' .. subd .. '/'
+local log_path = '/tmp/bb' .. subd .. '.log'
+local lock_dir = '/tmp/bb' .. subd .. '.lock/'
+local lock_pid_path = lock_dir .. 'pid'
+local auth_privkey_path = config_dir .. 'client_rsapss.pem'
+local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
+local wg_privkey_path = config_dir .. 'wgbb1_private.key'
+local wg_pubkey_path = config_dir .. 'wgbb1_public.key'
+local pubkeys_uploaded_path = config_dir .. 'pubkeys_uploaded'
+local log_handle = nil
+local logging_level = 30  -- by default, show warnings, errors
+
+for i = 1, #arg do
+    local v = arg[i]:match("^%-(v+)$")
+    if v then
+        logging_level = logging_level - #v * 10
+    elseif arg[i] == "--verbose" then
+        logging_level = logging_level - 10
+    end
+end
 ensure_root_and_single_instance()
 math.randomseed(os.time() + nixio.getpid())
 local token = read_text_file(token_path, true)
