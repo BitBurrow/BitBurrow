@@ -1,8 +1,5 @@
 #!/usr/bin/lua
 
-local nixio = require('nixio')
-local fs = require('nixio.fs')
-
 --
 -- hard-coded at time of downloaded in get_adopt5s_script()
 --
@@ -49,7 +46,7 @@ local function open_log()
         fail_early("B62762 cannot create: " .. log_path)
     end
     handle:close()
-    fs.chmod(log_path, '0600')
+    os.execute('chmod 0600 ' .. log_path)  -- chmod() is undefined; log_path must not have spaces
     log_handle = io.open(log_path, 'a')
     if not log_handle then
         fail_early("B71356 cannot open for append: " .. log_path)
@@ -142,10 +139,11 @@ local function run_command(command, merge_stderr, failure_ok)
         return output
     end
     local msg
+    local disp_command = displayable(command, 15)
     if output ~= '' then
-        msg = "B11840 running " .. command .. " failed: " .. displayable(output, 60)
+        msg = "B11840 running " .. disp_command .. " failed: " .. displayable(output, 60)
     else
-        msg = "B11545 running " .. command .. " failed with exit code " .. tostring(exit_code)
+        msg = "B11545 running " .. disp_command .. " failed with exit code " .. tostring(exit_code)
     end
     if failure_ok then
         log_debug(msg)
@@ -187,11 +185,21 @@ local function remove_path(path)
     end
 end
 
+local function chmod(path, mode)
+    -- return true iff successful
+    if mode then
+        if run_command('chmod ' .. mode .. ' ' .. shell_quote(path), true) then
+            return true
+        end
+    end
+    return nil
+end
+
 local function mkdir(path, mode)
     -- return true iff successful or already existed; mode is optional
     if run_command('mkdir -p ' .. shell_quote(path), true, true) then
         if mode then
-            fs.chmod(path, mode)
+            return chmod(path, mode)
         end
         return true
     end
@@ -207,14 +215,39 @@ local function dirname(path)
     return dir
 end
 
-local function is_writable(path)
-    -- return true iff we have write permission in path
-    temp_path = make_temp_path(path, true)
-    if not temp_path then
-        return nil
+local function is_readable(path)
+    -- return true iff path is readable
+    if run_command('test -r ' .. shell_quote(path), true, true) then
+        return true
     end
-    remove_path(temp_path)
-    return true
+    return nil
+end
+
+local function is_writable(path)
+    -- return true iff path (file or dir) is writable
+    if run_command('test -w ' .. shell_quote(path), true, true) then
+        return true
+    end
+    return nil
+    -- -- alternative method if path is a directory:
+    -- local temp_path = make_temp_path(path, true)
+    -- if not temp_path then
+    --     return nil
+    -- end
+    -- remove_path(temp_path)
+    -- return true
+end
+
+local function file_mtime(path)
+    -- return mtime (epoch seconds) or 0 on failure
+    local stdout = run_command('date +%s -r ' .. shell_quote(path), false, true)
+    if stdout and stdout ~= '' then
+        local t = tonumber(stdout)
+        if t then
+            return t
+        end
+    end
+    return 0
 end
 
 --
@@ -268,7 +301,7 @@ local function write_text_file(path, content, mode)
         return nil
     end
     if mode then
-        fs.chmod(path, mode)
+        chmod(path, mode)
         log_debug("set permissions on " .. path .. " to " .. mode)
     end
     return true
@@ -415,15 +448,38 @@ end
 local lock_dir = '/tmp/' .. bbsubd .. '.lock/'
 local lock_pid_path = lock_dir .. 'pid'
 
+local function get_pid()
+    -- returns a string of the current PID; use tonumber(get_pid()) if you need an int
+    local f = io.open('/proc/self/stat', 'r')
+    if not f then return nil end
+    local content = f:read('*l')
+    f:close()
+    return content and content:match('^(%d+)') or nil
+end
+
+local function get_uid()
+    local f = io.open('/proc/self/status', 'r')
+    if not f then return nil end
+    for line in f:lines() do
+        local uid = line:match('^Uid:%s+(%d+)')
+        if uid then
+            f:close()
+            return tonumber(uid)
+        end
+    end
+    f:close()
+    return nil
+end
+
 local function ensure_root_and_single_instance()
     -- return true iff it's okay to continue, nil on error
     log_debug("checking for root privileges")
-    if nixio.getuid() ~= 0 then
+    if get_uid() ~= 0 then
         log_error("B97106 must run as root")
         return nil
     end
     log_debug("attempting to acquire lock directory " .. lock_dir)
-    local mkdir_ok = fs.mkdir(lock_dir)
+    local mkdir_ok = mkdir(lock_dir)
     if not mkdir_ok then
         log_info("lock directory already exists, checking for active owner")
         local existing_pid = read_text_file(lock_pid_path, false)
@@ -437,20 +493,20 @@ local function ensure_root_and_single_instance()
             log_info("lock directory exists but pid file is missing or invalid")
         end
         remove_path(lock_pid_path)
-        fs.rmdir(lock_dir)
-        mkdir_ok = fs.mkdir(lock_dir)
+        remove_path(lock_dir)
+        mkdir_ok = mkdir(lock_dir)
         if not mkdir_ok then
             log_error("B36202 cannot acquire lock directory")
             return nil
         end
     end
-    local pid_written = write_text_file(lock_pid_path, tostring(nixio.getpid()) .. '\n', '0600')
+    local pid_written = write_text_file(lock_pid_path, get_pid() .. '\n', '0600')
     if not pid_written then
-        fs.rmdir(lock_dir)
+        remove_path(lock_dir)
         log_error("B79005 cannot acquire lock file")
         return nil
     end
-    log_info("acquired lock, pid " .. tostring(nixio.getpid()))
+    log_info("acquired lock, pid " .. get_pid())
     return true
 end
 
@@ -461,7 +517,7 @@ local function cleanup_and_exit(message)
     log_info("cleaning up lock state and exiting")
     close_log()
     remove_path(lock_pid_path)
-    fs.rmdir(lock_dir)
+    remove_path(lock_dir)
     os.exit(1)
 end
 
@@ -506,16 +562,6 @@ local function json_unescape(value)
     return value
 end
 
-local function file_mtime(path)
-    local stat = fs.stat(path)
-    if not stat then
-        log_debug("mtime unavailable for " .. path)
-        return nil
-    end
-    log_debug("mtime for " .. path .. " is " .. tostring(stat.mtime))
-    return stat.mtime
-end
-
 local function sleep_with_jitter(base_seconds, jitter_fraction)
     local min_seconds = math.floor(base_seconds * (1 - jitter_fraction))
     local max_seconds = math.ceil(base_seconds * (1 + jitter_fraction))
@@ -530,14 +576,14 @@ local function sleep_with_jitter(base_seconds, jitter_fraction)
         "sleeping for " .. tostring(sleep_seconds) .. " seconds (base="
             .. tostring(base_seconds) .. ", jitter=" .. tostring(jitter_fraction) .. ")"
     )
-    nixio.nanosleep(sleep_seconds, 0)
+    run_command('sleep ' .. tostring(sleep_seconds))
 end
 
 --
 -- keys management
 --
 
-math.randomseed(os.time() + nixio.getpid())
+math.randomseed(os.time() + tonumber(get_pid()))
 local config_dir = '/etc/' .. bbsubd .. '/'
 local auth_privkey_path = config_dir .. 'client_rsapss.pem'
 local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
@@ -546,7 +592,7 @@ local wg_pubkey_path = config_dir .. 'wgbb1_public.key'
 local pubkeys_uploaded_path = config_dir .. 'pubkeys_uploaded'
 
 local function ensure_auth_keys()
-    if fs.access(auth_privkey_path) and fs.access(auth_pubkey_path) then
+    if is_readable(auth_privkey_path) and is_readable(auth_pubkey_path) then
         log_debug("auth_privkey and auth_pubkey both already exist")
         return true
     end
@@ -563,7 +609,7 @@ local function ensure_auth_keys()
         remove_path(auth_pubkey_path)
         return nil
     end
-    fs.chmod(auth_privkey_path, '0600')
+    chmod(auth_privkey_path, '0600')
     log_debug("generated new auth_privkey: " .. auth_privkey_path)
     output = run_command(
         'openssl pkey -in '
@@ -583,7 +629,7 @@ local function ensure_auth_keys()
 end
 
 local function ensure_wg_keys()
-    if fs.access(wg_privkey_path) and fs.access(wg_pubkey_path) then
+    if is_readable(wg_privkey_path) and is_readable(wg_pubkey_path) then
         log_debug("wg_privkey and wg_pubkey both already exist")
         return true
     end
@@ -601,7 +647,7 @@ local function ensure_wg_keys()
         remove_path(wg_pubkey_path)
         return nil
     end
-    fs.chmod(wg_privkey_path, '0600')
+    chmod(wg_privkey_path, '0600')
     log_info("generated new wg_privkey: " .. wg_privkey_path)
     log_info("generated new wg_pubkey:  " .. wg_pubkey_path)
     return true
@@ -609,9 +655,9 @@ end
 
 local function ensure_pubkeys_are_uploaded(token)
     -- return true on success; retry forever on communication failure; return nil on permanent failure
-    local auth_mtime = file_mtime(auth_privkey_path) or 0
-    local wg_mtime = file_mtime(wg_privkey_path) or 0
-    local uploaded_mtime = file_mtime(pubkeys_uploaded_path) or 0
+    local auth_mtime = file_mtime(auth_privkey_path)
+    local wg_mtime = file_mtime(wg_privkey_path)
+    local uploaded_mtime = file_mtime(pubkeys_uploaded_path)
     if uploaded_mtime > auth_mtime and uploaded_mtime > wg_mtime then
         log_info("public keys already marked as uploaded")
         return true  -- these public keys were previously uploaded
