@@ -655,8 +655,6 @@ end
 
 local function ensure_pubkeys_are_uploaded()
     -- return true on success; retry forever on communication failure; return nil on permanent failure
-    local token = read_text_file(token_path, true)
-    local token_mtime = file_mtime(token_path)
     local auth_mtime = file_mtime(auth_privkey_path)
     local wg_mtime = file_mtime(wg_privkey_path)
     local uploaded_mtime = file_mtime(pubkeys_uploaded_path)
@@ -664,6 +662,9 @@ local function ensure_pubkeys_are_uploaded()
         log_info("public keys already marked as uploaded")
         return true  -- these public keys were previously uploaded
     end
+    local token = read_text_file(token_path, true):gsub("%s+", "")
+    -- strip '\n' from middle if 2-line 'echo ... >>$T' is used in get_adopt5c_code()
+    local token_mtime = file_mtime(token_path)
     if token_mtime == 0 then
         log_error("B16500 cannot read " .. token_path)
         return nil
@@ -741,7 +742,7 @@ local function ensure_pubkeys_are_uploaded()
             local has_error = response_body:match('"error"%s*:') ~= nil
             if has_jsonrpc and has_result and not has_error then
                 log_info("public key upload succeeded")
-                local touch_output = run_command('touch ' .. shell_quote(pubkeys_uploaded_path), true)
+                local touch_output = run_command('touch ' .. shell_quote(pubkeys_uploaded_path))
                 if not touch_output then
                     log_error("B04717 adopt6c succeeded but could not touch pubkeys_uploaded")
                 else
