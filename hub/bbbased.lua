@@ -653,14 +653,20 @@ local function ensure_wg_keys()
     return true
 end
 
-local function ensure_pubkeys_are_uploaded(token)
+local function ensure_pubkeys_are_uploaded()
     -- return true on success; retry forever on communication failure; return nil on permanent failure
+    local token = read_text_file(token_path, true)
+    local token_mtime = file_mtime(token_path)
     local auth_mtime = file_mtime(auth_privkey_path)
     local wg_mtime = file_mtime(wg_privkey_path)
     local uploaded_mtime = file_mtime(pubkeys_uploaded_path)
     if uploaded_mtime > auth_mtime and uploaded_mtime > wg_mtime then
         log_info("public keys already marked as uploaded")
         return true  -- these public keys were previously uploaded
+    end
+    if token_mtime == 0 then
+        log_error("B16500 cannot read " .. token_path)
+        return nil
     end
     local retry_wait = 7
     local retries_left = 2
@@ -672,6 +678,11 @@ local function ensure_pubkeys_are_uploaded(token)
     end
     log_info("public keys need upload to " .. api_url)
     while true do
+        if (os.time() - token_mtime) >= 45*60 then
+            -- if changing max time above, search: tag_ott_valid_for
+            log_error("B31143 token " .. token_path .. " is expired")  -- enforced on server too
+            return nil
+        end
         log_debug(
             "attempting adopt6c public key upload; retry_wait="
                 .. tostring(retry_wait)
@@ -932,8 +943,6 @@ end
 -- collect authentication details
 --
 
-local token = read_text_file(token_path, true)
-log_debug("token length=" .. tostring(#token))
 mkdir(config_dir, '0700')
 if not ensure_auth_keys() or not ensure_wg_keys() then
     cleanup_and_exit("B60585 cannot continue without key files; exiting")
@@ -943,7 +952,7 @@ end
 -- register with hub
 --
 
-if not ensure_pubkeys_are_uploaded(token) then
+if not ensure_pubkeys_are_uploaded() then
     cleanup_and_exit("B36017 cannot continue with uploading keys")
 end
 

@@ -1016,6 +1016,7 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
                 log_out(device.ott_id)
             # create a new OTT
             server_token_timedelta = TimeDelta(minutes=45)  # max time for base router to call API
+            # if changing max time above, search: tag_ott_valid_for
             token, ls_id = new_login_session(device.account_id, server_token_timedelta)
             device.ott_id = ls_id
             session.commit()
