@@ -333,7 +333,7 @@ def new_login_session(
     ls.valid_until = DateTime.now(TimeZone.utc) + valid_for
     if metadata is not None:  # http login session
         ls.kind = LoginSessionKind.COOKIE
-        ls.ip = metadata.client.host if metadata.client else '0.0.0.0'
+        ls.ip = metadata.client.host if metadata.client else '(unknown)'
         ls.user_agent = metadata.headers.get('User-Agent', '')
     else:  # one-time token
         ls.kind = LoginSessionKind.DEVICE_OTT
@@ -896,7 +896,7 @@ def new_device(account_id, is_base: bool, name: str) -> str:
             hub_peer_id = new_intf(device_id=device.id, base_intf_id=hub_id)
             hub_peer_conf = get_conf_activate_peer(hub_peer_id)
             methodize(hub_peer_conf, 'local.linux')
-            logger.info(f"B16979 base {device.subd} completed adopt0c (device {device.id} created)")
+            logger.info(f"B16979 base {device.subd} completed adopt0c (Device {device.id} created)")
         else:
             logger.debug(f"B04560 device {device.id} created")
         return device.name_slug
@@ -951,6 +951,16 @@ def get_device_by_slug(device_slug: str, account_id: int) -> int | None:
         return device.id
 
 
+def get_device_by_ott_id(lsid: int) -> Device:
+    with Session(engine) as session:
+        try:
+            return session.exec(select(Device).where(Device.ott_id == lsid)).one()
+        except sqlalchemy.exc.NoResultFound:
+            raise Berror(f"B65142 device for OTT {lsid} not found")
+        except sqlalchemy.exc.MultipleResultsFound:
+            raise Berror(f"B05298 multiple devices found for OTT {lsid}")
+
+
 def iter_get_device_by_account_id(aid: int | None):
     """Yield each device for account aid."""
     with Session(engine) as session:
@@ -992,15 +1002,15 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
             ).one_or_none()
             if not device:
                 raise Berror(f"B24371 cannot find device {device_id}")
-            if device.ott_id is not None:
+            if device.ott_id is not None:  # device has an OTT; try to find it
                 ls: LoginSession = session.exec(
                     select(LoginSession).where(LoginSession.id == device.ott_id)
                 ).one_or_none()
-                if not ls:
+                if not ls:  # couldn't find OTT, so clear its id from device
                     device.ott_id = None
             if device.ott_id is not None:
                 assert ls.kind == LoginSessionKind.DEVICE_OTT
-                if ls.valid_until.replace(tzinfo=TimeZone.utc) < now:
+                if ls.valid_until.replace(tzinfo=TimeZone.utc) < now:  # OTT is expired
                     device.ott_id = None
             if device.ott_id is not None:  # OTT is valid
                 cached = get_adopt5c_code.cache.get(device_id)
@@ -1017,10 +1027,10 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
             # create a new OTT
             server_token_timedelta = TimeDelta(minutes=45)  # max time for base router to call API
             # if changing max time above, search: tag_ott_valid_for
-            token, ls_id = new_login_session(device.account_id, server_token_timedelta)
-            device.ott_id = ls_id
+            token, lsid = new_login_session(device.account_id, server_token_timedelta)
+            device.ott_id = lsid
             session.commit()
-            logger.info(f"B87566 base {device.subd} completed adopt5a (OTT {ls_id} created)")
+            logger.info(f"B87566 base {device.subd} completed adopt5a (OTT {lsid} created)")
             # note: if token[0] or token[22] is '-', echo still just echos, i.e. it
             # doesn't complain about an invalid option :-)
             value = (
@@ -1036,6 +1046,28 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
             )  # in RAM for 60 minutes (safely longer than OTT validity)
             get_adopt5c_code.cache[device_id] = (now + cache_ttl, value)
             return value
+
+
+def store_adopt6c_pubkeys(device_id, auth_pubkey: str | None = None, wg_pubkey: str | None = None):
+    with Session(engine) as session:
+        try:
+            device: Device = session.exec(select(Device).where(Device.id == device_id)).one()
+        except sqlalchemy.exc.NoResultFound:
+            raise Berror(f"B49534 device {device_id} not found")
+        if auth_pubkey:
+            device.auth_pubkey = auth_pubkey
+            session.add(device)
+        if wg_pubkey:
+            statement = select(Intf).where(Intf.device_id == device.id, Intf.base_intf_id == hub_id)
+            try:
+                intf: Intf = session.exec(statement).one()
+            except sqlalchemy.exc.NoResultFound:
+                raise Berror(f"B92660 wgbb1 not found for subd {device.subd}")
+            except sqlalchemy.exc.MultipleResultsFound:
+                raise Berror(f"B59694 multiple wgbb1 found for subd {device.subd}")
+            intf.wg_pubkey = wg_pubkey
+            session.add(intf)
+        session.commit()
 
 
 def hub_peer_id(device_id) -> int | None:

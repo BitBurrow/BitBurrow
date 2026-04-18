@@ -1,6 +1,9 @@
 import asyncio
+import fastapi_jsonrpc as jsonrpc
+from fastapi.staticfiles import StaticFiles
 import logging
 import nicegui
+import nicegui.run as nicegui_run
 import os
 import platformdirs
 import ssl
@@ -12,6 +15,7 @@ from fastapi import (
     HTTPException,
 )
 from sqlmodel import SQLModel, create_engine, sql
+import uvicorn
 import hub.logs as logs
 import hub.config as conf
 import hub.db as db
@@ -32,10 +36,6 @@ sql.expression.SelectOfScalar.inherit_cache = False
 
 def app_name():
     return 'bbhub'  # this is just 'hub': os.path.splitext(os.path.basename(__file__))[0]
-
-
-async def not_found_error(request: Request, exc: HTTPException):
-    return responses.PlainTextResponse(content=None, status_code=404)
 
 
 ###
@@ -175,6 +175,16 @@ def set_logging(args):
     logging.config.dictConfig(logs.logging_config(console_log_level=args.console_log_level))
 
 
+def safe_kill_processes(original=nicegui_run._kill_processes):
+    process_pool = nicegui_run.process_pool
+    if getattr(process_pool, '_processes', None) is None:
+        return
+    original()
+
+
+nicegui_run._kill_processes = safe_kill_processes  # fixes ctrl-C shutdown hang
+
+
 async def on_startup():
     if not conf.is_loaded():  # sanity check
         raise Berror(f"B62896 invalid config data in startup_intf()")
@@ -204,7 +214,19 @@ async def watch_tls_cert() -> None:
         rep_count += 1
 
 
+async def start_background_tasks():
+    asyncio.create_task(watch_tls_cert())
+
+
+server_app = jsonrpc.API(
+    on_startup=[on_startup, start_background_tasks],
+    on_shutdown=[on_shutdown],
+    docs_url=None,
+    redoc_url=None,
+)
+
 # FIXME: rewrite this to monitor conf.get('path.restart_on_change')
+# FIXME: perhaps delay restart of there are any active OTTs
 # @app.on_event("startup")
 # @repeat_every(seconds=60)
 # def monitor_tls_cert_file() -> None:
@@ -350,31 +372,27 @@ def entry_point():
         logger.error(f"B50313 DB error (may need to increase db_schema_version): {e}")
         sys.exit(1)
     try:
-        nicegui.app.on_startup(on_startup)
-        nicegui.app.on_shutdown(on_shutdown)
-        nicegui.app.on_startup(watch_tls_cert)
-        nicegui.app.docs_url = None  # disable "Docs URLs" to help avoid being identified; see
-        nicegui.app.redoc_url = None  # ... https://fastapi.tiangolo.com/tutorial/metadata/
         ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
-        nicegui.app.add_static_files('/ui', ui_path)
+        server_app.mount('/ui', StaticFiles(directory=ui_path), name='ui')
         nicegui.ui.add_css(os.path.join(ui_path, 'theme.css'), shared=True)
-        nicegui.app.include_router(api.router)
-        nicegui.ui.run(  # docs: https://nicegui.io/documentation/run
-            host=conf.get('backend.ip'),
-            port=conf.get('backend.web_port'),
+        server_app.include_router(api.router)
+        server_app.bind_entrypoint(api.jsonrpc_entrypoint)
+        nicegui.ui.run_with(
+            server_app,
             title='BitBurrow',
             favicon='hub/ui/img/favicon.png',
             dark=None,  # None → follow OS setting for dark mode
-            reload=False,
-            uvicorn_logging_level=args.log_level_uvicorn,
+        )
+        uvicorn.run(
+            server_app,
+            host=conf.get('backend.ip'),
+            port=conf.get('backend.web_port'),
+            log_level=args.log_level_uvicorn,
             ssl_keyfile=ssl_keyfile,
             ssl_certfile=ssl_certfile,
             ssl_ciphers=strong_ciphers,
-            # to help avoid being identified, don't use these headers
             date_header=False,
-            server_header=False,  # default 'uvicorn'
-            show_welcome_message=False,  # silence "NiceGUI ready to go on ..."
-            show=False,  # don't try to open web browser
+            server_header=False,
         )
     except KeyboardInterrupt:
         logger.info(f"B23324 KeyboardInterrupt")
