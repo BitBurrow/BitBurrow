@@ -168,6 +168,24 @@ yarl = ">=1.17.0,<2.0"
 speedups = ["Brotli (>=1.2) ; platform_python_implementation == \"CPython\"", "aiodns (>=3.3.0)", "backports.zstd ; platform_python_implementation == \"CPython\" and python_version < \"3.14\"", "brotlicffi (>=1.2) ; platform_python_implementation != \"CPython\""]
 
 [[package]]
+name = "aiojobs"
+version = "1.4.0"
+description = "Job scheduler for managing background tasks (asyncio)"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "aiojobs-1.4.0-py3-none-any.whl", hash = "sha256:e95eb0d10d1f6095aefb04d228d2b4b3747514503f26540de722c2228a8500ca"},
+    {file = "aiojobs-1.4.0.tar.gz", hash = "sha256:463665c75d1fcc46c78d44375c1034abf5e3f087894b0fc5ec4dd16ef90fdc98"},
+]
+
+[package.dependencies]
+async-timeout = {version = ">=4.0.0", markers = "python_version < \"3.11\""}
+
+[package.extras]
+aiohttp = ["aiohttp (>=3.9.0)"]
+
+[[package]]
 name = "aiosignal"
 version = "1.4.0"
 description = "aiosignal: a list of registered asynchronous callbacks"
@@ -585,6 +603,24 @@ typing-inspection = ">=0.4.2"
 all = ["email-validator (>=2.0.0)", "fastapi-cli[standard] (>=0.0.8)", "httpx (>=0.23.0,<1.0.0)", "itsdangerous (>=1.1.0)", "jinja2 (>=3.1.5)", "pydantic-extra-types (>=2.0.0)", "pydantic-settings (>=2.0.0)", "python-multipart (>=0.0.18)", "pyyaml (>=5.3.1)", "uvicorn[standard] (>=0.12.0)"]
 standard = ["email-validator (>=2.0.0)", "fastapi-cli[standard] (>=0.0.8)", "httpx (>=0.23.0,<1.0.0)", "jinja2 (>=3.1.5)", "pydantic-extra-types (>=2.0.0)", "pydantic-settings (>=2.0.0)", "python-multipart (>=0.0.18)", "uvicorn[standard] (>=0.12.0)"]
 standard-no-fastapi-cloud-cli = ["email-validator (>=2.0.0)", "fastapi-cli[standard-no-fastapi-cloud-cli] (>=0.0.8)", "httpx (>=0.23.0,<1.0.0)", "jinja2 (>=3.1.5)", "pydantic-extra-types (>=2.0.0)", "pydantic-settings (>=2.0.0)", "python-multipart (>=0.0.18)", "uvicorn[standard] (>=0.12.0)"]
+
+[[package]]
+name = "fastapi-jsonrpc"
+version = "3.5.0"
+description = "JSON-RPC server based on fastapi"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "fastapi_jsonrpc-3.5.0-py3-none-any.whl", hash = "sha256:f13b7aa6c1f020222a9e997686bd92c43e123b3cf690f743357950d4aa4201b8"},
+    {file = "fastapi_jsonrpc-3.5.0.tar.gz", hash = "sha256:e4fb3a1d8e4a32aed980dad819992b34299e247a35a8d28d930f6e972f9eb1dd"},
+]
+
+[package.dependencies]
+aiojobs = ">=1.1.0"
+fastapi = ">=0.135"
+pydantic = ">=2.7.0,<3.0.0"
+starlette = ">=1.0"
 
 [[package]]
 name = "frozenlist"
@@ -3404,4 +3440,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "f108529cee55b04bb90261dba5d71514d797e37668c0c57446c8cedebdc1761e"
+content-hash = "3a00bcc8143a68c7ff99543cfbe71e792671ff72b1c0b5bac314bbe4a9c6fbb5"

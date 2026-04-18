@@ -29,6 +29,7 @@ htmy = "^0.7.4"
 nicegui = "^3.10.0"
 psutil = "^7.2.1"
 robotframework-browser = {extras = ["bb"], version = "^19.12.3"}
+fastapi-jsonrpc = "^3.5.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^26.3.1"
