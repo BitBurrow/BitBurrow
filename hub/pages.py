@@ -282,8 +282,8 @@ def setup(client: Client, device_slug: str):
         lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
         return
-    device_id = db.get_device_by_slug(device_slug, aid)
-    if not device_id:
+    device = db.get_device_by_slug(device_slug, aid)
+    if not device:
         sections = uif.parse_markdown_sections('device-not-found')
         for i, s in enumerate(sections):
             sections[i] = s.replace('{device_slug}', device_slug)
@@ -375,7 +375,7 @@ def setup(client: Client, device_slug: str):
     idelem = uif.render_content(sections)
     idelem_lambdas = {
         'adopt5c_code': lambda obj: obj.set_content(
-            db.get_adopt5c_code(device_id, api.adopt5l_route)
+            db.get_adopt5c_code(device.id, api.adopt5l_route)
         ),
     }
     add_custom_css()

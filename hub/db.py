@@ -933,8 +933,8 @@ def shell_to_device(device_id: int):
         return r
 
 
-def get_device_by_slug(device_slug: str, account_id: int) -> int | None:
-    """Return the device_id for the slug, or None if it doesn't exist for that user."""
+def get_device_by_slug(device_slug: str, account_id: int) -> Device | None:
+    """Return the Device for the slug, or None if it doesn't exist for that user."""
     with Session(engine) as session:
         account = session.exec(select(Account).where(Account.id == account_id)).one()
         if account.kind == AccountKind.ADMIN:  # allow admins to manage everything
@@ -948,7 +948,7 @@ def get_device_by_slug(device_slug: str, account_id: int) -> int | None:
             device = session.exec(statement).one()
         except sqlalchemy.exc.NoResultFound:
             return None
-        return device.id
+        return device
 
 
 def get_device_by_ott_id(lsid: int) -> Device:
