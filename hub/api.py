@@ -1,6 +1,5 @@
 import base64
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
-from email.utils import format_datetime, parsedate_to_datetime
 from fastapi import APIRouter, Request, HTTPException, status, Body
 from fastapi.responses import Response, PlainTextResponse
 from pydantic import BaseModel
@@ -10,7 +9,6 @@ import json
 import os
 import logging
 import re
-import threading
 import time
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -26,8 +24,6 @@ adopt5s_route = '/5s/{subd}'  # download bbbased.lua
 log_err_route = '/er/{subd}'  # errors from base router
 jsonrpc_route = '/api/v1'
 hub_path = os.path.dirname(os.path.abspath(__file__))
-requests_by_ip = dict()
-rate_lock = threading.Lock()
 router = APIRouter()
 
 ###
@@ -155,8 +151,6 @@ def adopt6c(
 ### JSON-RPC method ping--regular check-in from managed router
 ###
 
-requests_by_ip = dict()
-requests_by_ip_lock = threading.Lock()
 nonce_cache = dict()
 
 
@@ -164,71 +158,56 @@ def json_string_unescape(value: str) -> str:
     try:
         return json.loads('"' + value + '"')
     except Exception as e:
-        raise BaseError(f"B80028 invalid quoted string ({e})")
+        raise BaseError(f"B23026 invalid quoted string ({e})")
 
 
 def parse_signature_input(signature_input: str) -> tuple[int, str, str, str]:
     prefix = "sig1=("
     if not signature_input.startswith(prefix):
-        raise BaseError("B80001 invalid Signature-Input prefix")
+        raise BaseError("B64394 invalid Signature-Input prefix")
     end = signature_input.find(")")
     if end == -1:
-        raise BaseError("B80002 invalid Signature-Input format")
+        raise BaseError("B13246 invalid Signature-Input format")
     covered = signature_input[len(prefix) : end]
     expected = '"@method" "@authority" "@target-uri" "content-type" "content-digest" "date"'
     if covered != expected:
-        raise BaseError("B80003 unexpected covered components")
+        raise BaseError("B78346 unexpected covered components")
     params = signature_input[end + 1 :]
     created_match = re.search(r"(?:^|;)created=(\d+)(?:;|$)", params)
     keyid_match = re.search(r'(?:^|;)keyid="((?:[^"\\]|\\.)*)"(?:;|$)', params)
     nonce_match = re.search(r'(?:^|;)nonce="((?:[^"\\]|\\.)*)"(?:;|$)', params)
     alg_match = re.search(r'(?:^|;)alg="((?:[^"\\]|\\.)*)"(?:;|$)', params)
     if not created_match:
-        raise BaseError("B80004 missing created")
+        raise BaseError("B29856 missing created")
     if not keyid_match:
-        raise BaseError("B80005 missing keyid")
+        raise BaseError("B64272 missing keyid")
     if not nonce_match:
-        raise BaseError("B80006 missing nonce")
+        raise BaseError("B44263 missing nonce")
     if not alg_match:
-        raise BaseError("B80007 missing alg")
+        raise BaseError("B40086 missing alg")
     created = int(created_match.group(1))
     keyid = json_string_unescape(keyid_match.group(1))
     nonce = json_string_unescape(nonce_match.group(1))
     alg = json_string_unescape(alg_match.group(1))
     if alg not in ("rsa-pss-sha512", "rsa-pss-sha256"):
-        raise BaseError(f"B80008 unsupported alg {alg}")
+        raise BaseError(f"B85199 unsupported alg {alg}")
     return created, keyid, nonce, alg
 
 
 def parse_signature_header(signature_header: str) -> bytes:
     match = re.fullmatch(r"sig1=:([A-Za-z0-9+/=]+):", signature_header.strip())
     if not match:
-        raise BaseError("B80009 invalid Signature header")
+        raise BaseError("B33176 invalid Signature header")
     try:
         return base64.b64decode(match.group(1), validate=True)
     except Exception as e:
-        raise BaseError(f"B80010 invalid signature encoding ({e})")
+        raise BaseError(f"B56110 invalid signature encoding ({e})")
 
 
 def build_content_digest_header(body: bytes) -> str:
     digest = hashlib.sha256(body).digest()
     digest_b64 = base64.b64encode(digest).decode("ascii")
     return f"sha-256=:{digest_b64}:"
-
-
-def canonical_date_from_created(created: int) -> str:
-    dt = DateTime.fromtimestamp(created, tz=TimeZone.utc)
-    return format_datetime(dt, usegmt=True)
-
-
-def parse_http_date(date_header: str) -> DateTime:
-    try:
-        dt = parsedate_to_datetime(date_header)
-    except Exception as e:
-        raise BaseError(f"B80011 invalid Date header ({e})")
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=TimeZone.utc)
-    return dt.astimezone(TimeZone.utc)
 
 
 def consume_nonce(nonce: str, now: int, ttl_seconds: int) -> bool:
@@ -284,13 +263,13 @@ def verify_signature_bytes(
         hash_alg = hashes.SHA256()
         salt_length = 32
     elif alg == "rsa-pss-sha256":
-        raise BaseError("B80012 rsa-pss-sha256 fallback is disabled")
+        raise BaseError("B89126 rsa-pss-sha256 fallback is disabled")
     else:
-        raise BaseError(f"B80013 unsupported alg {alg}")
+        raise BaseError(f"B17925 unsupported alg {alg}")
     try:
         public_key = serialization.load_pem_public_key(auth_pubkey_pem.encode("utf-8"))
     except Exception as e:
-        raise BaseError(f"B80014 invalid public key ({e})")
+        raise BaseError(f"B40573 invalid public key ({e})")
     try:
         public_key.verify(
             signature,
@@ -302,9 +281,9 @@ def verify_signature_bytes(
             hash_alg,
         )
     except InvalidSignature:
-        raise BaseError("B80015 signature verification failed")
+        raise BaseError("B54338 signature verification failed")
     except Exception as e:
-        raise BaseError(f"B80016 signature verification error ({e})")
+        raise BaseError(f"B53361 signature verification error ({e})")
 
 
 async def verify_signed_ping_request(
@@ -319,37 +298,31 @@ async def verify_signed_ping_request(
     try:
         payload = json.loads(body)
     except Exception as e:
-        raise BaseError(f"B80017 invalid JSON body ({e})")
+        raise BaseError(f"B75948 invalid JSON body ({e})")
     content_type = request.headers.get("content-type", "")
     if content_type != "application/json":
-        raise BaseError(f"B80018 unexpected Content-Type {content_type}")
+        raise BaseError(f"B55664 unexpected Content-Type {content_type}")
     date_header = request.headers.get("date")
     content_digest_header = request.headers.get("content-digest")
     signature_input_header = request.headers.get("signature-input")
     signature_header = request.headers.get("signature")
     if not date_header:
-        raise BaseError("B80019 missing Date header")
+        raise BaseError("B70748 missing Date header")
     if not content_digest_header:
-        raise BaseError("B80020 missing Content-Digest header")
+        raise BaseError("B29725 missing Content-Digest header")
     if not signature_input_header:
-        raise BaseError("B80021 missing Signature-Input header")
+        raise BaseError("B45919 missing Signature-Input header")
     if not signature_header:
-        raise BaseError("B80022 missing Signature header")
+        raise BaseError("B59684 missing Signature header")
     expected_content_digest = build_content_digest_header(body)
     if content_digest_header != expected_content_digest:
-        raise BaseError("B80023 Content-Digest mismatch")
+        raise BaseError("B40097 Content-Digest mismatch")
     created, keyid, nonce, alg = parse_signature_input(signature_input_header)
     now = int(time.time())
     if abs(now - created) > max_clock_skew_seconds:
-        raise BaseError("B80024 created is outside acceptable clock skew")
-    canonical_date = canonical_date_from_created(created)
-    if date_header != canonical_date:
-        raise BaseError("B80025 Date does not match created exactly")
-    parsed_date = parse_http_date(date_header)
-    if int(parsed_date.timestamp()) != created:
-        raise BaseError("B80026 Date timestamp does not match created")
+        raise BaseError("B87034 created is outside acceptable clock skew")
     if not consume_nonce(nonce, now, nonce_ttl_seconds):
-        raise BaseError("B80027 replayed nonce")
+        raise BaseError("B56057 replayed nonce")
     signature = parse_signature_header(signature_header)
     target_uri = conf.base_url() + jsonrpc_route
     authority = re.sub(r"^https?://", "", conf.base_url()).rstrip("/")
