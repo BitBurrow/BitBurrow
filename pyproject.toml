@@ -30,6 +30,7 @@ nicegui = "^3.10.0"
 psutil = "^7.2.1"
 robotframework-browser = {extras = ["bb"], version = "^19.12.3"}
 fastapi-jsonrpc = "^3.5.0"
+cryptography = "^46.0.7"
 
 [tool.poetry.group.dev.dependencies]
 black = "^26.3.1"

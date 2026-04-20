@@ -961,6 +961,16 @@ def get_device_by_ott_id(lsid: int) -> Device:
             raise Berror(f"B05298 multiple devices found for OTT {lsid}")
 
 
+def get_device_by_subd(subd: str) -> Device:
+    with Session(engine) as session:
+        try:
+            return session.exec(select(Device).where(Device.subd == subd)).one()
+        except sqlalchemy.exc.NoResultFound:
+            raise Berror(f"B59977 device for subd {subd} not found")
+        except sqlalchemy.exc.MultipleResultsFound:
+            raise Berror(f"B27072 multiple devices found for subd {subd}")
+
+
 def iter_get_device_by_account_id(aid: int | None):
     """Yield each device for account aid."""
     with Session(engine) as session:
