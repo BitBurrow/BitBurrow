@@ -772,8 +772,8 @@ local function build_ping_request()
     log_debug("building ping request for subd " .. subd)
     local utc_time = run_command("date -u '+%Y-%m-%dT%H:%M:%SZ'", true)
     local uptime = run_command('uptime', true)
-    local nonce = run_command('openssl rand -hex 16', true)
-    if not utc_time or not uptime or not nonce then
+    local request_id = run_command('openssl rand -hex 16', true)
+    if not utc_time or not uptime or not request_id then
         log_warning('cannot build ping request because one or more inputs were unavailable')
         return nil
     end
@@ -791,8 +791,8 @@ local function build_ping_request()
         .. '"uptime":"'
         .. json_escape(uptime)
         .. '",'
-        .. '"nonce":"'
-        .. json_escape(nonce)
+        .. '"request_id":"'
+        .. json_escape(request_id)
         .. '"'
         .. '}'
         .. '}'
@@ -800,10 +800,67 @@ local function build_ping_request()
     return request_body
 end
 
+local function choose_signature_algorithm()
+    -- prefer RFC 9421 rsa-pss-sha512; fall back to non-standard rsa-pss-sha256
+    local probe_path = make_temp_path()
+    local sig_path = make_temp_path()
+    if not probe_path or not sig_path then
+        remove_path(probe_path)
+        remove_path(sig_path)
+        return {
+            name = 'rsa-pss-sha256',
+            digest = 'sha256',
+            mgf1 = 'sha256',
+            saltlen = '32',
+        }
+    end
+    if not write_text_file(probe_path, 'probe', '0600') then
+        remove_path(probe_path)
+        remove_path(sig_path)
+        return {
+            name = 'rsa-pss-sha256',
+            digest = 'sha256',
+            mgf1 = 'sha256',
+            saltlen = '32',
+        }
+    end
+    local ok = run_command(
+        'openssl dgst -sha512 '
+            .. '-sigopt rsa_padding_mode:pss '
+            .. '-sigopt rsa_mgf1_md:sha512 '
+            .. '-sigopt rsa_pss_saltlen:64 '
+            .. '-sign '
+            .. shell_quote(auth_privkey_path)
+            .. ' -binary -out '
+            .. shell_quote(sig_path)
+            .. ' '
+            .. shell_quote(probe_path),
+        true,
+        true
+    )
+    remove_path(probe_path)
+    remove_path(sig_path)
+    if ok then
+        return {
+            name = 'rsa-pss-sha512',
+            digest = 'sha512',
+            mgf1 = 'sha512',
+            saltlen = '64',
+        }
+    end
+    log_warning('OpenSSL lacks rsa-pss-sha512 support; falling back to non-standard rsa-pss-sha256')
+    return {
+        name = 'rsa-pss-sha256',
+        digest = 'sha256',
+        mgf1 = 'sha256',
+        saltlen = '32',
+    }
+end
+
 local function do_ping()
-    -- return the pingback response, or nil on failure
+    -- return the status response, or nil on failure
     log_info("starting ping cycle")
-    local request_body = build_ping_request(subd)
+    local request_body = build_ping_request()
     if not request_body then
         return nil
     end
@@ -831,46 +888,60 @@ local function do_ping()
         )
         if not content_digest_value then break end
         local content_digest_header = 'sha-256=:' .. content_digest_value .. ':'
-        local date_header = run_command("date -u '+%a, %d %b %Y %H:%M:%S GMT'", true)
-        if not date_header then break end
-        local created_value = run_command("date -u '+%s'", true)
-        if not created_value then break end
+        local timestamp_pair = run_command("date -u '+%s|%a, %d %b %Y %H:%M:%S GMT'")
+        if not timestamp_pair then break end
+        local created_value, date_header = timestamp_pair:match('^(%d+)|(.+)$')
+        if not created_value or not date_header then
+            log_warning('could not parse date output for signature headers')
+            break
+        end
         local authority = api_url:match('^https?://([^/]+)')
         if not authority then
             log_warning('could not parse authority from api url ' .. api_url)
             break
         end
+        local nonce_value = run_command('openssl rand -hex 16', true)
+        if not nonce_value then break end
         local keyid_value = http_quoted_string_escape(subd)
-        local signature_input_value = 'sig1=("@method" "@authority" "@target-uri" "content-type" "content-digest" "date");created='
+        local nonce_param_value = http_quoted_string_escape(nonce_value)
+        local sigalg = choose_signature_algorithm()
+        local signature_params = '("@method" "@authority" "@target-uri" "content-type" "content-digest" "date");created='
             .. created_value
             .. ';keyid="'
             .. keyid_value
-            .. '";alg="rsa-pss-sha256"'
+            .. '";nonce="'
+            .. nonce_param_value
+            .. '";alg="'
+            .. sigalg.name
+            .. '"'
+        local signature_input_value = 'sig1=' .. signature_params
         local signature_base = '"@method": POST\n'
             .. '"@authority": ' .. authority .. '\n'
             .. '"@target-uri": ' .. api_url .. '\n'
             .. '"content-type": application/json\n'
             .. '"content-digest": ' .. content_digest_header .. '\n'
             .. '"date": ' .. date_header .. '\n'
-            .. '"@signature-params": ("@method" "@authority" "@target-uri" "content-type" "content-digest" "date");created='
-            .. created_value
-            .. ';keyid="'
-            .. keyid_value
-            .. '";alg="rsa-pss-sha256"'
+            .. '"@signature-params": '
+            .. signature_params
+        log_debug("signature_base='" .. displayable(signature_base, 900) .. "'")
         write_ok = write_text_file(sig_base_path, signature_base, '0600')
         if not write_ok then break end
         local sign_output = run_command(
-            'openssl dgst -sha256 -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:-1 '
-                .. '-sign '
-                .. shell_quote(auth_privkey_path)
-                .. ' -binary -out '
-                .. shell_quote(sig_bin_path)
-                .. ' '
-                .. shell_quote(sig_base_path),
+            'openssl dgst -'
+                .. sigalg.digest
+                .. ' -sigopt rsa_padding_mode:pss '
+                .. '-sigopt rsa_mgf1_md:' .. sigalg.mgf1
+                .. ' -sigopt rsa_pss_saltlen:' .. sigalg.saltlen
+                .. ' -sign ' .. shell_quote(auth_privkey_path)
+                .. ' -binary -out ' .. shell_quote(sig_bin_path)
+                .. ' ' .. shell_quote(sig_base_path),
             true
         )
         if not sign_output then break end
-        -- verify: openssl dgst -sha256 -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:-1 -verify /tmp/client_rsapss_pub.pem -signature /tmp/api_data.sig /tmp/api_data
+        -- verify:
+        -- openssl dgst -sha512 -sigopt rsa_padding_mode:pss -sigopt rsa_mgf1_md:sha512 \
+        --     -sigopt rsa_pss_saltlen:64 -verify /tmp/client_rsapss_pub.pem \
+        --     -signature /tmp/api_data.sig /tmp/api_data
         local signature_b64 = run_command(
             'openssl base64 -A -in ' .. shell_quote(sig_bin_path),
             true
@@ -898,13 +969,13 @@ local function do_ping()
         if not curl_output then break end
         local response_body = read_text_file(response_path, true)
         if not response_body then break end
-        log_debug("ping response body: " .. displayable(response_body, 60))
+        log_debug("ping response body: " .. displayable(response_body, 300))
         local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
         local has_error = response_body:match('"error"%s*:') ~= nil
-        local pingback = response_body:match('"pingback"%s*:%s*"(([^"\\]|\\.)*)"')
-        if has_jsonrpc and not has_error and pingback then
-            result = json_unescape(pingback)
-            log_info("ping succeeded with pingback: " .. displayable(result, 60))
+        local status = response_body:match('"result"%s*:%s*{.-"status"%s*:%s*"([^"]*)"')
+        if has_jsonrpc and not has_error and status then
+            result = json_unescape(status)
+            log_info("ping succeeded with status: " .. displayable(result, 60))
         else
             log_warning("ping response was missing expected success fields")
         end
