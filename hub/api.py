@@ -13,6 +13,7 @@ import time
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import rsa
 import hub.db as db
 import hub.config as conf
 
@@ -136,6 +137,15 @@ def adopt6c(
     if device.subd != subd:
         logger.warning(f"B88940 subd mismatch for OTT {lsid} ({device.subd} != {subd})")
         raise BaseError(f"B01839 invalid subd {subd}")
+    # validate auth_pubkey before storing it
+    try:
+        public_key = serialization.load_pem_public_key(auth_pubkey.encode("utf-8"))
+    except Exception as e:
+        raise BaseError(f"B35036 invalid auth_pubkey ({e})")
+    if not isinstance(public_key, rsa.RSAPublicKey):
+        raise BaseError(f"B42858 auth_pubkey is {type(public_key)}; need rsa.RSAPublicKey")
+    if public_key.key_size < 2048:
+        raise BaseError("B99756 auth_pubkey too small")
     # store public keys
     try:
         db.store_adopt6c_pubkeys(device.id, auth_pubkey, wg_pubkey)
@@ -162,34 +172,34 @@ def json_string_unescape(value: str) -> str:
 
 
 def parse_signature_input(signature_input: str) -> tuple[int, str, str, str]:
+    def get_param(params: str, name: str, quoted: bool = False) -> str:
+        if quoted:
+            match = re.search(rf'(?:^|;){name}="((?:[^"\\]|\\.)*)"(?:;|$)', params)
+        else:
+            match = re.search(rf'(?:^|;){name}=(\d+)(?:;|$)', params)
+        if not match:
+            raise BaseError(f"B78395 missing {name}")
+        return match.group(1)
+
     prefix = "sig1=("
     if not signature_input.startswith(prefix):
         raise BaseError("B64394 invalid Signature-Input prefix")
     end = signature_input.find(")")
     if end == -1:
         raise BaseError("B13246 invalid Signature-Input format")
-    covered = signature_input[len(prefix) : end]
     expected = '"@method" "@authority" "@target-uri" "content-type" "content-digest" "date"'
-    if covered != expected:
+    if expected != signature_input[len(prefix) : end]:
         raise BaseError("B78346 unexpected covered components")
     params = signature_input[end + 1 :]
-    created_match = re.search(r"(?:^|;)created=(\d+)(?:;|$)", params)
-    keyid_match = re.search(r'(?:^|;)keyid="((?:[^"\\]|\\.)*)"(?:;|$)', params)
-    nonce_match = re.search(r'(?:^|;)nonce="((?:[^"\\]|\\.)*)"(?:;|$)', params)
-    alg_match = re.search(r'(?:^|;)alg="((?:[^"\\]|\\.)*)"(?:;|$)', params)
-    if not created_match:
-        raise BaseError("B29856 missing created")
-    if not keyid_match:
-        raise BaseError("B64272 missing keyid")
-    if not nonce_match:
-        raise BaseError("B44263 missing nonce")
-    if not alg_match:
-        raise BaseError("B40086 missing alg")
-    created = int(created_match.group(1))
-    keyid = json_string_unescape(keyid_match.group(1))
-    nonce = json_string_unescape(nonce_match.group(1))
-    alg = json_string_unescape(alg_match.group(1))
-    if alg not in ("rsa-pss-sha512", "rsa-pss-sha256"):
+    created = int(get_param(params, 'created'))
+    keyid = json_string_unescape(get_param(params, 'keyid', quoted=True))
+    nonce = json_string_unescape(get_param(params, 'nonce', quoted=True))
+    alg = json_string_unescape(get_param(params, 'alg', quoted=True))
+    if len(keyid) > 256:
+        raise BaseError("B22403 keyid too long")
+    if not nonce or len(nonce) > 128:
+        raise BaseError("B22402 invalid nonce")
+    if alg not in ('rsa-pss-sha512', 'rsa-pss-sha256'):
         raise BaseError(f"B85199 unsupported alg {alg}")
     return created, keyid, nonce, alg
 
@@ -298,9 +308,13 @@ async def verify_signed_ping_request(
     try:
         payload = json.loads(body)
     except Exception as e:
-        raise BaseError(f"B75948 invalid JSON body ({e})")
+        raise BaseError(f"B75948 invalid json body ({e})")
+    expected_host = re.sub(r"^https?://", "", conf.base_url()).rstrip("/")
+    actual_host = request.headers.get("host", "")
+    if actual_host != expected_host:
+        raise BaseError(f"B70431 {actual_host} != {expected_host}")
     content_type = request.headers.get("content-type", "")
-    if content_type != "application/json":
+    if content_type.split(';', 1)[0].strip().lower() != "application/json":
         raise BaseError(f"B55664 unexpected Content-Type {content_type}")
     date_header = request.headers.get("date")
     content_digest_header = request.headers.get("content-digest")
@@ -321,14 +335,11 @@ async def verify_signed_ping_request(
     now = int(time.time())
     if abs(now - created) > max_clock_skew_seconds:
         raise BaseError("B87034 created is outside acceptable clock skew")
-    if not consume_nonce(nonce, now, nonce_ttl_seconds):
-        raise BaseError("B56057 replayed nonce")
     signature = parse_signature_header(signature_header)
     target_uri = conf.base_url() + jsonrpc_route
-    authority = re.sub(r"^https?://", "", conf.base_url()).rstrip("/")
     signature_base = build_signature_base(
         method=request.method,
-        authority=authority,
+        authority=expected_host,
         target_uri=target_uri,
         created=created,
         keyid=keyid,
@@ -345,6 +356,8 @@ async def verify_signed_ping_request(
         alg=alg,
         allow_sha256_fallback=allow_sha256_fallback,
     )
+    if not consume_nonce(nonce, now, nonce_ttl_seconds):  # consume nonce *after* sig verification
+        raise BaseError("B56057 replayed nonce")
     return payload
 
 
