@@ -7,6 +7,7 @@
 local api_url = '{api_url}'
 local subd = '{subd}'
 local token_path = '/tmp/{ott_filename}'
+local log_err_route='{log_err_route}'
 
 --
 -- logging
@@ -60,16 +61,35 @@ local function close_log()
     log_handle = nil
 end
 
+local function shell_quote(value)
+    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
+end
+
 local function log(message, level)
-    if level < logging_level then
-        return
+    if level >= 30 then  -- send errors and warnings to server
+        local tmpname = os.tmpname()
+        local f = io.open(tmpname, 'w')
+        if f then
+            f:write(message)
+            f:close()
+            os.execute(
+                'curl -f --max-time 60 -X POST'
+                .. ' -H "Content-Type: text/plain"'
+                .. ' --data-binary @' .. shell_quote(tmpname)
+                .. ' ' .. shell_quote(log_err_route)
+                .. ' >/dev/null 2>&1 || true'
+            )
+            os.remove(tmpname)
+        end
     end
-    if not log_path or logging_level < 30 or not log_path then  -- when using logread or -v
-        io.stderr:write(message .. '\n')  -- send to stderr
-    end
-    if log_handle then
-        log_handle:write(os.date('!%Y-%m-%dT%H:%M:%SZ') .. ' ' .. message .. '\n')
-        log_handle:flush()
+    if level >= logging_level then
+        if not log_path or logging_level < 30 or not log_path then  -- when using logread or -v
+            io.stderr:write(message .. '\n')  -- send to stderr
+        end
+        if log_handle then
+            log_handle:write(os.date('!%Y-%m-%dT%H:%M:%SZ') .. ' ' .. message .. '\n')
+            log_handle:flush()
+        end
     end
 end
 
@@ -90,15 +110,11 @@ local function log_error(message)
 end
 
 open_log()
-log_warning("starting BitBurrow base daemon (log level " .. logging_level .. ")")
+log_warning("start BitBurrow base daemon (log level " .. logging_level .. ")")
 
 --
 -- paths
 --
-
-local function shell_quote(value)
-    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
-end
 
 local function http_quoted_string_escape(value)
     value = tostring(value)
@@ -139,7 +155,7 @@ local function run_command(command, merge_stderr, failure_ok)
         return output
     end
     local msg
-    local disp_command = displayable(command, 15)
+    local disp_command = displayable(command, 25)
     if output ~= '' then
         msg = "B11840 running " .. disp_command .. " failed: " .. displayable(output, 60)
     else
@@ -423,17 +439,17 @@ local function install_init_service(lua_path, init_path)
     end
     remove_path(temp_path)
     if not file_copy(running_path, lua_path, '0644') then return nil end
-    if not run_command(shell_quote(init_path) .. ' enabled') then
+    if not run_command(shell_quote(init_path) .. ' enabled', true, true) then
         if not run_command(shell_quote(init_path) .. ' enable') then
             return nil
         end
     end
-    if not run_command(shell_quote(init_path) .. ' running') then
+    if not run_command(shell_quote(init_path) .. ' running', true, true) then
         if not run_command(shell_quote(init_path) .. ' start') then return nil end
-        log_info("successfully installed; exiting")
+        log_debug("successfully installed; exiting")
     else
         if not run_command(shell_quote(init_path) .. ' restart') then return nil end
-        log_info("successfully reinstalled; exiting")
+        log_debug("successfully reinstalled; exiting")
     end
     -- new service should run now; don't use this here: dofile(lua_path)
     remove_path(running_path)
@@ -514,7 +530,7 @@ local function cleanup_and_exit(message)
     if message then
         log_error(message)
     end
-    log_info("cleaning up lock state and exiting")
+    log_debug("cleaning up lock state and exiting")
     close_log()
     remove_path(lock_pid_path)
     remove_path(lock_dir)
@@ -596,7 +612,7 @@ local function ensure_auth_keys()
         log_debug("auth_privkey and auth_pubkey both already exist")
         return true
     end
-    log_info("authentication keys are missing, generating new keypair")
+    log_info("authentication keys are missing; generating new keypair")
     remove_path(auth_pubkey_path)
     -- note: OpenSSL 1.1.1 found on test routers can't sign with Ed25519 keys
     local output = run_command(
@@ -633,7 +649,7 @@ local function ensure_wg_keys()
         log_debug("wg_privkey and wg_pubkey both already exist")
         return true
     end
-    log_info("WireGuard keys are missing, generating new keypair")
+    log_info("WireGuard keys are missing; generating new keypair")
     remove_path(wg_pubkey_path)
     local output = run_command(
         'wg genkey |tee '
@@ -859,7 +875,7 @@ end
 
 local function do_ping()
     -- return the status response, or nil on failure
-    log_info("starting ping cycle")
+    log_debug("starting ping cycle")
     local request_body = build_ping_request()
     if not request_body then
         return nil
@@ -923,7 +939,6 @@ local function do_ping()
             .. '"date": ' .. date_header .. '\n'
             .. '"@signature-params": '
             .. signature_params
-        log_debug("signature_base='" .. displayable(signature_base, 900) .. "'")
         write_ok = write_text_file(sig_base_path, signature_base, '0600')
         if not write_ok then break end
         local sign_output = run_command(
@@ -977,16 +992,13 @@ local function do_ping()
             result = json_unescape(status)
             log_info("ping succeeded with status: " .. displayable(result, 60))
         else
-            log_warning("ping response was missing expected success fields")
+            log_error("signature_base='" .. displayable(signature_base, 900) .. "'")
         end
     until true
     remove_path(body_path)
     remove_path(sig_base_path)
     remove_path(sig_bin_path)
     remove_path(response_path)
-    if not result then
-        log_warning('ping cycle failed')
-    end
     return result
 end
 
@@ -1000,7 +1012,7 @@ if install_attempt == nil then
     cleanup_and_exit("B21488 cannot install as a service")
 end
 if install_attempt == false then
-    cleanup_and_exit("B32020 successfuly installed; exiting")
+    cleanup_and_exit("B32020 successfully installed; exiting")
 end
 
 --

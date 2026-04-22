@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import hub.db as db
 import hub.config as conf
 
+Berror = db.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 
@@ -30,6 +31,11 @@ router = APIRouter()
 ###
 ### adoption endpoints--file downloads (no authentication)
 ###
+
+
+def sanitize_subd(subd):
+    """Return a safer version of subd, but still unverified"""
+    return re.sub(r"[^a-zA-Z0-9]", "", subd)[:8]
 
 
 def get_file(
@@ -53,8 +59,7 @@ def get_file(
 
 @router.get(adopt5l_route, response_class=PlainTextResponse)
 def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
-    # we do not verify subd; 'adopt5p.sh' does not contain any secrets
-    subd = re.sub(r"[^a-zA-Z0-9]", "", subd)[:8]  # minimal security precaution
+    subd = sanitize_subd(subd)  # unverified; 'adopt5p.sh' does not contain any secrets
     expand_braces = lambda s: s.replace(
         '{download_url}', conf.base_url() + adopt5s_route.format(subd=subd)
     ).replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
@@ -69,12 +74,12 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
 
 @router.get(adopt5s_route, response_class=PlainTextResponse)
 def get_adopt5s_script(request: Request, subd: str) -> PlainTextResponse:
-    # we do not verify subd; 'bbbased.lua' does not contain any secrets
-    subd = re.sub(r"[^a-zA-Z0-9]", "", subd)[:8]  # minimal security precaution
+    subd = sanitize_subd(subd)  # unverified; 'bbbased.lua' does not contain any secrets
     expand_braces = (
         lambda s: s.replace('{api_url}', conf.base_url() + jsonrpc_route)
         .replace('{subd}', subd)
         .replace('{ott_filename}', db.ott_filename(subd))
+        .replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
     )
     return get_file(
         request,
@@ -87,9 +92,11 @@ def get_adopt5s_script(request: Request, subd: str) -> PlainTextResponse:
 
 @router.post(log_err_route)
 async def log_error(subd: str, request: Request) -> Response:
-    body = await request.body()
-    body_text = body.decode("utf-8", errors="replace")
-    logger.error(f"base {subd} {body_text}")
+    subd = sanitize_subd(subd)
+    body_unsafe = await request.body()
+    body_text = body_unsafe[:900].decode("utf-8", errors="replace")
+    disp = ''.join(c if c.isprintable() and c not in "\r\n\t" else repr(c)[1:-1] for c in body_text)
+    logger.warning(f"base {subd} {disp}")  # client errors are a warning in server log
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -122,39 +129,31 @@ def adopt6c(
     auth_pubkey: str = Body(...),
     wg_pubkey: str = Body(...),
 ) -> BaseResult:
-    # authenticate
-    try:
-        lsid, aid, kind = db.get_account_by_token(token, db.LoginSessionKind.DEVICE_OTT)
-    except db.CredentialsError as e:
-        logger.warning(f"B55311 base {subd} adopt6c error: {e}")
-        raise BaseError(str(e))
-    # verify subd
-    try:
-        device = db.get_device_by_ott_id(lsid)
-    except db.Berror as e:
-        logger.warning(f"B19344 cannot find device for OTT {lsid}: {e}")
-        raise BaseError(str(e))
-    if device.subd != subd:
-        logger.warning(f"B88940 subd mismatch for OTT {lsid} ({device.subd} != {subd})")
-        raise BaseError(f"B01839 invalid subd {subd}")
-    # validate auth_pubkey before storing it
-    try:
-        public_key = serialization.load_pem_public_key(auth_pubkey.encode("utf-8"))
-    except Exception as e:
-        raise BaseError(f"B35036 invalid auth_pubkey ({e})")
-    if not isinstance(public_key, rsa.RSAPublicKey):
-        raise BaseError(f"B42858 auth_pubkey is {type(public_key)}; need rsa.RSAPublicKey")
-    if public_key.key_size < 2048:
-        raise BaseError("B99756 auth_pubkey too small")
-    # store public keys
-    try:
-        db.store_adopt6c_pubkeys(device.id, auth_pubkey, wg_pubkey)
-    except db.Berror as e:
-        logger.warning(f"B44512 base {subd} adopt6c error: {e}")
-        raise BaseError(str(e))
     ip = request.client.host if request.client else '(unknown)'
-    logger.info(f"B70924 base {subd} completed adopt6c from {ip}")
-    return BaseResult(subd=subd, status='ok')
+    try:
+        # authenticate
+        lsid, aid, kind = db.get_account_by_token(token, db.LoginSessionKind.DEVICE_OTT)
+        # verify subd
+        device = db.get_device_by_ott_id(lsid)
+        if device.subd != subd:
+            raise Berror(f"B88940 subd mismatch for OTT {lsid} ({device.subd} != {subd})")
+        # validate auth_pubkey before storing it
+        try:
+            public_key = serialization.load_pem_public_key(auth_pubkey.encode("utf-8"))
+        except Exception as e:
+            raise Berror(f"B35036 invalid auth_pubkey ({e})")
+        if not isinstance(public_key, rsa.RSAPublicKey):
+            raise Berror(f"B42858 auth_pubkey is {type(public_key)}; need rsa.RSAPublicKey")
+        if public_key.key_size < 2048:
+            raise Berror("B99756 auth_pubkey too small")
+        # store public keys
+        db.store_adopt6c_pubkeys(device.id, auth_pubkey, wg_pubkey)
+    except (Berror, db.CredentialsError) as e:
+        logger.warning(f"{e} (base {subd} at {ip})")
+        raise BaseError("B87908 invalid adopt6c request")  # for security, give generic API response
+    else:
+        logger.info(f"B70924 base {subd} completed adopt6c from {ip}")
+    return BaseResult(subd=subd, status="ok")
 
 
 ###
@@ -168,7 +167,7 @@ def json_string_unescape(value: str) -> str:
     try:
         return json.loads('"' + value + '"')
     except Exception as e:
-        raise BaseError(f"B23026 invalid quoted string ({e})")
+        raise Berror(f"B23026 invalid quoted string ({e})")
 
 
 def parse_signature_input(signature_input: str) -> tuple[int, str, str, str]:
@@ -178,40 +177,40 @@ def parse_signature_input(signature_input: str) -> tuple[int, str, str, str]:
         else:
             match = re.search(rf'(?:^|;){name}=(\d+)(?:;|$)', params)
         if not match:
-            raise BaseError(f"B78395 missing {name}")
+            raise Berror(f"B78395 missing {name}")
         return match.group(1)
 
     prefix = "sig1=("
     if not signature_input.startswith(prefix):
-        raise BaseError("B64394 invalid Signature-Input prefix")
+        raise Berror("B64394 invalid Signature-Input prefix")
     end = signature_input.find(")")
     if end == -1:
-        raise BaseError("B13246 invalid Signature-Input format")
+        raise Berror("B13246 invalid Signature-Input format")
     expected = '"@method" "@authority" "@target-uri" "content-type" "content-digest" "date"'
     if expected != signature_input[len(prefix) : end]:
-        raise BaseError("B78346 unexpected covered components")
+        raise Berror("B78346 unexpected covered components")
     params = signature_input[end + 1 :]
     created = int(get_param(params, 'created'))
     keyid = json_string_unescape(get_param(params, 'keyid', quoted=True))
     nonce = json_string_unescape(get_param(params, 'nonce', quoted=True))
     alg = json_string_unescape(get_param(params, 'alg', quoted=True))
     if len(keyid) > 256:
-        raise BaseError("B22403 keyid too long")
+        raise Berror("B22403 keyid too long")
     if not nonce or len(nonce) > 128:
-        raise BaseError("B22402 invalid nonce")
+        raise Berror("B22402 invalid nonce")
     if alg not in ('rsa-pss-sha512', 'rsa-pss-sha256'):
-        raise BaseError(f"B85199 unsupported alg {alg}")
+        raise Berror(f"B85199 unsupported alg {alg}")
     return created, keyid, nonce, alg
 
 
 def parse_signature_header(signature_header: str) -> bytes:
     match = re.fullmatch(r"sig1=:([A-Za-z0-9+/=]+):", signature_header.strip())
     if not match:
-        raise BaseError("B33176 invalid Signature header")
+        raise Berror("B33176 invalid Signature header")
     try:
         return base64.b64decode(match.group(1), validate=True)
     except Exception as e:
-        raise BaseError(f"B56110 invalid signature encoding ({e})")
+        raise Berror(f"B56110 invalid signature encoding ({e})")
 
 
 def build_content_digest_header(body: bytes) -> str:
@@ -273,13 +272,13 @@ def verify_signature_bytes(
         hash_alg = hashes.SHA256()
         salt_length = 32
     elif alg == "rsa-pss-sha256":
-        raise BaseError("B89126 rsa-pss-sha256 fallback is disabled")
+        raise Berror("B89126 rsa-pss-sha256 fallback is disabled")
     else:
-        raise BaseError(f"B17925 unsupported alg {alg}")
+        raise Berror(f"B17925 unsupported alg {alg}")
     try:
         public_key = serialization.load_pem_public_key(auth_pubkey_pem.encode("utf-8"))
     except Exception as e:
-        raise BaseError(f"B40573 invalid public key ({e})")
+        raise Berror(f"B40573 invalid public key ({e})")
     try:
         public_key.verify(
             signature,
@@ -291,9 +290,9 @@ def verify_signature_bytes(
             hash_alg,
         )
     except InvalidSignature:
-        raise BaseError("B54338 signature verification failed")
+        raise Berror("B54338 signature verification failed")
     except Exception as e:
-        raise BaseError(f"B53361 signature verification error ({e})")
+        raise Berror(f"B53361 signature verification error ({e})")
 
 
 async def verify_signed_ping_request(
@@ -308,33 +307,33 @@ async def verify_signed_ping_request(
     try:
         payload = json.loads(body)
     except Exception as e:
-        raise BaseError(f"B75948 invalid json body ({e})")
+        raise Berror(f"B75948 invalid json body ({e})")
     expected_host = re.sub(r"^https?://", "", conf.base_url()).rstrip("/")
     actual_host = request.headers.get("host", "")
     if actual_host != expected_host:
-        raise BaseError(f"B70431 {actual_host} != {expected_host}")
+        raise Berror(f"B70431 {actual_host} != {expected_host}")
     content_type = request.headers.get("content-type", "")
     if content_type.split(';', 1)[0].strip().lower() != "application/json":
-        raise BaseError(f"B55664 unexpected Content-Type {content_type}")
+        raise Berror(f"B55664 unexpected Content-Type {content_type}")
     date_header = request.headers.get("date")
     content_digest_header = request.headers.get("content-digest")
     signature_input_header = request.headers.get("signature-input")
     signature_header = request.headers.get("signature")
     if not date_header:
-        raise BaseError("B70748 missing Date header")
+        raise Berror("B70748 missing Date header")
     if not content_digest_header:
-        raise BaseError("B29725 missing Content-Digest header")
+        raise Berror("B29725 missing Content-Digest header")
     if not signature_input_header:
-        raise BaseError("B45919 missing Signature-Input header")
+        raise Berror("B45919 missing Signature-Input header")
     if not signature_header:
-        raise BaseError("B59684 missing Signature header")
+        raise Berror("B59684 missing Signature header")
     expected_content_digest = build_content_digest_header(body)
     if content_digest_header != expected_content_digest:
-        raise BaseError("B40097 Content-Digest mismatch")
+        raise Berror("B40097 Content-Digest mismatch")
     created, keyid, nonce, alg = parse_signature_input(signature_input_header)
     now = int(time.time())
     if abs(now - created) > max_clock_skew_seconds:
-        raise BaseError("B87034 created is outside acceptable clock skew")
+        raise Berror("B87034 created is outside acceptable clock skew")
     signature = parse_signature_header(signature_header)
     target_uri = conf.base_url() + jsonrpc_route
     signature_base = build_signature_base(
@@ -348,16 +347,19 @@ async def verify_signed_ping_request(
         content_digest_header=content_digest_header,
         date_header=date_header,
     )
-    logger.debug(f'{signature_base=}')
-    verify_signature_bytes(
-        signature=signature,
-        signature_base=signature_base,
-        auth_pubkey_pem=auth_pubkey_pem,
-        alg=alg,
-        allow_sha256_fallback=allow_sha256_fallback,
-    )
+    try:
+        verify_signature_bytes(
+            signature=signature,
+            signature_base=signature_base,
+            auth_pubkey_pem=auth_pubkey_pem,
+            alg=alg,
+            allow_sha256_fallback=allow_sha256_fallback,
+        )
+    except Exception:
+        logger.warning(f'{signature_base=}')
+        raise
     if not consume_nonce(nonce, now, nonce_ttl_seconds):  # consume nonce *after* sig verification
-        raise BaseError("B56057 replayed nonce")
+        raise Berror("B56057 replayed nonce")
     return payload
 
 
@@ -369,12 +371,9 @@ async def ping(
     uptime: str = Body(...),
     request_id: str = Body(...),
 ) -> BaseResult:
+    ip = request.client.host if request.client else '(unknown)'
     try:
         device = db.get_device_by_subd(subd)
-    except db.Berror as e:
-        logger.warning(f"B81001 ping unknown subd {subd}: {e}")
-        raise BaseError(f"B81002 invalid subd {subd}")
-    try:
         payload = await verify_signed_ping_request(
             request=request,
             auth_pubkey_pem=device.auth_pubkey,
@@ -382,15 +381,12 @@ async def ping(
             max_clock_skew_seconds=300,
             nonce_ttl_seconds=600,
         )
-    except BaseError as e:
-        logger.warning(f"B81003 ping verification failed for {subd}: {e}")
-        raise
-    try:
         params = payload["params"]
-    except Exception:
-        logger.warning(f"B81004 ping payload missing params for {subd}")
-        raise BaseError("B81005 invalid payload")
-    if params.get("subd") != subd:
-        logger.warning(f"B81006 ping signed subd mismatch for {subd}")
-        raise BaseError("B81007 subd mismatch")
+        if params.get("subd") != subd:
+            raise Berror(f"B33465 subd mismatch: {params.get("subd")} != {subd}")
+    except (Berror, db.CredentialsError) as e:
+        logger.warning(f"{e} (base {subd} at {ip})")
+        raise BaseError("B23086 invalid ping request")  # for security, give generic API response
+    else:
+        logger.info(f"B37237 base {subd} at {ip} ping {uptime.lstrip(' ')}")
     return BaseResult(subd=subd, status="ok")
