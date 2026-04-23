@@ -7,7 +7,7 @@
 local api_url = '{api_url}'
 local subd = '{subd}'
 local token_path = '/tmp/{ott_filename}'
-local log_err_route='{log_err_route}'
+local log_err_route = '{log_err_route}'
 
 --
 -- logging
@@ -457,6 +457,64 @@ local function install_init_service(lua_path, init_path)
     return false
 end
 
+local packager_cmds = nil
+local spec = {
+    {'apt-get', {update = {'apt-get', 'update'}, install = {'apt-get', 'install', '-y'}}},
+    {'apk', {update = {'apk', 'update'}, install = {'apk', 'add'}}},
+    {'opkg', {update = {'opkg', 'update'}, install = {'opkg', 'install'}}},
+    {'dnf', {update = {'dnf', 'makecache'}, install = {'dnf', 'install', '-y'}}},
+    {'yum', {update = {'yum', 'makecache'}, install = {'yum', 'install', '-y'}}},
+    {'pacman', {update = {'pacman', '-Sy', '--noconfirm'}, install = {'pacman', '-S', '--noconfirm'}}},
+    {'zypper', {update = {'zypper', '--non-interactive', 'refresh'}, install = {'zypper', '--non-interactive', 'install'}}},
+}
+local unpack_fn = table.unpack or unpack
+
+local function packager(action, arg)
+    if not packager_cmds then  -- find first valid package manager and cache it for future calls
+        for i = 1, #spec do
+            local candidate = spec[i]
+            if run_command('command -v ' .. candidate[1], true, true) then
+                packager_cmds = candidate[2]
+                break
+            end
+        end
+    end
+    if not packager_cmds then
+        log_error("B91049 cannot find package manager")
+        return nil
+    end
+    local cmd = packager_cmds[action]
+    if not cmd then return nil end
+    local parts = {unpack_fn(cmd)}
+    if action == 'install' and arg then
+        parts[#parts + 1] = arg
+    end
+    return run_command(table.concat(parts, ' '), true, true)
+end
+
+local function install_one_of(package_list, command)
+    local retry = 0
+    while retry < 4 do
+        if run_command('command -v ' .. command, true, true) then return true end
+        if retry >= 2 then  -- wait before retries 2, 3
+            run_command("sleep 75")
+        end
+        if retry >= 1 then  -- update before retries 1, 2, 3
+            packager('update')
+        end
+        for pkg in package_list:gmatch("%S+") do
+            packager('install', pkg)
+            if run_command('command -v ' .. command, true, true) then
+                log_info("installed package " .. pkg .. " for " .. command)
+                return true
+            end
+        end
+        retry = retry + 1
+    end
+    log_error("B80574 cannot install package for " .. command)
+    return nil
+end
+
 --
 -- process management
 --
@@ -790,7 +848,7 @@ local function build_ping_request()
     local uptime = run_command('uptime', true)
     local request_id = run_command('openssl rand -hex 16', true)
     if not utc_time or not uptime or not request_id then
-        log_warning('cannot build ping request because one or more inputs were unavailable')
+        log_debug('cannot build ping request because one or more inputs were unavailable')
         return nil
     end
     local request_body = '{'
@@ -1022,6 +1080,14 @@ end
 if not ensure_root_and_single_instance() then
     cleanup_and_exit("B41990 invalid instance; exiting")
 end
+
+--
+-- install prerequisites
+--
+
+install_one_of('curl', 'curl')
+install_one_of('openssl openssl-util', 'openssl')
+install_one_of('wireguard-tools wg-installer-server', 'wg')
 
 --
 -- collect authentication details
