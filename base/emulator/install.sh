@@ -18,10 +18,12 @@ DLPREFIX="https://downloads.openwrt.org/releases/24.10.0/targets/malta/be/openwr
 wget $DLPREFIX-vmlinux.elf --output-document=vmlinux.elf
 wget $DLPREFIX-rootfs-squashfs.img.gz --output-document=rootfs-squashfs.img.gz
 gunzip rootfs-squashfs.img.gz
-# output of `df -h /overlay` on different routers (see also https://openwrt.org/toh/gl.inet/gl-ar750):
+# output of `df -h /overlay` on various routers (see also https://openwrt.org/toh/gl.inet/gl-ar750):
 #     Filesystem                Size      Used Available Use% Mounted on
 #     /dev/mtdblock5            5.0M      1.1M      3.9M  21% /overlay  # GL-AR300M
 #     /dev/loop0              610.1M     58.2M    551.9M  10% /overlay  # qemu-img resize ... +512M
+#     /dev/ubi0_2             162.8M      2.2M    155.9M   1% /overlay  # GL-MT3000
+#     /dev/ubi0_1              92.8M      5.3M     82.8M   6% /overlay  # GL-SFT1200
 qemu-img resize rootfs-squashfs.img -f raw +512M
 
 
