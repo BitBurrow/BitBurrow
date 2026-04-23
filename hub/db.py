@@ -1047,8 +1047,8 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
                 f'T=/tmp/{ott_filename(device.subd)}\n'
                 + f'echo {token[0:22]}>$T\n'
                 + f'echo {token[22:]}>>$T\n'
-                + f'D={conf.base_url()}\n'
-                + f'curl $D{api_path.format(subd=device.subd)} |sh\n'
+                + f'U={conf.base_url()}{api_path.format(subd=device.subd)}\n'
+                + f'(curl $U || wget -O- $U) |sh\n'
                 + f'\n'
             )
             cache_ttl = TimeDelta(
