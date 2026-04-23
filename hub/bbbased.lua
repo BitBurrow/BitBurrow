@@ -727,12 +727,13 @@ local function ensure_wg_keys()
     return true
 end
 
-local function ensure_pubkeys_are_uploaded()
+local function do_adopt6c()
     -- return true on success; retry forever on communication failure; return nil on permanent failure
     local auth_mtime = file_mtime(auth_privkey_path)
     local wg_mtime = file_mtime(wg_privkey_path)
     local uploaded_mtime = file_mtime(pubkeys_uploaded_path)
-    if uploaded_mtime > auth_mtime and uploaded_mtime > wg_mtime then
+    if uploaded_mtime >= auth_mtime and uploaded_mtime >= wg_mtime then
+        -- above, use '>=' and not '>' to avoid race condition and disabled client
         log_info("public keys already marked as uploaded")
         return true  -- these public keys were previously uploaded
     end
@@ -1102,7 +1103,7 @@ end
 -- register with hub
 --
 
-if not ensure_pubkeys_are_uploaded() then
+if not do_adopt6c() then
     cleanup_and_exit("B36017 cannot continue with uploading keys")
 end
 
