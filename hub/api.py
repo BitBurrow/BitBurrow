@@ -96,7 +96,10 @@ async def log_error(subd: str, request: Request) -> Response:
     body_unsafe = await request.body()
     body_text = body_unsafe[:900].decode("utf-8", errors="replace")
     disp = ''.join(c if c.isprintable() and c not in "\r\n\t" else repr(c)[1:-1] for c in body_text)
-    logger.warning(f"base {subd} {disp}")  # client errors are a warning in server log
+    if re.match(r"^B[0-9]{5} ", disp):  # front the Berror code
+        logger.warning(f"{disp[0:7]}base {subd} {disp[7:]}")  # client errors are warnings here
+    else:
+        logger.warning(f"base {subd} {disp}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
