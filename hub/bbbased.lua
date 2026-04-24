@@ -1,7 +1,7 @@
 #!/usr/bin/lua
 
 --
--- hard-coded at time of downloaded in get_adopt5s_script()
+-- hard-coded at time of download in get_adopt5s_script()
 --
 
 local api_url = '{api_url}'
@@ -31,8 +31,8 @@ local function displayable(str, max_len)
     if not max_len then
         max_len = 20
     end
-    local elipse = (#str > max_len) and '...' or ''
-    return str:sub(1, max_len):gsub('\n', '\\n'):gsub('\t', '\\t') .. elipse
+    local ellipsis = (#str > max_len) and '...' or ''
+    return str:sub(1, max_len):gsub('\n', '\\n'):gsub('\t', '\\t') .. ellipsis
 end
 
 local function fail_early(message)
@@ -47,7 +47,7 @@ local function open_log()
         fail_early("B62762 cannot create: " .. log_path)
     end
     handle:close()
-    os.execute('chmod 0600 ' .. log_path)  -- chmod() is undefined; log_path must not have spaces
+    os.execute('chmod 0600 ' .. shell_quote(log_path))  -- chmod() is not yet defined
     log_handle = io.open(log_path, 'a')
     if not log_handle then
         fail_early("B71356 cannot open for append: " .. log_path)
@@ -73,7 +73,7 @@ local function log(message, level)
             f:write(message)
             f:close()
             os.execute(
-                'curl -f --max-time 60 -X POST'
+                'curl -f --max-time 10 -X POST'
                 .. ' -H "Content-Type: text/plain"'
                 .. ' --data-binary @' .. shell_quote(tmpname)
                 .. ' ' .. shell_quote(log_err_route)
@@ -110,7 +110,6 @@ local function log_error(message)
 end
 
 open_log()
-log_warning("start BitBurrow base daemon (log level " .. logging_level .. ")")
 
 --
 -- paths
@@ -176,11 +175,11 @@ end
 local function make_temp_path(in_dir, failure_ok)
     -- create a temp file and return its path, or nil on failure; all args optional
     if in_dir == nil then
-        in_dir = '/tmp'
+        in_dir = bbsubd_tmp_dir
     else
-        in_dir = trim_trailing_slashes(in_dir)
+        in_dir = trim_trailing_slashes(in_dir) .. '/'
     end
-    local cmd = 'mktemp ' .. shell_quote(in_dir .. '/' .. bbsubd .. '.XXXXXX')
+    local cmd = 'mktemp ' .. shell_quote(in_dir .. bbsubd .. '.XXXXXX')
     local path = run_command(cmd, true, failure_ok)
     -- alternative `os.tmpname()` is less flexible, possibly less reliable
     if not path or path == '' then
@@ -194,11 +193,15 @@ local function make_temp_path(in_dir, failure_ok)
 end
 
 local function remove_path(path)
-    -- remove the file or empty directory, ignoring all errors
-    if path and path ~= '' then
-        log_debug("removing path: " .. path)
-        os.remove(path)
+    -- remove the file or empty directory; return true iff success; fails on non-empty dir
+    if not path or path == '' then return nil end
+    local ok, err = os.remove(path)
+    if ok then
+        log_debug("successfully removed " .. path)
+        return true
     end
+    log_debug("could not remove " .. path .. " (" .. tostring(err) .. ")")
+    return nil
 end
 
 local function chmod(path, mode)
@@ -231,25 +234,25 @@ local function dirname(path)
     return dir
 end
 
+local function basename(path)
+    return path:match("^.*/([^/]*)$") or path
+end
+
+local function is_directory(path)
+    return run_command("test -d " .. shell_quote(path), true, true) and true or nil
+end
+
 local function is_readable(path)
-    -- return true iff path is readable
-    if run_command('test -r ' .. shell_quote(path), true, true) then
-        return true
-    end
-    return nil
+    -- return true iff path is readable, nil otherwise
+    return run_command('test -r ' .. shell_quote(path), true, true) and true or nil
 end
 
 local function is_writable(path)
     -- return true iff path (file or dir) is writable
-    if run_command('test -w ' .. shell_quote(path), true, true) then
-        return true
-    end
-    return nil
+    return run_command('test -w ' .. shell_quote(path), true, true) and true or nil
     -- -- alternative method if path is a directory:
     -- local temp_path = make_temp_path(path, true)
-    -- if not temp_path then
-    --     return nil
-    -- end
+    -- if not temp_path then return nil end
     -- remove_path(temp_path)
     -- return true
 end
@@ -271,7 +274,7 @@ end
 --
 
 local function read_text_file(path, empty_if_unreadable)
-    -- return file contents, or nil on failure
+    -- return file contents after stripping trailing whitespace, or nil on failure
     local handle = io.open(path, 'r')
     if not handle then
         if empty_if_unreadable then
@@ -336,6 +339,11 @@ local function file_copy(src_path, dst_path, mode)
         return nil
     end
     local dst, err = io.open(tmp_path, 'wb')
+    if not dst then
+        log_error("B73772 cannot open " .. tmp_path .. " (" .. tostring(err) .. ")")
+        src:close()
+        return nil
+    end
     while true do
         local chunk = src:read(8192)
         if not chunk then break end
@@ -350,7 +358,7 @@ local function file_copy(src_path, dst_path, mode)
     end
     src:close()
     dst:close()
-    if not run_command(string.format('chmod %s %q', mode, tmp_path)) then
+    if not run_command('chmod ' .. mode .. ' ' .. shell_quote(tmp_path)) then
         remove_path(tmp_path)
         return nil
     end
@@ -505,7 +513,7 @@ end
 -- keys management
 --
 
-math.randomseed(os.time() + tonumber(get_pid()))
+math.randomseed(os.time() + tonumber(get_pid() or '0'))
 local config_dir = '/etc/' .. bbsubd .. '/'
 local auth_privkey_path = config_dir .. 'client_rsapss.pem'
 local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
@@ -532,7 +540,6 @@ local function ensure_auth_keys()
         return nil
     end
     chmod(auth_privkey_path, '0600')
-    log_debug("generated new auth_privkey: " .. auth_privkey_path)
     output = run_command(
         'openssl pkey -in '
             .. shell_quote(auth_privkey_path)
@@ -545,8 +552,6 @@ local function ensure_auth_keys()
         remove_path(auth_pubkey_path)
         return nil
     end
-    log_error("B04865 created " .. auth_privkey_path)
-    log_info("generated new auth_pubkey:  " .. auth_pubkey_path)
     return true
 end
 
@@ -570,8 +575,6 @@ local function ensure_wg_keys()
         return nil
     end
     chmod(wg_privkey_path, '0600')
-    log_info("generated new wg_privkey: " .. wg_privkey_path)
-    log_info("generated new wg_pubkey:  " .. wg_pubkey_path)
     return true
 end
 
@@ -935,7 +938,7 @@ local function find_install_dir()
         end
     end
     for _, path in ipairs(try2_paths) do
-        run_command('mkdir -p ' .. path, true, true)
+        run_command('mkdir -p ' .. shell_quote(path), true, true)
         if is_writable(path) then
             return path
         end
@@ -1086,6 +1089,7 @@ end
 -- install prerequisites
 --
 
+log_warning("B20392 start BitBurrow base daemon (log level " .. logging_level .. ")")
 install_one_of('curl', 'curl')
 install_one_of('openssl openssl-util', 'openssl')
 install_one_of('wireguard-tools wg-installer-server', 'wg')
