@@ -218,6 +218,47 @@ local function chmod(path, mode)
     return nil
 end
 
+local function get_mode(path)
+    -- return file mode like '0700', or nil on failure
+    local line = run_command('ls -ld ' .. shell_quote(path), false, true)
+    if not line then return nil end
+    local perms = line:match('^(%S+)')
+    if not perms or #perms < 10 then return nil end
+    local mode = 0 
+    local spec = { 
+        {2, 'r', 256}, {3, 'w', 128}, {4, 'x', 64}, 
+        {5, 'r', 32}, {6, 'w', 16}, {7, 'x', 8}, 
+        {8, 'r', 4}, {9, 'w', 2}, {10, 'x', 1}, 
+    } 
+    for i = 1, #spec do 
+        local c = perms:sub(spec[i][1], spec[i][1]) 
+        if c == spec[i][2] then 
+            mode = mode + spec[i][3] 
+        end 
+    end 
+    local executable_special = { 
+        {4, 's', 64}, {7, 's', 8}, {10, 't', 1}, 
+    } 
+    for i = 1, #executable_special do 
+        local c = perms:sub(executable_special[i][1], executable_special[i][1]) 
+        if c == executable_special[i][2] then 
+            mode = mode + executable_special[i][3] 
+        end 
+    end 
+    local special = { 
+        {4, 's', 2048}, {4, 'S', 2048}, 
+        {7, 's', 1024}, {7, 'S', 1024}, 
+        {10, 't', 512}, {10, 'T', 512}, 
+    } 
+    for i = 1, #special do 
+        local c = perms:sub(special[i][1], special[i][1]) 
+        if c == special[i][2] then 
+            mode = mode + special[i][3] 
+        end 
+    end 
+    return string.format('%04o', mode) 
+end 
+
 local function mkdir(path, mode, err_if_exists)
     -- return true iff successful; mode and err_if_exists are optional
     local command = 'mkdir -p '  -- by default, okay if dir already exists
@@ -281,8 +322,8 @@ end
 -- file i/o
 --
 
-local function read_text_file(path, empty_if_unreadable)
-    -- return file contents after stripping trailing whitespace, or nil on failure
+local function read_text_file(path, empty_if_unreadable, preserve_whitespace)
+    -- return file contents, or nil on failure
     local handle = io.open(path, 'r')
     if not handle then
         if empty_if_unreadable then
@@ -302,7 +343,9 @@ local function read_text_file(path, empty_if_unreadable)
         log_error("B55281 cannot close " .. path .. " (" .. tostring(close_err) .. ")")
         return nil
     end
-    content = content:gsub('%s+$', '')
+    if not preserve_whitespace then
+        content = content:gsub('%s+$', '')  -- strip trailing whitespace
+    end
     log_debug("read " .. tostring(#content) .. " bytes from: " .. path)
     log_debug("--data: " .. displayable(content, 20))  -- 20 to not show entire private key
     return content
