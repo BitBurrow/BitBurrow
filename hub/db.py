@@ -401,6 +401,7 @@ class Device(SQLModel, table=True):
         * adopt2* manual via router web ui; see ui/setup-adopt.yaml
         * adopt5a OTT created
         * adopt5c shell code copied by user
+        * adopt5k OTT written to /tmp
         * adopt5l "adopt5p.sh" downloaded
         * adopt5p "adopt5p.sh" launched
         * adopt5s "bbbased.lua" downloaded

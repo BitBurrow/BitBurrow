@@ -998,8 +998,8 @@ local function install_init_service(lua_path, init_path)
         log_debug("successfully reinstalled; exiting")
     end
     -- new service should run now; don't use this here: dofile(lua_path)
-    remove_path(running_path)
-    remove_path(dirname(running_path))  -- temp directory should be empty; does nothing if not
+    remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
+    remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
     return false
 end
 
@@ -1104,8 +1104,10 @@ end
 --
 
 if not do_adopt6c() then
+    remove_path(token_path)  -- gets recreated in adopt5k
     cleanup_and_exit("B36017 cannot continue with uploading keys")
 end
+remove_path(token_path)
 
 --
 -- loop forever
