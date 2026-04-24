@@ -364,158 +364,6 @@ local function file_copy(src_path, dst_path, mode)
 end
 
 --
--- installation
---
-
-local function find_install_dir()
-    local home = os.getenv('HOME') or ''
-    local try1_paths = {
-        '/usr/local/sbin/',
-        '/usr/sbin/',
-        '/sbin/',
-        '/usr/local/bin/',
-        '/usr/bin/',
-        '/bin/',
-        home .. '/.local/bin/',
-        home .. '/bin/',
-    }
-    local try2_paths = {
-        home .. '/.local/bin/',
-        home .. '/bin/',
-    }
-    for _, path in ipairs(try1_paths) do
-        if is_writable(path) then
-            return path
-        end
-    end
-    for _, path in ipairs(try2_paths) do
-        run_command('mkdir -p ' .. path, true, true)
-        if is_writable(path) then
-            return path
-        end
-    end
-    log_error("B95830 cannot find_install_dir(); home is " .. home)
-    return ''
-end
-
-local function install_init_service(lua_path, init_path)
-    -- return true iff already installed and running as a service
-    -- return nil on failure
-    -- return false after successful install or reinstall (running under /tmp)
-    local running_path = arg and arg[0] or ''
-    if running_path == '' then
-        log_error("B72200 cannot find running_path")
-        return nil
-    end
-    if running_path == '' or running_path:sub(1, 5) ~= '/tmp/' then
-        log_debug("already installed (running as " .. running_path .. ")")
-        return true
-    end
-    local temp_path = make_temp_path()
-    local init_text = table.concat({
-        '#!/bin/sh /etc/rc.common',
-        '',
-        'START=95',
-        'STOP=10',
-        'USE_PROCD=1',
-        '',
-        'start_service() {',
-        '    procd_open_instance',
-        '    procd_set_param command /usr/bin/lua ' .. lua_path,
-        '    procd_set_param respawn',
-        '    procd_set_param stdout 1', -- 1 means make output viewable via `logread`
-        '    procd_set_param stderr 1',
-        '    procd_close_instance',
-        '}',
-        '',
-    }, '\n')
-    if not write_text_file(temp_path, init_text) then
-        remove_path(temp_path)
-        return nil
-    end
-    if not file_copy(temp_path, init_path, '0755') then
-        remove_path(temp_path)
-        return nil
-    end
-    remove_path(temp_path)
-    if not file_copy(running_path, lua_path, '0644') then return nil end
-    if not run_command(shell_quote(init_path) .. ' enabled', true, true) then
-        if not run_command(shell_quote(init_path) .. ' enable') then
-            return nil
-        end
-    end
-    if not run_command(shell_quote(init_path) .. ' running', true, true) then
-        if not run_command(shell_quote(init_path) .. ' start') then return nil end
-        log_debug("successfully installed; exiting")
-    else
-        if not run_command(shell_quote(init_path) .. ' restart') then return nil end
-        log_debug("successfully reinstalled; exiting")
-    end
-    -- new service should run now; don't use this here: dofile(lua_path)
-    remove_path(running_path)
-    remove_path(dirname(running_path))  -- temp directory should be empty; does nothing if not
-    return false
-end
-
-local packager_cmds = nil
-local spec = {
-    {'apt-get', {update = {'apt-get', 'update'}, install = {'apt-get', 'install', '-y'}}},
-    {'apk', {update = {'apk', 'update'}, install = {'apk', 'add'}}},
-    {'opkg', {update = {'opkg', 'update'}, install = {'opkg', 'install'}}},
-    {'dnf', {update = {'dnf', 'makecache'}, install = {'dnf', 'install', '-y'}}},
-    {'yum', {update = {'yum', 'makecache'}, install = {'yum', 'install', '-y'}}},
-    {'pacman', {update = {'pacman', '-Sy', '--noconfirm'}, install = {'pacman', '-S', '--noconfirm'}}},
-    {'zypper', {update = {'zypper', '--non-interactive', 'refresh'}, install = {'zypper', '--non-interactive', 'install'}}},
-}
-local unpack_fn = table.unpack or unpack
-
-local function packager(action, arg)
-    if not packager_cmds then  -- find first valid package manager and cache it for future calls
-        for i = 1, #spec do
-            local candidate = spec[i]
-            if run_command('command -v ' .. candidate[1], true, true) then
-                packager_cmds = candidate[2]
-                break
-            end
-        end
-    end
-    if not packager_cmds then
-        log_error("B91049 cannot find package manager")
-        return nil
-    end
-    local cmd = packager_cmds[action]
-    if not cmd then return nil end
-    local parts = {unpack_fn(cmd)}
-    if action == 'install' and arg then
-        parts[#parts + 1] = arg
-    end
-    return run_command(table.concat(parts, ' '), true, true)
-end
-
-local function install_one_of(package_list, command)
-    local retry = 0
-    while retry < 4 do
-        if run_command('command -v ' .. command, true, true) then return true end
-        if retry >= 2 then  -- wait before retries 2, 3
-            run_command("sleep 75")
-        end
-        if retry >= 1 then  -- update before retries 1, 2, 3
-            packager('update')
-        end
-        for pkg in package_list:gmatch("%S+") do
-            packager('install', pkg)
-            if run_command('command -v ' .. command, true, true) then
-                log_info("installed package " .. pkg .. " for " .. command)
-                return true
-            end
-        end
-        retry = retry + 1
-    end
-    log_error("B80574 cannot install package for " .. command)
-    return nil
-end
-
---
 -- process management
 --
 
@@ -1059,6 +907,158 @@ local function do_ping()
     remove_path(sig_bin_path)
     remove_path(response_path)
     return result
+end
+
+--
+-- installation
+--
+
+local function find_install_dir()
+    local home = os.getenv('HOME') or ''
+    local try1_paths = {
+        '/usr/local/sbin/',
+        '/usr/sbin/',
+        '/sbin/',
+        '/usr/local/bin/',
+        '/usr/bin/',
+        '/bin/',
+        home .. '/.local/bin/',
+        home .. '/bin/',
+    }
+    local try2_paths = {
+        home .. '/.local/bin/',
+        home .. '/bin/',
+    }
+    for _, path in ipairs(try1_paths) do
+        if is_writable(path) then
+            return path
+        end
+    end
+    for _, path in ipairs(try2_paths) do
+        run_command('mkdir -p ' .. path, true, true)
+        if is_writable(path) then
+            return path
+        end
+    end
+    log_error("B95830 cannot find_install_dir(); home is " .. home)
+    return ''
+end
+
+local function install_init_service(lua_path, init_path)
+    -- return true iff already installed and running as a service
+    -- return nil on failure
+    -- return false after successful install or reinstall (running under /tmp)
+    local running_path = arg and arg[0] or ''
+    if running_path == '' then
+        log_error("B72200 cannot find running_path")
+        return nil
+    end
+    if running_path == '' or running_path:sub(1, 5) ~= '/tmp/' then
+        log_debug("already installed (running as " .. running_path .. ")")
+        return true
+    end
+    local temp_path = make_temp_path()
+    local init_text = table.concat({
+        '#!/bin/sh /etc/rc.common',
+        '',
+        'START=95',
+        'STOP=10',
+        'USE_PROCD=1',
+        '',
+        'start_service() {',
+        '    procd_open_instance',
+        '    procd_set_param command /usr/bin/lua ' .. lua_path,
+        '    procd_set_param respawn',
+        '    procd_set_param stdout 1', -- 1 means make output viewable via `logread`
+        '    procd_set_param stderr 1',
+        '    procd_close_instance',
+        '}',
+        '',
+    }, '\n')
+    if not write_text_file(temp_path, init_text) then
+        remove_path(temp_path)
+        return nil
+    end
+    if not file_copy(temp_path, init_path, '0755') then
+        remove_path(temp_path)
+        return nil
+    end
+    remove_path(temp_path)
+    if not file_copy(running_path, lua_path, '0644') then return nil end
+    if not run_command(shell_quote(init_path) .. ' enabled', true, true) then
+        if not run_command(shell_quote(init_path) .. ' enable') then
+            return nil
+        end
+    end
+    if not run_command(shell_quote(init_path) .. ' running', true, true) then
+        if not run_command(shell_quote(init_path) .. ' start') then return nil end
+        log_debug("successfully installed; exiting")
+    else
+        if not run_command(shell_quote(init_path) .. ' restart') then return nil end
+        log_debug("successfully reinstalled; exiting")
+    end
+    -- new service should run now; don't use this here: dofile(lua_path)
+    remove_path(running_path)
+    remove_path(dirname(running_path))  -- temp directory should be empty; does nothing if not
+    return false
+end
+
+local packager_cmds = nil
+local spec = {
+    {'apt-get', {update = {'apt-get', 'update'}, install = {'apt-get', 'install', '-y'}}},
+    {'apk', {update = {'apk', 'update'}, install = {'apk', 'add'}}},
+    {'opkg', {update = {'opkg', 'update'}, install = {'opkg', 'install'}}},
+    {'dnf', {update = {'dnf', 'makecache'}, install = {'dnf', 'install', '-y'}}},
+    {'yum', {update = {'yum', 'makecache'}, install = {'yum', 'install', '-y'}}},
+    {'pacman', {update = {'pacman', '-Sy', '--noconfirm'}, install = {'pacman', '-S', '--noconfirm'}}},
+    {'zypper', {update = {'zypper', '--non-interactive', 'refresh'}, install = {'zypper', '--non-interactive', 'install'}}},
+}
+local unpack_fn = table.unpack or unpack
+
+local function packager(action, arg)
+    if not packager_cmds then  -- find first valid package manager and cache it for future calls
+        for i = 1, #spec do
+            local candidate = spec[i]
+            if run_command('command -v ' .. candidate[1], true, true) then
+                packager_cmds = candidate[2]
+                break
+            end
+        end
+    end
+    if not packager_cmds then
+        log_error("B91049 cannot find package manager")
+        return nil
+    end
+    local cmd = packager_cmds[action]
+    if not cmd then return nil end
+    local parts = {unpack_fn(cmd)}
+    if action == 'install' and arg then
+        parts[#parts + 1] = arg
+    end
+    return run_command(table.concat(parts, ' '), true, true)
+end
+
+local function install_one_of(package_list, command)
+    local retry = 0
+    while retry < 4 do
+        if run_command('command -v ' .. command, true, true) then return true end
+        if retry >= 2 then  -- wait before retries 2, 3
+            run_command("sleep 75")
+        end
+        if retry >= 1 then  -- update before retries 1, 2, 3
+            packager('update')
+        end
+        for pkg in package_list:gmatch("%S+") do
+            packager('install', pkg)
+            if run_command('command -v ' .. command, true, true) then
+                log_info("installed package " .. pkg .. " for " .. command)
+                return true
+            end
+        end
+        retry = retry + 1
+    end
+    log_error("B80574 cannot install package for " .. command)
+    return nil
 end
 
 --
