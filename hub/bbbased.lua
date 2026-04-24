@@ -14,7 +14,11 @@ local log_err_route = '{log_err_route}'
 --
 
 local bbsubd = 'bb' .. subd
-local log_path = nil  -- to enable, use: log_path = '/tmp/' .. bbsubd .. '.log'
+local bbsubd_tmp_dir = '/tmp/' .. bbsubd .. '/'  -- note all directories end in '/'
+local single_instance_lock_dir = bbsubd_tmp_dir .. 'lock/'
+local lock_dir_pid_path = single_instance_lock_dir .. 'pid'
+local lock_dir_stop_request_path = single_instance_lock_dir .. 'stop_request'
+local log_path = nil  -- to enable, use: log_path = bbsubd_tmp_dir .. 'log'
 local log_handle = nil
 local logging_level = 30  -- by default, show warnings, errors
 logging_level = 20  -- for dev, use level info
@@ -214,9 +218,13 @@ local function chmod(path, mode)
     return nil
 end
 
-local function mkdir(path, mode)
-    -- return true iff successful or already existed; mode is optional
-    if run_command('mkdir -p ' .. shell_quote(path), true, true) then
+local function mkdir(path, mode, err_if_exists)
+    -- return true iff successful; mode and err_if_exists are optional
+    local command = 'mkdir -p '  -- by default, okay if dir already exists
+    if err_if_exists then
+        command = 'mkdir '
+    end
+    if run_command(command .. shell_quote(path), true, true) then
         if mode then
             return chmod(path, mode)
         end
@@ -326,6 +334,44 @@ local function write_text_file(path, content, mode)
     return true
 end
 
+local function write_text_file_atomic(path, content, mode)  -- well-tested but ended up not using
+    -- return true iff successful; fail if path already exists
+    if is_directory(path) then
+        log_error("B73491 " .. path .. " is a directory")
+        return nil 
+    end
+    log_debug("writing atomically " .. tostring(#content) .. " bytes to: " .. path)
+    log_debug("--data: " .. displayable(content, 60))
+    local tmp_path = make_temp_path(dirname(path))
+    if not tmp_path then return nil end 
+    local ok = nil
+    repeat
+        local handle = io.open(tmp_path, 'w')
+        if not handle then
+            log_error("B90582 cannot write temp file: " .. tmp_path)
+            break 
+        end 
+        local write_ok, write_err = handle:write(content)
+        local close_ok, close_err = handle:close()
+        if not write_ok then
+            log_error("B07354 cannot write " .. tmp_path .. " (" .. tostring(write_err) .. ")")
+            break
+        end
+        if close_ok == nil then
+            log_error("B28145 cannot close " .. tmp_path .. " (" .. tostring(close_err) .. ")")
+            break
+        end
+        if mode and not chmod(tmp_path, mode) then break end
+        if not run_command('ln ' .. shell_quote(tmp_path) .. ' ' .. shell_quote(path), true, true) then
+            log_debug("B32426 cannot atomically create file, maybe it already exists: " .. path)
+            break
+        end
+        ok = true
+    until true
+    remove_path(tmp_path)
+    return ok
+end
+
 local function file_copy(src_path, dst_path, mode)
     -- return true iff successful
     local src, err = io.open(src_path, 'rb')
@@ -375,9 +421,6 @@ end
 -- process management
 --
 
-local lock_dir = '/tmp/' .. bbsubd .. '.lock/'
-local lock_pid_path = lock_dir .. 'pid'
-
 local function get_pid()
     -- returns a string of the current PID; use tonumber(get_pid()) if you need an int
     local f = io.open('/proc/self/stat', 'r')
@@ -401,54 +444,45 @@ local function get_uid()
     return nil
 end
 
-local function ensure_root_and_single_instance()
-    -- return true iff it's okay to continue, nil on error
-    log_debug("checking for root privileges")
-    if get_uid() ~= 0 then
-        log_error("B97106 must run as root")
-        return nil
-    end
-    log_debug("attempting to acquire lock directory " .. lock_dir)
-    local mkdir_ok = mkdir(lock_dir)
-    if not mkdir_ok then
-        log_info("lock directory already exists, checking for active owner")
-        local existing_pid = read_text_file(lock_pid_path, false)
-        if existing_pid and existing_pid:match('^%d+$') then
-            if run_command('kill -0 ' .. existing_pid, true, true) then
-                log_error("B49131 another instance is already running, pid: " .. existing_pid)
-                return nil
-            end
-            log_info("stale lock detected for pid " .. existing_pid .. ", cleaning up")
-        else
-            log_info("lock directory exists but pid file is missing or invalid")
+local function single_instance_lock()
+    -- return true iff lock acquired within about 7 seconds
+    local retries = 7
+    while retries > 0 do
+        retries = retries - 1
+        if mkdir(single_instance_lock_dir, '0700', true) then  -- fails if dir already exists
+            log_info("acquired lock " .. single_instance_lock_dir)
+            -- 'pid' file is for debugging only; it is NOT the lock
+            write_text_file(lock_dir_pid_path, get_pid() .. '\n', '0600')
+            return true
         end
-        remove_path(lock_pid_path)
-        remove_path(lock_dir)
-        mkdir_ok = mkdir(lock_dir)
-        if not mkdir_ok then
-            log_error("B36202 cannot acquire lock directory")
+        -- there are ways to use a pid file to remove stale locks, but they are complex,
+        -- often buggy, and still have race conditions
+        local runner = bbsubd .. ", pid " .. read_text_file(lock_dir_pid_path, true)
+        if retries > 0 then
+            log_info("B53125 waiting for another " .. runner .. ", to quit")
+        else
+            log_error("B64135 giving up; another " .. runner .. ", is still running")
             return nil
         end
+        run_command("sleep 1")
     end
-    local pid_written = write_text_file(lock_pid_path, get_pid() .. '\n', '0600')
-    if not pid_written then
-        remove_path(lock_dir)
-        log_error("B79005 cannot acquire lock file")
-        return nil
-    end
-    log_info("acquired lock, pid " .. get_pid())
-    return true
+    return nil
 end
 
-local function cleanup_and_exit(message)
-    if message then
-        log_error(message)
+local function clear_single_instance_lock()
+    remove_path(lock_dir_pid_path)
+    remove_path(lock_dir_stop_request_path)
+    if not remove_path(single_instance_lock_dir) then
+        log_error("B28368 cannot remove lock dir " .. single_instance_lock_dir)
     end
+end
+
+local function cleanup_and_exit(exit_code)
     log_debug("cleaning up lock state and exiting")
+    clear_single_instance_lock()
+    remove_path(bbsubd_tmp_dir)  -- fails silently if not empty
     close_log()
-    remove_path(lock_pid_path)
-    remove_path(lock_dir)
-    os.exit(1)
+    os.exit(exit_code)
 end
 
 --
@@ -493,6 +527,7 @@ local function json_unescape(value)
 end
 
 local function sleep_with_jitter(base_seconds, jitter_fraction)
+    -- sleep base_seconds ± some jitter; exit gracefully on 'stop_request' file
     local min_seconds = math.floor(base_seconds * (1 - jitter_fraction))
     local max_seconds = math.ceil(base_seconds * (1 + jitter_fraction))
     if min_seconds < 0 then
@@ -501,12 +536,28 @@ local function sleep_with_jitter(base_seconds, jitter_fraction)
     if max_seconds < min_seconds then
         max_seconds = min_seconds
     end
-    local sleep_seconds = math.random(min_seconds, max_seconds)
+    local secs = math.random(min_seconds, max_seconds)
     log_debug(
-        "sleeping for " .. tostring(sleep_seconds) .. " seconds (base="
+        "sleeping for " .. tostring(secs) .. " seconds (base="
             .. tostring(base_seconds) .. ", jitter=" .. tostring(jitter_fraction) .. ")"
     )
-    run_command('sleep ' .. tostring(sleep_seconds))
+    while secs > 0 do
+        if is_readable(lock_dir_stop_request_path) then
+            log_warning("B72755 stop_request")
+            cleanup_and_exit(0)
+        end
+        if secs >= 2 then
+            run_command('sleep 2')
+            secs = secs - 2
+        else
+            run_command('sleep 1')
+            secs = secs - 1
+        end
+    end
+end
+
+local function sleep(seconds)
+    sleep_with_jitter(seconds, 0)
 end
 
 --
@@ -977,6 +1028,16 @@ local function install_init_service(lua_path, init_path)
         '    procd_close_instance',
         '}',
         '',
+        'stop_service() {',
+        '    logger -t ' .. bbsubd .. ' "stop_service called from procd"',
+        '    touch ' .. lock_dir_stop_request_path,
+        '    for i in 0 1 2 3 4 5 6; do',  -- give us 7 seconds to exit gracefully
+                '    [ ! -e ' .. single_instance_lock_dir .. ' ] && break',
+                '    sleep 1',
+            '    done',
+        '    rm -Rf ' .. single_instance_lock_dir,
+        '}',
+        '',
     }, '\n')
     if not write_text_file(temp_path, init_text) then
         remove_path(temp_path)
@@ -1065,24 +1126,35 @@ local function install_one_of(package_list, command)
 end
 
 --
+-- if already running in another process, exit; note this prevents 'upgrade' via running new file
+--
+
+if get_uid() ~= 0 then
+    log_error("B97106 must run as root")
+    close_log()
+    os.exit(2)
+end
+local init_d_path = '/etc/init.d/' .. bbsubd
+mkdir(bbsubd_tmp_dir)
+if not single_instance_lock() then
+    -- error logged already
+    close_log()
+    os.exit(3)
+end
+
+--
 -- if running from /tmp, install or reinstall as a service and exit
 --
 
 local install_path = find_install_dir() .. bbsubd .. '.lua'
-local install_attempt = install_init_service(install_path, '/etc/init.d/' .. bbsubd)
+local install_attempt = install_init_service(install_path, init_d_path)
 if install_attempt == nil then
-    cleanup_and_exit("B21488 cannot install as a service")
+    log_error("B21488 cannot install as a service")
+    cleanup_and_exit(4)
 end
 if install_attempt == false then
-    cleanup_and_exit("B32020 successfully installed; exiting")
-end
-
---
--- if already running in another process, exit
---
-
-if not ensure_root_and_single_instance() then
-    cleanup_and_exit("B41990 invalid instance; exiting")
+    log_info("B32020 successfully installed; exiting")
+    cleanup_and_exit(0)
 end
 
 --
@@ -1100,7 +1172,8 @@ install_one_of('wireguard-tools wg-installer-server', 'wg')
 
 mkdir(config_dir, '0700')
 if not ensure_auth_keys() or not ensure_wg_keys() then
-    cleanup_and_exit("B60585 cannot continue without key files; exiting")
+    log_error("B60585 cannot continue without key files; exiting")
+    cleanup_and_exit(5)
 end
 
 --
@@ -1109,7 +1182,8 @@ end
 
 if not do_adopt6c() then
     remove_path(token_path)  -- gets recreated in adopt5k
-    cleanup_and_exit("B36017 cannot continue with uploading keys")
+    log_error("B36017 cannot continue with uploading keys") 
+    cleanup_and_exit(6) 
 end
 remove_path(token_path)
 
