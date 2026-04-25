@@ -36,7 +36,7 @@ local function displayable(str, max_len)
         max_len = 20
     end
     local ellipsis = (#str > max_len) and '...' or ''
-    return str:sub(1, max_len):gsub('\n', '\\n'):gsub('\t', '\\t') .. ellipsis
+    return str:sub(1, max_len):gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t') .. ellipsis
 end
 
 local function fail_early(message)
@@ -673,14 +673,17 @@ local function ensure_wg_keys()
 end
 
 local function do_adopt6c()
-    -- return true on success; retry forever on communication failure; return nil on permanent failure
+    -- return true on successful API call
+    -- return false iff API call does not need to be done
+    -- return nil on permanent failure
+    -- retry forever on communication failure
     local auth_mtime = file_mtime(auth_privkey_path)
     local wg_mtime = file_mtime(wg_privkey_path)
     local uploaded_mtime = file_mtime(pubkeys_uploaded_path)
     if uploaded_mtime >= auth_mtime and uploaded_mtime >= wg_mtime then
         -- above, use '>=' and not '>' to avoid race condition and disabled client
         log_info("public keys already marked as uploaded")
-        return true  -- these public keys were previously uploaded
+        return false  -- these public keys were previously uploaded
     end
     local token = read_text_file(token_path, true):gsub("%s+", "")
     -- strip '\n' from middle if 2-line 'echo ... >>$T' is used in get_adopt5c_code()
@@ -694,7 +697,7 @@ local function do_adopt6c()
     local auth_pubkey = read_text_file(auth_pubkey_path, false)
     local wg_pubkey = read_text_file(wg_pubkey_path, false)
     if not auth_pubkey or not wg_pubkey then
-        log_debug("cannot upload public keys because one or more key files could not be read")
+        -- log_error() already called from read_text_file()
         return nil
     end
     log_info("public keys need upload to " .. api_url)
@@ -713,6 +716,7 @@ local function do_adopt6c()
         local request_path = make_temp_path()
         local response_path = make_temp_path()
         if not request_path or not response_path then
+            -- log_error() already called from make_temp_path()
             remove_path(request_path)
             remove_path(response_path)
             return nil
@@ -738,6 +742,7 @@ local function do_adopt6c()
             .. '}'
         local write_ok = write_text_file(request_path, request_body, '0600')
         if not write_ok then
+            -- log_errror() already called from write_text_file()
             remove_path(request_path)
             remove_path(response_path)
             return nil
@@ -785,6 +790,7 @@ local function do_adopt6c()
             log_info("increased adopt6c retry wait to " .. tostring(retry_wait) .. " seconds")
         end
     end
+    log_error("B49403 should never get here")
 end
 
 local function build_ping_request()
@@ -1168,6 +1174,88 @@ local function install_one_of(package_list, command)
     return nil
 end
 
+local function delete_adopt5c_code(path)
+    -- removes adopt5c_code from path, normally '/etc/rc.local'
+    -- return true iff adopt5c code was not found
+    -- return false iff adopt5c code was found and deleted
+    -- return nil on failure
+    local prefixes = {  -- should mirror get_adopt5c_code(); search: tag_adopt5c_code
+        'T=/tmp/',
+        'echo ',
+        'echo ',
+        'U=http',
+        '(curl $U || wget -O- $U) |sh',
+    }
+    local mode = get_mode(path)
+    if not mode then
+        log_error("B70513 cannot get mode for " .. path)
+        return nil
+    end
+    local content = read_text_file(path, false, true)
+    if content == nil then return nil end
+    local lines = {}
+    local pos = 1
+    while pos <= #content do
+        local eol_start, eol_end, eol = content:find('(\r?\n)', pos)
+        if eol_start then
+            lines[#lines + 1] = {
+                text = content:sub(pos, eol_start - 1),
+                eol = eol,
+            }
+            pos = eol_end + 1
+        else
+            lines[#lines + 1] = {
+                text = content:sub(pos),
+                eol = '',
+            }
+            break
+        end
+    end
+    local delete_at = nil
+    for i = 1, #lines - #prefixes + 1 do
+        local found = true
+        for j = 1, #prefixes do
+            local line = lines[i + j - 1].text
+            local prefix = prefixes[j]
+            if line:sub(1, #prefix) ~= prefix then
+                found = false
+                break
+            end
+        end
+        if found then
+            delete_at = i
+            break
+        end
+    end
+    if not delete_at then
+        log_debug("adopt5c code not found in " .. path)
+        return true
+    end
+    local kept = {}
+    for i = 1, #lines do
+        if i < delete_at or i >= delete_at + #prefixes then
+            kept[#kept + 1] = lines[i].text .. lines[i].eol
+        end
+    end
+    local new_content = table.concat(kept)
+    local temp_path = make_temp_path('/tmp')
+    if not temp_path then return nil end
+    if not write_text_file(temp_path, new_content) then
+        remove_path(temp_path)
+        return nil
+    end
+    if not chmod(temp_path, mode) then
+        remove_path(temp_path)
+        return nil
+    end
+    if not run_command('mv ' .. shell_quote(temp_path) .. ' ' .. shell_quote(path), true) then
+        remove_path(temp_path)
+        return nil
+    end
+    log_info("B25039 deleted adopt5c code from " .. path)
+    return false
+end
+
 --
 -- if already running in another process, exit; note this prevents 'upgrade' via running new file
 --
@@ -1223,12 +1311,15 @@ end
 -- register with hub
 --
 
-if not do_adopt6c() then
-    remove_path(token_path)  -- gets recreated in adopt5k
+local adopt6c_result = do_adopt6c()
+if adopt6c_result == nil or adopt6c_result == true then  -- fatal error or success
+    delete_adopt5c_code('/etc/rc.local')
+    remove_path(token_path)
+end
+if adopt6c_result == nil then  -- fatal error, no point in retrying
     log_error("B36017 cannot continue with uploading keys") 
     cleanup_and_exit(6) 
 end
-remove_path(token_path)
 
 --
 -- loop forever

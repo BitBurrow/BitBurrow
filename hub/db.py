@@ -1044,13 +1044,12 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
             logger.info(f"B87566 base {device.subd} completed adopt5a (OTT {lsid} created)")
             # note: if token[0] or token[22] is '-', echo still just echos, i.e. it
             # doesn't complain about an invalid option :-)
-            value = (
+            value = (  # should be mirrored in delete_adopt5c_code(); search: tag_adopt5c_code
                 f'T=/tmp/{ott_filename(device.subd)}\n'
                 + f'echo {token[0:22]}>$T\n'
                 + f'echo {token[22:]}>>$T\n'
                 + f'U={conf.base_url()}{api_path.format(subd=device.subd)}\n'
                 + f'(curl $U || wget -O- $U) |sh\n'
-                + f'\n'
             )
             cache_ttl = TimeDelta(
                 hours=1
