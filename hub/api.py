@@ -156,6 +156,7 @@ def adopt6c(
         raise BaseError("B87908 invalid adopt6c request")  # for security, give generic API response
     else:
         logger.info(f"B70924 base {subd} completed adopt6c from {ip}")
+    # keep OTT valid until client confirms handshake; search: db.invalidate_device_ott(device.id)
     return BaseResult(subd=subd, status="ok")
 
 
@@ -391,5 +392,8 @@ async def ping(
         logger.warning(f"{e} (base {subd} at {ip})")
         raise BaseError("B23086 invalid ping request")  # for security, give generic API response
     else:
+        if device.ott_id is not None:
+            db.invalidate_device_ott(device.id)
+            logger.info(f"B51437 base {device.subd} completed adopt6e from {ip}")
         logger.info(f"B37237 base {subd} at {ip} ping {uptime.lstrip(' ')}")
     return BaseResult(subd=subd, status="ok")

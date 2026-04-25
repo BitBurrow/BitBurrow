@@ -407,6 +407,7 @@ class Device(SQLModel, table=True):
         * adopt5s "bbbased.lua" downloaded
         * adopt5w "bbbased.lua" launched
         * adopt6c OTT verified; auth_pubkey from base router accepted
+        * adopt6e OTT invalidated on hub
         """
         if self.auth_pubkey == '':
             if self.ott_id is None:
@@ -1056,6 +1057,18 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
             )  # in RAM for 60 minutes (safely longer than OTT validity)
             get_adopt5c_code.cache[device_id] = (now + cache_ttl, value)
             return value
+
+
+def invalidate_device_ott(device_id):
+    with Session(engine) as session:
+        try:
+            device: Device = session.exec(select(Device).where(Device.id == device_id)).one()
+        except sqlalchemy.exc.NoResultFound:
+            raise Berror(f"B09987 device {device_id} not found")
+        if device.ott_id is not None:
+            log_out(device.ott_id)
+            device.ott_id = None
+            session.commit()
 
 
 def store_adopt6c_pubkeys(device_id, auth_pubkey: str | None = None, wg_pubkey: str | None = None):
