@@ -15,9 +15,9 @@ local log_err_route = '{log_err_route}'
 
 local bbsubd = 'bb' .. subd
 local bbsubd_tmp_dir = '/tmp/' .. bbsubd .. '/'  -- note all directories end in '/'
-local single_instance_lock_dir = bbsubd_tmp_dir .. 'lock/'
-local lock_dir_pid_path = single_instance_lock_dir .. 'pid'
-local lock_dir_stop_request_path = single_instance_lock_dir .. 'stop_request'
+local lock_dir = bbsubd_tmp_dir .. 'lock/'
+local lock_dir_pid_path = lock_dir .. 'pid'
+local lock_dir_stop_request_path = lock_dir .. 'stop_request'
 local log_path = nil  -- to enable, use: log_path = bbsubd_tmp_dir .. 'log'
 local log_handle = nil
 local logging_level = 30  -- by default, show warnings, errors
@@ -196,7 +196,7 @@ local function make_temp_path(in_dir, failure_ok)
     return path
 end
 
-local function remove_path(path)
+local function remove_path(path, log_failures)
     -- remove the file or empty directory; return true iff success; fails on non-empty dir
     if not path or path == '' then return nil end
     local ok, err = os.remove(path)
@@ -204,7 +204,11 @@ local function remove_path(path)
         log_debug("successfully removed " .. path)
         return true
     end
-    log_debug("could not remove " .. path .. " (" .. tostring(err) .. ")")
+    if log_failures then
+        log_error("B26972 could not remove " .. path .. " (" .. tostring(err) .. ")")
+    else
+        log_debug("could not remove " .. path .. " (" .. tostring(err) .. ")")
+    end
     return nil
 end
 
@@ -492,14 +496,14 @@ local function single_instance_lock()
     local retries = 7
     while retries > 0 do
         retries = retries - 1
-        if mkdir(single_instance_lock_dir, '0700', true) then  -- fails if dir already exists
-            log_info("acquired lock " .. single_instance_lock_dir)
+        if mkdir(lock_dir, '0700', true) then  -- fails if dir already exists
+            log_info("acquired lock " .. lock_dir)
             -- 'pid' file is for debugging only; it is NOT the lock
             write_text_file(lock_dir_pid_path, get_pid() .. '\n', '0600')
             return true
         end
         -- there are ways to use a pid file to remove stale locks, but they are complex,
-        -- often buggy, and still have race conditions
+        -- often buggy, and still have race conditions; if we crash, a reboot is required
         local runner = bbsubd .. ", pid " .. read_text_file(lock_dir_pid_path, true)
         if retries > 0 then
             log_info("B53125 waiting for another " .. runner .. ", to quit")
@@ -513,11 +517,9 @@ local function single_instance_lock()
 end
 
 local function clear_single_instance_lock()
-    remove_path(lock_dir_pid_path)
-    remove_path(lock_dir_stop_request_path)
-    if not remove_path(single_instance_lock_dir) then
-        log_error("B28368 cannot remove lock dir " .. single_instance_lock_dir)
-    end
+    remove_path(lock_dir_stop_request_path, false)  -- file may not exist
+    remove_path(lock_dir_pid_path, true)
+    remove_path(lock_dir, true)
 end
 
 local function cleanup_and_exit(exit_code)
@@ -1081,10 +1083,10 @@ local function install_init_service(lua_path, init_path)
         '    logger -t ' .. bbsubd .. ' "stop_service called from procd"',
         '    touch ' .. lock_dir_stop_request_path,
         '    for i in 0 1 2 3 4 5 6; do',  -- give us 7 seconds to exit gracefully
-                '    [ ! -e ' .. single_instance_lock_dir .. ' ] && break',
+                '    [ ! -e ' .. lock_dir .. ' ] && break',
                 '    sleep 1',
             '    done',
-        '    rm -Rf ' .. single_instance_lock_dir,
+        '    # removing lock_dir here is a mistake--causes a race condition',
         '}',
         '',
     }, '\n')
