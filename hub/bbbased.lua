@@ -4,6 +4,7 @@
 -- hard-coded at time of download in get_adopt5s_script()
 --
 
+local file_version = '{file_version}'
 local api_url = '{api_url}'
 local subd = '{subd}'
 local token_path = '/tmp/{ott_filename}'

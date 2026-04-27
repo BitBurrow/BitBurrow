@@ -25,7 +25,7 @@ adopt5l_route = '/5l/{subd}'  # download adopt5p.sh  (list of adopt stages in cl
 adopt5s_route = '/5s/{subd}'  # download bbbased.lua
 log_err_route = '/er/{subd}'  # errors from base router
 jsonrpc_route = '/api/v1'
-hub_path = os.path.dirname(os.path.abspath(__file__))
+project_root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 router = APIRouter()
 
 ###
@@ -42,7 +42,7 @@ def get_file(
     request: Request, subd: str, filename: str, expand, info_msg: str
 ) -> PlainTextResponse:
     ip_address = request.client.host if request.client else '(unknown)'
-    file_path = os.path.join(hub_path, filename)
+    file_path = os.path.join(project_root_path, filename)
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -57,6 +57,22 @@ def get_file(
     )
 
 
+def source_file_datetime(path: str) -> str | None:
+    versions_path = os.path.join(project_root_path, 'versions')  # updated in git_hooks/pre-commit
+    try:
+        with open(versions_path, encoding='utf-8') as f:
+            for line in f:
+                line = line.rstrip('\n')
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split('\t')
+                if len(parts) >= 2 and parts[0] == path:
+                    return parts[1]
+    except OSError:
+        return None
+    return None
+
+
 @router.get(adopt5l_route, response_class=PlainTextResponse)
 def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
     subd = sanitize_subd(subd)  # unverified; 'adopt5p.sh' does not contain any secrets
@@ -66,7 +82,7 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
     return get_file(
         request,
         subd,
-        'adopt5p.sh',
+        'hub/adopt5p.sh',
         expand_braces,
         "B28592 base {subd} completed adopt5l from {ip_address}",
     )
@@ -76,7 +92,8 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
 def get_adopt5s_script(request: Request, subd: str) -> PlainTextResponse:
     subd = sanitize_subd(subd)  # unverified; 'bbbased.lua' does not contain any secrets
     expand_braces = (
-        lambda s: s.replace('{api_url}', conf.base_url() + jsonrpc_route)
+        lambda s: s.replace('{file_version}', source_file_datetime('hub/bbbased.lua'))
+        .replace('{api_url}', conf.base_url() + jsonrpc_route)
         .replace('{subd}', subd)
         .replace('{ott_filename}', db.ott_filename(subd))
         .replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
@@ -84,7 +101,7 @@ def get_adopt5s_script(request: Request, subd: str) -> PlainTextResponse:
     return get_file(
         request,
         subd,
-        'bbbased.lua',
+        'hub/bbbased.lua',
         expand_braces,
         "B76218 base {subd} completed adopt5s from {ip_address}",
     )
