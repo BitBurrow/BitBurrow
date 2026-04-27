@@ -1,23 +1,87 @@
 #!/usr/bin/env bash
 
-# fail on error
+###
+### fail on error
+###
+
 set -eo pipefail
 
-# make sure we are in the git root directory
+###
+### make sure we are in the git root directory
+###
+
 pushd $(git rev-parse --show-toplevel) >/dev/null
 
-# enforce formatting with Black
+###
+### enforce formatting with Black
+###
+
 if ! poetry run black --check --quiet --line-length 100 --skip-string-normalization .; then
   # run again to display error message(s)
   poetry run black --check --line-length 100 --skip-string-normalization .
 fi
 
-# make sure there are no duplicate Berror codes (Bxxxxx codes to help ID points in the code)
-## $TO_SCAN is: source-code files in repo plus staged; remove duplicates; remove non-existant files
+###
+### make sure there are no duplicate Berror codes (Bxxxxx codes to help ID points in the code)
+###
+
+# $TO_SCAN is: source-code files in repo plus staged; remove duplicates; remove non-existant files
 TO_SCAN=$((git ls-files  '*.py' '*.dart'; git diff --name-only --cached) |sort |uniq |while read -r FILE; do [ -f "$FILE" ] && echo "$FILE"; done)
 export DUP_BERROR_CODES=$(echo $TO_SCAN |tr ' ' '\n' |while read -r F; do if [ ! -L "$F" ]; then grep -o --no-filename 'B[0-9][0-9][0-9][0-9][0-9] ' "$F"; fi; done |sort |uniq --repeated)
 if [ -n "$DUP_BERROR_CODES" ]; then echo "Please remove duplicate Berror code(s): $DUP_BERROR_CODES" |tr -d '\n'; echo; sleep 2; exit 1; fi
 
-# return to former directory
+###
+### update 'versions' file to track timestamp of certain files and directories
+###
+
+versions_path='versions'
+versions_changed=0
+watch_list=(
+    'hub/bbbased.lua'
+    'hub/adopt5p.sh'
+    'hub/'  # any file within; must end in a slash
+)
+[ -e "$versions_path" ] || touch "$versions_path"
+staged_files="$(git diff --cached --name-only --diff-filter=ACMR)"
+timestamp="$(date --utc '+%Y-%m-%dT%H:%M:%SZ')"
+for watched_path in "${watch_list[@]}"; do
+    if printf '%s\n' "$watched_path" |grep -q $'\t'; then
+        echo "ERROR: versioned path contains a tab: $watched_path" >&2
+        exit 1
+    fi
+    if [[ "$watched_path" == */ ]]; then
+        matched=0
+        while IFS= read -r staged_file; do
+            if [[ "$staged_file" == "$watched_path"* ]]; then
+                matched=1
+                break
+            fi
+        done <<< "$staged_files"
+        if [ "$matched" -ne 1 ]; then
+            continue
+        fi
+    else
+        if ! printf '%s\n' "$staged_files" |grep -Fxq -- "$watched_path"; then
+            continue
+        fi
+    fi
+    tmp_versions="$(mktemp)"
+    awk -F '\t' -v target="$watched_path" '$1 != target { print }' "$versions_path" > "$tmp_versions"
+    printf '%s\t%s\n' "$watched_path" "$timestamp" >> "$tmp_versions"
+    if ! cmp -s "$versions_path" "$tmp_versions"; then
+        mv "$tmp_versions" "$versions_path"
+        versions_changed=1
+    else
+        rm -f "$tmp_versions"
+    fi
+done
+if [ "$versions_changed" -eq 1 ]; then
+    git add "$versions_path"
+fi
+
+###
+### return to former directory
+###
+
 popd >/dev/null
 
