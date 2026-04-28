@@ -532,7 +532,7 @@ local function cleanup_and_exit(exit_code)
 end
 
 --
--- helper functions
+-- JSON functions
 --
 
 local function json_escape(value)
@@ -571,6 +571,35 @@ local function json_unescape(value)
     value = value:gsub(placeholder, '\\')  -- avoid '\\n' becoming a newline
     return value
 end
+
+local function json_get_string(body, name)
+    local start_pos = body:find('"' .. name .. '"%s*:%s*"')
+    if not start_pos then return nil end
+    local value_start = body:find('"', start_pos + #name + 2)
+    if not value_start then return nil end
+    value_start = value_start + 1
+    local pos = value_start
+    while pos <= #body do
+        local char = body:sub(pos, pos)
+        if char == '"' then
+            local slash_count = 0
+            local back = pos - 1
+            while back >= value_start and body:sub(back, back) == '\\' do
+                slash_count = slash_count + 1
+                back = back - 1
+            end
+            if slash_count % 2 == 0 then
+                return json_unescape(body:sub(value_start, pos - 1))
+            end
+        end
+        pos = pos + 1
+    end
+    return nil
+end
+
+--
+-- helper functions
+--
 
 local function sleep_with_jitter(base_seconds, jitter_fraction)
     -- sleep base_seconds ± some jitter; exit gracefully on 'stop_request' file
@@ -750,7 +779,7 @@ local function do_adopt6c()
             remove_path(response_path)
             return nil
         end
-        local curl_command = 'curl -sS '
+        local curl_command = 'curl -sS --connect-timeout 20 --max-time 90 '
             .. '-X POST '
             .. shell_quote(api_url)
             .. ' -H '
@@ -886,14 +915,10 @@ local function choose_signature_algorithm()
     }
 end
 
-local function do_ping()
-    -- return the status response, or nil on failure
-    log_debug("starting ping cycle")
-    local request_body = build_ping_request()
-    if not request_body then
-        return nil
-    end
+local function send_signed_jsonrpc(request_body)
+    -- return response body, or nil on failure
     local result = nil
+    local signature_base = nil
     local body_path = nil
     local sig_base_path = nil
     local sig_bin_path = nil
@@ -944,7 +969,7 @@ local function do_ping()
             .. sigalg.name
             .. '"'
         local signature_input_value = 'sig1=' .. signature_params
-        local signature_base = '"@method": POST\n'
+        signature_base = '"@method": POST\n'
             .. '"@authority": ' .. authority .. '\n'
             .. '"@target-uri": ' .. api_url .. '\n'
             .. '"content-type": application/json\n'
@@ -998,21 +1023,101 @@ local function do_ping()
         local response_body = read_text_file(response_path, true)
         if not response_body then break end
         log_debug("ping response body: " .. displayable(response_body, 300))
-        local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
-        local has_error = response_body:match('"error"%s*:') ~= nil
-        local status = response_body:match('"result"%s*:%s*{.-"status"%s*:%s*"([^"]*)"')
-        if has_jsonrpc and not has_error and status then
-            result = json_unescape(status)
-            log_info("ping succeeded with status: " .. displayable(result, 60))
-        else
+        if response_body:match('"error"%s*:') ~= nil then
             log_error("signature_base='" .. displayable(signature_base, 900) .. "'")
         end
+        result = response_body
     until true
     remove_path(body_path)
     remove_path(sig_base_path)
     remove_path(sig_bin_path)
     remove_path(response_path)
     return result
+end
+
+local function send_task_result(task_id, task_method, ok, output)
+    -- return true iff task_result was accepted by server
+    if #output > 18000 then
+        output = output:sub(1, 18000) .. '\n...truncated...'
+    end
+    local request_body = '{'
+        .. '"jsonrpc":"2.0",'
+        .. '"id":1,'
+        .. '"method":"task_result",'
+        .. '"params":{'
+        .. '"subd":"'
+        .. json_escape(subd)
+        .. '",'
+        .. '"task_id":"'
+        .. json_escape(task_id)
+        .. '",'
+        .. '"task_method":"'
+        .. json_escape(task_method)
+        .. '",'
+        .. '"ok":'
+        .. (ok and 'true' or 'false')
+        .. ','
+        .. '"output":"'
+        .. json_escape(output)
+        .. '"'
+        .. '}'
+        .. '}'
+    local response_body = send_signed_jsonrpc(request_body)
+    if not response_body then
+        log_warning("task_result failed without a usable response")
+        return nil
+    end
+    log_debug("task_result response body: " .. displayable(response_body, 300))
+    local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
+    local has_error = response_body:match('"error"%s*:') ~= nil
+    local status = json_get_string(response_body, 'status')
+    if has_jsonrpc and not has_error and status == 'ok' then
+        log_info("task_result accepted for " .. task_method .. " task " .. task_id)
+        return true
+    end
+    log_error("B83275 task_result rejected: " .. displayable(response_body, 300))
+    return nil
+end
+
+local function handle_task(task_id, task_method, task_args)
+    -- return true iff task was handled or no task was present
+    if not task_id or not task_method then return true end
+    log_info("received task " .. task_method .. " id=" .. task_id)
+    if task_method ~= 'df' then
+        return send_task_result(task_id, task_method, false, 'unsupported task_method')
+    end
+    if task_args ~= '-hT' then
+        return send_task_result(task_id, task_method, false, 'unsupported df args')
+    end
+    local output = run_command('df ' .. task_args, true, true)
+    if output then
+        return send_task_result(task_id, task_method, true, output)
+    end
+    return send_task_result(task_id, task_method, false, 'df command failed')
+end
+
+local function do_ping()
+    -- return the status response, or nil on failure
+    log_debug("starting ping cycle")
+    local request_body = build_ping_request()
+    if not request_body then return nil end
+    local response_body = send_signed_jsonrpc(request_body)
+    if not response_body then return nil end
+    log_debug("ping response body: " .. displayable(response_body, 300))
+    local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
+    local has_error = response_body:match('"error"%s*:') ~= nil
+    local status = json_get_string(response_body, 'status')
+    if has_jsonrpc and not has_error and status then
+        log_info("ping succeeded with status " .. displayable(status, 60))
+        handle_task(
+            json_get_string(response_body, 'task_id'),
+            json_get_string(response_body, 'task_method'),
+            json_get_string(response_body, 'task_args')
+        )
+        return status
+    end
+    log_error("B64445 ping rejected: " .. displayable(response_body, 300))
+    return nil
 end
 
 --

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from fastapi import APIRouter, Request, HTTPException, status, Body
@@ -130,6 +131,10 @@ jsonrpc_entrypoint = jsonrpc.Entrypoint(jsonrpc_route)
 class BaseResult(BaseModel):
     subd: str
     status: str
+    task_id: str | None = None
+    task_method: str | None = None
+    task_args: str | None = None
+    timeout_seconds: int | None = None
 
 
 class BaseError(jsonrpc.BaseError):
@@ -316,7 +321,7 @@ def verify_signature_bytes(
         raise Berror(f"B53361 signature verification error ({e})")
 
 
-async def verify_signed_ping_request(
+async def verify_signed_request(
     request: Request,
     auth_pubkey_pem: str,
     allow_sha256_fallback: bool = True,
@@ -393,9 +398,10 @@ async def ping(
     request_id: str = Body(...),
 ) -> BaseResult:
     ip = request.client.host if request.client else '(unknown)'
+    wait_seconds: int = 60  # long polling max time
     try:
         device = db.get_device_by_subd(subd)
-        payload = await verify_signed_ping_request(
+        payload = await verify_signed_request(
             request=request,
             auth_pubkey_pem=device.auth_pubkey,
             allow_sha256_fallback=True,
@@ -413,4 +419,63 @@ async def ping(
             db.invalidate_device_ott(device.id)
             logger.info(f"B51437 base {device.subd} completed adopt6e from {ip}")
         logger.info(f"B37237 base {subd} at {ip} ping {uptime.lstrip(' ')}")
+    wait_until = DateTime.now(TimeZone.utc) + TimeDelta(seconds=wait_seconds)
+    while DateTime.now(TimeZone.utc) < wait_until:  # wait for queed task or long polling timeout
+        # task = get_queued_task(device.id)
+        # if task:
+        #     return BaseResult(
+        #         subd=subd,
+        #         status="ok",
+        #         task_id=task.id,
+        #         task_method=task.method,
+        #         task_args=task.args,
+        #         timeout_seconds=task.timeout_seconds,
+        #     )
+        await asyncio.sleep(1)
+    return BaseResult(
+        subd=subd,
+        status="ok",
+        task_id="demo-df-1",
+        task_method="df",
+        task_args="-hT",
+        timeout_seconds=60,
+    )
+
+
+@jsonrpc_entrypoint.method(errors=[BaseError])
+async def task_result(
+    request: Request,
+    subd: str = Body(...),
+    task_id: str = Body(...),
+    task_method: str = Body(...),
+    ok: bool = Body(...),
+    output: str = Body(...),
+) -> BaseResult:
+    ip = request.client.host if request.client else '(unknown)'
+    try:
+        device = db.get_device_by_subd(subd)
+        payload = await verify_signed_request(
+            request=request,
+            auth_pubkey_pem=device.auth_pubkey,
+            allow_sha256_fallback=True,
+            max_clock_skew_seconds=300,
+            nonce_ttl_seconds=600,
+        )
+        params = payload["params"]
+        if params.get("subd") != subd:
+            raise Berror(f"B99725 subd mismatch: {params.get('subd')} != {subd}")
+        if params.get("task_id") != task_id:
+            raise Berror("B43120 task_id mismatch")
+        if params.get("task_method") != task_method:
+            raise Berror("B68410 task_method mismatch")
+        if len(output) > 20000:
+            raise Berror("B32614 task output too large")
+    except (Berror, db.CredentialsError) as e:
+        logger.warning(f"{e} (base {subd} at {ip})")
+        raise BaseError("B34089 invalid task_result request")
+    else:
+        logger.info(
+            f"B79852 base {subd} {task_id=} {task_method=} {ok=}: "
+            + f"{re.sub(r'\n[ \t]*', r'\\n', re.sub(r'[ \t]+', ' ', output[:150]))}"
+        )
     return BaseResult(subd=subd, status="ok")
