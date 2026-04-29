@@ -758,19 +758,11 @@ local function do_adopt6c()
             .. '"id":1,'
             .. '"method":"adopt6c",'
             .. '"params":{'
-            .. '"subd":"'
-            .. json_escape(subd)
-            .. '",'
-            .. '"token":"'
-            .. json_escape(token)
-            .. '",'
-            .. '"auth_pubkey":"'
-            .. json_escape(auth_pubkey)
-            .. '",'
-            .. '"wg_pubkey":"'
-            .. json_escape(wg_pubkey)
-            .. '"'
-            .. '}'
+                .. '"subd":"' .. json_escape(subd) .. '",'
+                .. '"token":"' .. json_escape(token) .. '",'
+                .. '"auth_pubkey":"' .. json_escape(auth_pubkey) .. '",'
+                .. '"wg_pubkey":"' .. json_escape(wg_pubkey) .. '"'
+                .. '}'
             .. '}'
         local write_ok = write_text_file(request_path, request_body, '0600')
         if not write_ok then
@@ -840,19 +832,11 @@ local function build_ping_request()
         .. '"id":1,'
         .. '"method":"ping",'
         .. '"params":{'
-        .. '"subd":"'
-        .. json_escape(subd)
-        .. '",'
-        .. '"time":"'
-        .. json_escape(utc_time)
-        .. '",'
-        .. '"uptime":"'
-        .. json_escape(uptime)
-        .. '",'
-        .. '"request_id":"'
-        .. json_escape(request_id)
-        .. '"'
-        .. '}'
+            .. '"subd":"' .. json_escape(subd) .. '",'
+            .. '"time":"' .. json_escape(utc_time) .. '",'
+            .. '"uptime":"' .. json_escape(uptime) .. '",'
+            .. '"request_id":"' .. json_escape(request_id) .. '"'
+            .. '}'
         .. '}'
     log_debug("built ping request body (" .. tostring(#request_body) .. " bytes)")
     return request_body
@@ -1045,22 +1029,12 @@ local function send_task_result(task_id, task_method, ok, output)
         .. '"id":1,'
         .. '"method":"task_result",'
         .. '"params":{'
-        .. '"subd":"'
-        .. json_escape(subd)
-        .. '",'
-        .. '"task_id":"'
-        .. json_escape(task_id)
-        .. '",'
-        .. '"task_method":"'
-        .. json_escape(task_method)
-        .. '",'
-        .. '"ok":'
-        .. (ok and 'true' or 'false')
-        .. ','
-        .. '"output":"'
-        .. json_escape(output)
-        .. '"'
-        .. '}'
+            .. '"subd":"' .. json_escape(subd) .. '",'
+            .. '"task_id":"' .. json_escape(task_id) .. '",'
+            .. '"task_method":"' .. json_escape(task_method) .. '",'
+            .. '"ok":' .. (ok and 'true' or 'false') .. ','
+            .. '"output":"' .. json_escape(output) .. '"'
+            .. '}'
         .. '}'
     local response_body = send_signed_jsonrpc(request_body)
     if not response_body then
