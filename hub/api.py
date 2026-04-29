@@ -36,7 +36,7 @@ router = APIRouter()
 
 def sanitize_subd(subd):
     """Return a safer version of subd, but still unverified"""
-    return re.sub(r"[^a-zA-Z0-9]", "", subd)[:8]
+    return re.sub(r'[^a-zA-Z0-9]', '', subd)[:8]
 
 
 def get_file(
@@ -112,9 +112,9 @@ def get_adopt5s_script(request: Request, subd: str) -> PlainTextResponse:
 async def log_error(subd: str, request: Request) -> Response:
     subd = sanitize_subd(subd)
     body_unsafe = await request.body()
-    body_text = body_unsafe[:900].decode("utf-8", errors="replace")
-    disp = ''.join(c if c.isprintable() and c not in "\r\n\t" else repr(c)[1:-1] for c in body_text)
-    if re.match(r"^B[0-9]{5} ", disp):  # front the Berror code
+    body_text = body_unsafe[:900].decode('utf-8', errors='replace')
+    disp = ''.join(c if c.isprintable() and c not in '\r\n\t' else repr(c)[1:-1] for c in body_text)
+    if re.match(r'^B[0-9]{5} ', disp):  # front the Berror code
         logger.warning(f"{disp[0:7]}base {subd} {disp[7:]}")  # client errors are warnings here
     else:
         logger.warning(f"base {subd} {disp}")
@@ -206,10 +206,10 @@ def parse_signature_input(signature_input: str) -> tuple[int, str, str, str]:
             raise Berror(f"B78395 missing {name}")
         return match.group(1)
 
-    prefix = "sig1=("
+    prefix = 'sig1=('
     if not signature_input.startswith(prefix):
         raise Berror("B64394 invalid Signature-Input prefix")
-    end = signature_input.find(")")
+    end = signature_input.find(')')
     if end == -1:
         raise Berror("B13246 invalid Signature-Input format")
     expected = '"@method" "@authority" "@target-uri" "content-type" "content-digest" "date"'
@@ -230,7 +230,7 @@ def parse_signature_input(signature_input: str) -> tuple[int, str, str, str]:
 
 
 def parse_signature_header(signature_header: str) -> bytes:
-    match = re.fullmatch(r"sig1=:([A-Za-z0-9+/=]+):", signature_header.strip())
+    match = re.fullmatch(r'sig1=:([A-Za-z0-9+/=]+):', signature_header.strip())
     if not match:
         raise Berror("B33176 invalid Signature header")
     try:
@@ -241,8 +241,8 @@ def parse_signature_header(signature_header: str) -> bytes:
 
 def build_content_digest_header(body: bytes) -> str:
     digest = hashlib.sha256(body).digest()
-    digest_b64 = base64.b64encode(digest).decode("ascii")
-    return f"sha-256=:{digest_b64}:"
+    digest_b64 = base64.b64encode(digest).decode('ascii')
+    return f'sha-256=:{digest_b64}:'
 
 
 def consume_nonce(nonce: str, now: int, ttl_seconds: int) -> bool:
@@ -291,24 +291,24 @@ def verify_signature_bytes(
     alg: str,
     allow_sha256_fallback: bool,
 ) -> None:
-    if alg == "rsa-pss-sha512":
+    if alg == 'rsa-pss-sha512':
         hash_alg = hashes.SHA512()
         salt_length = 64
-    elif alg == "rsa-pss-sha256" and allow_sha256_fallback:
+    elif alg == 'rsa-pss-sha256' and allow_sha256_fallback:
         hash_alg = hashes.SHA256()
         salt_length = 32
-    elif alg == "rsa-pss-sha256":
+    elif alg == 'rsa-pss-sha256':
         raise Berror("B89126 rsa-pss-sha256 fallback is disabled")
     else:
         raise Berror(f"B17925 unsupported alg {alg}")
     try:
-        public_key = serialization.load_pem_public_key(auth_pubkey_pem.encode("utf-8"))
+        public_key = serialization.load_pem_public_key(auth_pubkey_pem.encode('utf-8'))
     except Exception as e:
         raise Berror(f"B40573 invalid public key ({e})")
     try:
         public_key.verify(
             signature,
-            signature_base.encode("utf-8"),
+            signature_base.encode('utf-8'),
             padding.PSS(
                 mgf=padding.MGF1(hash_alg),
                 salt_length=salt_length,
@@ -334,17 +334,17 @@ async def verify_signed_request(
         payload = json.loads(body)
     except Exception as e:
         raise Berror(f"B75948 invalid json body ({e})")
-    expected_host = re.sub(r"^https?://", "", conf.base_url()).rstrip("/")
-    actual_host = request.headers.get("host", "")
+    expected_host = re.sub(r'^https?://', '', conf.base_url()).rstrip('/')
+    actual_host = request.headers.get('host', '')
     if actual_host != expected_host:
         raise Berror(f"B70431 {actual_host} != {expected_host}")
-    content_type = request.headers.get("content-type", "")
-    if content_type.split(';', 1)[0].strip().lower() != "application/json":
+    content_type = request.headers.get('content-type', '')
+    if content_type.split(';', 1)[0].strip().lower() != 'application/json':
         raise Berror(f"B55664 unexpected Content-Type {content_type}")
-    date_header = request.headers.get("date")
-    content_digest_header = request.headers.get("content-digest")
-    signature_input_header = request.headers.get("signature-input")
-    signature_header = request.headers.get("signature")
+    date_header = request.headers.get('date')
+    content_digest_header = request.headers.get('content-digest')
+    signature_input_header = request.headers.get('signature-input')
+    signature_header = request.headers.get('signature')
     if not date_header:
         raise Berror("B70748 missing Date header")
     if not content_digest_header:
@@ -408,9 +408,9 @@ async def ping(
             max_clock_skew_seconds=300,
             nonce_ttl_seconds=600,
         )
-        params = payload["params"]
-        if params.get("subd") != subd:
-            raise Berror(f"B33465 subd mismatch: {params.get("subd")} != {subd}")
+        params = payload['params']
+        if params.get('subd') != subd:
+            raise Berror(f"B33465 subd mismatch: {params.get('subd')} != {subd}")
     except (Berror, db.CredentialsError) as e:
         logger.warning(f"{e} (base {subd} at {ip})")
         raise BaseError("B23086 invalid ping request")  # for security, give generic API response
@@ -420,12 +420,12 @@ async def ping(
             logger.info(f"B51437 base {device.subd} completed adopt6e from {ip}")
         logger.info(f"B37237 base {subd} at {ip} ping {uptime.lstrip(' ')}")
     wait_until = DateTime.now(TimeZone.utc) + TimeDelta(seconds=wait_seconds)
-    while DateTime.now(TimeZone.utc) < wait_until:  # wait for queed task or long polling timeout
+    while DateTime.now(TimeZone.utc) < wait_until:  # wait for queued task or long polling timeout
         # task = get_queued_task(device.id)
         # if task:
         #     return BaseResult(
         #         subd=subd,
-        #         status="ok",
+        #         status='ok',
         #         task_id=task.id,
         #         task_method=task.method,
         #         task_args=task.args,
@@ -434,10 +434,10 @@ async def ping(
         await asyncio.sleep(1)
     return BaseResult(
         subd=subd,
-        status="ok",
-        task_id="demo-df-1",
-        task_method="df",
-        task_args="-hT",
+        status='ok',
+        task_id='demo-df-1',
+        task_method='df',
+        task_args='-hT',
         timeout_seconds=60,
     )
 
@@ -461,8 +461,8 @@ async def task_result(
             max_clock_skew_seconds=300,
             nonce_ttl_seconds=600,
         )
-        params = payload["params"]
-        if params.get("subd") != subd:
+        params = payload['params']
+        if params.get('subd') != subd:
             raise Berror(f"B99725 subd mismatch: {params.get('subd')} != {subd}")
         if params.get("task_id") != task_id:
             raise Berror("B43120 task_id mismatch")
