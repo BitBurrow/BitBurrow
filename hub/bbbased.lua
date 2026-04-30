@@ -18,18 +18,15 @@ local bbsubd = 'bb' .. subd
 local bbsubd_tmp_dir = '/tmp/' .. bbsubd .. '/'  -- note all directories end in '/'
 local lock_dir = bbsubd_tmp_dir .. 'lock/'
 local lock_dir_pid_path = lock_dir .. 'pid'
+local lock_file_path = lock_dir .. 'flock'
 local lock_dir_stop_request_path = lock_dir .. 'stop_request'
 local log_path = nil  -- to enable, use: log_path = bbsubd_tmp_dir .. 'log'
 local log_handle = nil
 local logging_level = 30  -- by default, show warnings, errors
 logging_level = 20  -- for dev, use level info
-for i = 1, #arg do
-    local v = arg[i]:match("^%-(v+)$")
-    if v then
-        logging_level = logging_level - #v * 10
-    elseif arg[i] == "--verbose" then
-        logging_level = logging_level - 10
-    end
+
+local function shell_quote(value)
+    return "'" .. tostring(value):gsub("'", "'\"'\"'") .. "'"
 end
 
 local function displayable(str, max_len)
@@ -64,10 +61,6 @@ local function close_log()
         log_handle:close()
     end
     log_handle = nil
-end
-
-local function shell_quote(value)
-    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
 end
 
 local function log(message, level)
@@ -492,41 +485,17 @@ local function get_uid()
     return nil
 end
 
-local function single_instance_lock()
-    -- return true iff lock acquired within about 7 seconds
-    local retries = 7
-    while retries > 0 do
-        retries = retries - 1
-        if mkdir(lock_dir, '0700', true) then  -- fails if dir already exists
-            log_info("acquired lock " .. lock_dir)
-            -- 'pid' file is for debugging only; it is NOT the lock
-            write_text_file(lock_dir_pid_path, get_pid() .. '\n', '0600')
-            return true
-        end
-        -- there are ways to use a pid file to remove stale locks, but they are complex,
-        -- often buggy, and still have race conditions; if we crash, a reboot is required
-        local runner = bbsubd .. ", pid " .. read_text_file(lock_dir_pid_path, true)
-        if retries > 0 then
-            log_info("B53125 waiting for another " .. runner .. ", to quit")
-        else
-            log_error("B64135 giving up; another " .. runner .. ", is still running")
-            return nil
-        end
-        run_command("sleep 1")
-    end
-    return nil
-end
-
-local function clear_single_instance_lock()
-    remove_path(lock_dir_stop_request_path, false)  -- file may not exist
-    remove_path(lock_dir_pid_path, true)
-    remove_path(lock_dir, true)
-end
-
 local function cleanup_and_exit(exit_code)
     log_debug("cleaning up lock state and exiting")
-    clear_single_instance_lock()
-    remove_path(bbsubd_tmp_dir)  -- fails silently if not empty
+    local pid = get_pid()
+    local lock_pid = read_text_file(lock_dir_pid_path, true)
+    if pid and lock_pid == pid then
+        remove_path(lock_dir_stop_request_path, false)  -- file may not exist
+        remove_path(lock_dir_pid_path, true)
+    else
+        log_warning("B00765 our pid (" .. tostring(pid) .. ") and lock pid ("
+            .. tostring(lock_pid) ..") differ; not removing")
+    end
     close_log()
     os.exit(exit_code)
 end
@@ -1098,6 +1067,24 @@ end
 -- installation
 --
 
+local run_context = nil
+local running_path = arg and arg[0] or ''
+if running_path == '' then fail_early('B72200 cannot find running_path') end
+if running_path:sub(1, 5) == '/tmp/' then
+    run_context = '/tmp'
+end
+for i = 1, #arg do
+    if arg[i] == '--flock-locked' then
+        run_context = 'flock_locked'
+    end
+    local v = arg[i]:match("^%-(v+)$")
+    if v then
+        logging_level = logging_level - #v * 10
+    elseif arg[i] == "--verbose" then
+        logging_level = logging_level - 10
+    end
+end
+
 local function find_install_dir()
     local home = os.getenv('HOME') or ''
     local try1_paths = {
@@ -1130,19 +1117,29 @@ local function find_install_dir()
 end
 
 local function install_init_service(lua_path, init_path)
-    -- return true iff already installed and running as a service
     -- return nil on failure
-    -- return false after successful install or reinstall (running under /tmp)
-    local running_path = arg and arg[0] or ''
-    if running_path == '' then
-        log_error("B72200 cannot find running_path")
-        return nil
-    end
-    if running_path == '' or running_path:sub(1, 5) ~= '/tmp/' then
-        log_debug("already installed (running as " .. running_path .. ")")
-        return true
-    end
-    local temp_path = make_temp_path()
+    -- return true after successful install or reinstall (running under /tmp)
+    local tmp_path = make_temp_path('/tmp/')  -- not in bbsubd_tmp_dir because it doesn't exist
+    local locked_runner = table.concat({
+        'mkdir -p ' .. shell_quote(bbsubd_tmp_dir) .. ' || exit 1',
+        'chmod 0700 ' .. shell_quote(bbsubd_tmp_dir) .. ' 2>/dev/null',
+        'mkdir -p ' .. shell_quote(lock_dir) .. ' || exit 1',
+        'chmod 0700 ' .. shell_quote(lock_dir) .. ' 2>/dev/null',
+        'exec 9>' .. shell_quote(lock_file_path) .. ' || exit 1',
+        'i=0',
+        'while [ "$i" -lt 7 ]; do',
+        '    if flock -n 9; then',
+        '        rm -f ' .. shell_quote(lock_dir_stop_request_path),
+        '        echo $$ > ' .. shell_quote(lock_dir_pid_path),
+        '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' --flock-locked',
+        '    fi',
+        '    logger -t ' .. shell_quote(bbsubd) .. ' "B53125 waiting for another instance to quit"',
+        '    sleep 1',
+        '    i=$((i + 1))',
+        'done',
+        'logger -t ' .. shell_quote(bbsubd) .. ' "B64135 giving up; another instance is still running"',
+        'exit 0',
+    }, '\n')
     local init_text = table.concat({
         '#!/bin/sh /etc/rc.common',
         '',
@@ -1152,7 +1149,7 @@ local function install_init_service(lua_path, init_path)
         '',
         'start_service() {',
         '    procd_open_instance',
-        '    procd_set_param command /usr/bin/lua ' .. lua_path,
+        '    procd_set_param command /bin/sh -c ' .. shell_quote(locked_runner),
         '    procd_set_param respawn',
         '    procd_set_param stdout 1', -- 1 means make output viewable via `logread`
         '    procd_set_param stderr 1',
@@ -1161,24 +1158,27 @@ local function install_init_service(lua_path, init_path)
         '',
         'stop_service() {',
         '    logger -t ' .. bbsubd .. ' "stop_service called from procd"',
-        '    touch ' .. lock_dir_stop_request_path,
-        '    for i in 0 1 2 3 4 5 6; do',  -- give us 7 seconds to exit gracefully
-                '    [ ! -e ' .. lock_dir .. ' ] && break',
-                '    sleep 1',
-            '    done',
-        '    # removing lock_dir here is a mistake--causes a race condition',
+        '    mkdir -p ' .. shell_quote(lock_dir),
+        '    touch ' .. shell_quote(lock_dir_stop_request_path),
+        '    for i in 0 1 2 3 4 5 6; do',
+        '        pid="$(cat ' .. shell_quote(lock_dir_pid_path) .. ' 2>/dev/null)"',
+        '        [ -z "$pid" ] && break',
+        '        kill -0 "$pid" 2>/dev/null || break',
+        '        sleep 1',
+        '    done',
+        '    # do not remove lock_dir or lock_file_path here',
         '}',
         '',
     }, '\n')
-    if not write_text_file(temp_path, init_text) then
-        remove_path(temp_path)
+    if not write_text_file(tmp_path, init_text) then
+        remove_path(tmp_path)
         return nil
     end
-    if not file_copy(temp_path, init_path, '0755') then
-        remove_path(temp_path)
+    if not file_copy(tmp_path, init_path, '0755') then
+        remove_path(tmp_path)
         return nil
     end
-    remove_path(temp_path)
+    remove_path(tmp_path)
     if not file_copy(running_path, lua_path, '0644') then return nil end
     if not run_command(shell_quote(init_path) .. ' enabled', true, true) then
         if not run_command(shell_quote(init_path) .. ' enable') then
@@ -1195,7 +1195,7 @@ local function install_init_service(lua_path, init_path)
     -- new service should run now; don't use this here: dofile(lua_path)
     remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
     remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
-    return false
+    return true
 end
 
 local packager_cmds = nil
@@ -1339,7 +1339,7 @@ local function delete_adopt5c_code(path)
 end
 
 --
--- if already running in another process, exit; note this prevents 'upgrade' via running new file
+-- if running from /tmp, install or reinstall as a service and exit
 --
 
 if get_uid() ~= 0 then
@@ -1348,30 +1348,28 @@ if get_uid() ~= 0 then
     os.exit(2)
 end
 local init_d_path = '/etc/init.d/' .. bbsubd
-mkdir(bbsubd_tmp_dir)
-if not single_instance_lock() then
-    -- error logged already
+if run_context == '/tmp' then
+    install_one_of('flock', 'flock')  -- the only 'install' prerequisite, but probably already installed
+    local install_path = find_install_dir() .. bbsubd .. '.lua'
+    local exit_code = 99
+    if install_init_service(install_path, init_d_path) then
+        log_info("B32020 successfully installed; exiting")
+        exit_code = 0
+    else
+        log_error("B21488 cannot install as a service")
+        exit_code = 4
+    end
     close_log()
-    os.exit(3)
+    os.exit(exit_code)
+end
+if run_context ~= 'flock_locked' then
+    log_error("B16646 to install, run from '/tmp'; to run, use: " .. init_d_path .. " start")
+    close_log()
+    os.exit(12)
 end
 
 --
--- if running from /tmp, install or reinstall as a service and exit
---
-
-local install_path = find_install_dir() .. bbsubd .. '.lua'
-local install_attempt = install_init_service(install_path, init_d_path)
-if install_attempt == nil then
-    log_error("B21488 cannot install as a service")
-    cleanup_and_exit(4)
-end
-if install_attempt == false then
-    log_info("B32020 successfully installed; exiting")
-    cleanup_and_exit(0)
-end
-
---
--- install prerequisites
+-- make sure prerequisites are installed
 --
 
 log_warning("B20392 start BitBurrow base daemon (log level " .. logging_level .. ")")
