@@ -6,12 +6,13 @@
 
 local file_version = '{file_version}'
 local api_url = '{api_url}'
+local download_url = '{download_url}'
 local subd = '{subd}'
 local token_path = '/tmp/{ott_filename}'
 local log_err_route = '{log_err_route}'
 
 --
--- logging
+-- globals
 --
 
 local bbsubd = 'bb' .. subd
@@ -20,6 +21,12 @@ local lock_dir = bbsubd_tmp_dir .. 'lock/'
 local lock_dir_pid_path = lock_dir .. 'pid'
 local lock_file_path = lock_dir .. 'flock'
 local lock_dir_stop_request_path = lock_dir .. 'stop_request'
+local init_d_path = '/etc/init.d/' .. bbsubd
+
+--
+-- logging
+--
+
 local log_path = nil  -- to enable, use: log_path = bbsubd_tmp_dir .. 'log'
 local log_handle = nil
 local logging_level = 30  -- by default, show warnings, errors
@@ -786,13 +793,23 @@ local function do_adopt6c()
     log_error("B49403 should never get here")
 end
 
+local function collect_telemetry()
+    local uptime = run_command('uptime', true)
+    if not uptime then return nil end
+    local telemetry = '{'
+        .. '"uptime":"' .. json_escape(uptime) .. '"'
+    -- don't need to send this every time, but it's needed if hub *or* we restart
+    telemetry = telemetry .. ',' .. '"file_version":"' .. file_version .. '"'
+    return telemetry .. '}'
+end
+
 local function build_ping_request()
     -- return the request body, or nil on failure
     log_debug("building ping request for subd " .. subd)
     local utc_time = run_command("date -u '+%Y-%m-%dT%H:%M:%SZ'", true)
-    local uptime = run_command('uptime', true)
+    local telemetry = collect_telemetry()
     local request_id = run_command('openssl rand -hex 16', true)
-    if not utc_time or not uptime or not request_id then
+    if not utc_time or not telemetry or not request_id then
         log_debug('cannot build ping request because one or more inputs were unavailable')
         return nil
     end
@@ -803,7 +820,7 @@ local function build_ping_request()
         .. '"params":{'
             .. '"subd":"' .. json_escape(subd) .. '",'
             .. '"time":"' .. json_escape(utc_time) .. '",'
-            .. '"uptime":"' .. json_escape(uptime) .. '",'
+            .. '"telemetry":' .. telemetry .. ','
             .. '"request_id":"' .. json_escape(request_id) .. '"'
             .. '}'
         .. '}'
@@ -1026,17 +1043,43 @@ local function handle_task(task_id, task_method, task_args)
     -- return true iff task was handled or no task was present
     if not task_id or not task_method then return true end
     log_info("received task " .. task_method .. " id=" .. task_id)
-    if task_method ~= 'df' then
-        return send_task_result(task_id, task_method, false, 'unsupported task_method')
+    if task_method == 'no_op' then
+        return true
     end
-    if task_args ~= '-hT' then
-        return send_task_result(task_id, task_method, false, 'unsupported df args')
+    if task_method == 'update' then
+        local running_path = arg and arg[0]
+        if not running_path or not running_path:match('^/') then
+            return send_task_result(task_id, task_method, false, "B09761 invalid arg[0]:"
+                .. running_path)
+        end
+        local temp_path = make_temp_path(dirname(running_path))
+        local command = 'curl -f --max-time 120 -o '
+            .. shell_quote(temp_path) .. ' '
+            .. shell_quote(download_url)
+        if not run_command(command) then
+            remove_path(temp_path)
+            return send_task_result(task_id, task_method, false, "B18136 download failed")
+        end
+        chmod(temp_path, get_mode(running_path))
+        if not run_command('mv ' .. shell_quote(temp_path) .. ' ' .. shell_quote(running_path)) then
+            remove_path(temp_path)
+            return send_task_result(task_id, task_method, false, "B57225 mv failed")
+        end
+        local result = send_task_result(task_id, task_method, true, 'ok')  -- reply, then restart
+        run_command(shell_quote(init_d_path) .. ' restart')  -- will log_error() on failure
+        return result
     end
-    local output = run_command('df ' .. task_args, true, true)
-    if output then
+    if task_method == 'df' then
+        if task_args ~= '-hT' then
+            return send_task_result(task_id, task_method, false, 'unsupported df args')
+        end
+        local output = run_command('df ' .. task_args, true, true)
+        if not output then
+            return send_task_result(task_id, task_method, false, 'df command failed')
+        end
         return send_task_result(task_id, task_method, true, output)
     end
-    return send_task_result(task_id, task_method, false, 'df command failed')
+    return send_task_result(task_id, task_method, false, 'unsupported task_method')
 end
 
 local function do_ping()
@@ -1133,7 +1176,7 @@ local function install_init_service(lua_path, init_path)
         '        echo $$ > ' .. shell_quote(lock_dir_pid_path),
         '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' --flock-locked',
         '    fi',
-        '    logger -t ' .. shell_quote(bbsubd) .. ' "B53125 waiting for another instance to quit"',
+        '    # too noisy: logger -t ' .. shell_quote(bbsubd) .. ' "B53125 waiting for another instance to quit"',
         '    sleep 1',
         '    i=$((i + 1))',
         'done',
@@ -1347,7 +1390,6 @@ if get_uid() ~= 0 then
     close_log()
     os.exit(2)
 end
-local init_d_path = '/etc/init.d/' .. bbsubd
 if run_context == '/tmp' then
     install_one_of('flock', 'flock')  -- the only 'install' prerequisite, but probably already installed
     local install_path = find_install_dir() .. bbsubd .. '.lua'

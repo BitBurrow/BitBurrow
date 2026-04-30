@@ -58,7 +58,8 @@ def get_file(
     )
 
 
-def source_file_datetime(path: str) -> str | None:
+def read_versions_file() -> None:
+    versions = dict()
     versions_path = os.path.join(project_root_path, 'versions')  # updated in git_hooks/pre-commit
     try:
         with open(versions_path, encoding='utf-8') as f:
@@ -67,11 +68,14 @@ def source_file_datetime(path: str) -> str | None:
                 if not line or line.startswith('#'):
                     continue
                 parts = line.split('\t')
-                if len(parts) >= 2 and parts[0] == path:
-                    return parts[1]
+                if len(parts) >= 2:
+                    versions[parts[0]] = parts[1]
     except OSError:
         return None
-    return None
+    return versions
+
+
+source_file_datetime = read_versions_file()
 
 
 @router.get(adopt5l_route, response_class=PlainTextResponse)
@@ -93,8 +97,9 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
 def get_adopt5s_script(request: Request, subd: str) -> PlainTextResponse:
     subd = sanitize_subd(subd)  # unverified; 'bbbased.lua' does not contain any secrets
     expand_braces = (
-        lambda s: s.replace('{file_version}', source_file_datetime('hub/bbbased.lua'))
+        lambda s: s.replace('{file_version}', source_file_datetime['hub/bbbased.lua'])
         .replace('{api_url}', conf.base_url() + jsonrpc_route)
+        .replace('{download_url}', conf.base_url() + adopt5s_route.format(subd=subd))
         .replace('{subd}', subd)
         .replace('{ott_filename}', db.ott_filename(subd))
         .replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
@@ -394,7 +399,7 @@ async def ping(
     request: Request,
     subd: str = Body(...),
     time: str = Body(...),
-    uptime: str = Body(...),
+    telemetry: dict = Body(...),
     request_id: str = Body(...),
 ) -> BaseResult:
     ip = request.client.host if request.client else '(unknown)'
@@ -418,7 +423,26 @@ async def ping(
         if device.ott_id is not None:
             db.invalidate_device_ott(device.id)
             logger.info(f"B51437 base {device.subd} completed adopt6e from {ip}")
+        uptime = str(telemetry.get('uptime', ''))
         logger.info(f"B37237 base {subd} at {ip} ping {uptime.lstrip(' ')}")
+        file_version = telemetry.get('file_version', None)
+        if file_version is not None:
+            available_version = source_file_datetime['hub/bbbased.lua']
+            if file_version != available_version:
+                from_to = f"updating bbbased.lua from {file_version} to {available_version}"
+                if file_version > available_version:
+                    logger.warning(f"B91300 base {subd} {from_to} (downgrading)")
+                else:
+                    logger.info(f"B83121 base {subd} {from_to}")
+                # add_queued_task(device.id, 'update')
+                return BaseResult(
+                    subd=subd,
+                    status='ok',
+                    task_id='update-1',
+                    task_method='update',
+                    task_args='',
+                    timeout_seconds=60,
+                )
     wait_until = DateTime.now(TimeZone.utc) + TimeDelta(seconds=wait_seconds)
     while DateTime.now(TimeZone.utc) < wait_until:  # wait for queued task or long polling timeout
         # task = get_queued_task(device.id)
