@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric import rsa
 import hub.db as db
 import hub.config as conf
+import hub.util as util
 
 Berror = db.Berror
 logger = logging.getLogger(__name__)
@@ -444,7 +445,25 @@ async def ping(
                     timeout_seconds=60,
                 )
     wait_until = DateTime.now(TimeZone.utc) + TimeDelta(seconds=wait_seconds)
-    while DateTime.now(TimeZone.utc) < wait_until:  # wait for queued task or long polling timeout
+    while True:
+        now = DateTime.now(TimeZone.utc)
+        if now > wait_until:  # long polling timeout
+            return BaseResult(
+                subd=subd,
+                status='ok',
+                task_id='demo-df-1',
+                task_method='df',
+                task_args='-hT',
+                timeout_seconds=60,
+            )
+        if util.shutdown_event.is_set():  # e.g. ctrl-c
+            remaining = round((wait_until - now).total_seconds())
+            logger.info(f'B64194 base {subd} long polling canceled ({remaining}s remaining)')
+            return BaseResult(subd=subd, status='ok')
+        if await request.is_disconnected():
+            remaining = round((wait_until - now).total_seconds())
+            logger.info(f'B88349 base {subd} connection disconnected ({remaining}s remaining)')
+            return BaseResult(subd=subd, status='ok')
         # task = get_queued_task(device.id)
         # if task:
         #     return BaseResult(
@@ -456,14 +475,6 @@ async def ping(
         #         timeout_seconds=task.timeout_seconds,
         #     )
         await asyncio.sleep(1)
-    return BaseResult(
-        subd=subd,
-        status='ok',
-        task_id='demo-df-1',
-        task_method='df',
-        task_args='-hT',
-        timeout_seconds=60,
-    )
 
 
 @jsonrpc_entrypoint.method(errors=[BaseError])

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import gzip
 import logging
@@ -12,6 +13,8 @@ import hub.net as net
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
+
+shutdown_event = asyncio.Event()
 
 
 class Berror(Exception):

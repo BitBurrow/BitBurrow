@@ -272,6 +272,12 @@ server_app = jsonrpc.API(
 ###
 
 
+class UvicornServer(uvicorn.Server):
+    def handle_exit(self, sig: int, frame) -> None:
+        util.shutdown_event.set()
+        super().handle_exit(sig, frame)
+
+
 def entry_point():
     try:
         args = cli()
@@ -383,7 +389,7 @@ def entry_point():
             favicon='hub/ui/img/favicon.png',
             dark=None,  # None → follow OS setting for dark mode
         )
-        uvicorn.run(
+        uvicorn_config = uvicorn.Config(
             server_app,
             host=conf.get('backend.ip'),
             port=conf.get('backend.web_port'),
@@ -393,7 +399,9 @@ def entry_point():
             ssl_ciphers=strong_ciphers,
             date_header=False,
             server_header=False,
+            timeout_graceful_shutdown=5,
         )
+        UvicornServer(uvicorn_config).run()
     except KeyboardInterrupt:
         logger.info(f"B23324 KeyboardInterrupt")
         nicegui.app.shutdown()
