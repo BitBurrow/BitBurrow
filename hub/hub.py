@@ -29,7 +29,7 @@ Berror = util.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 
-assert sys.version_info >= (3, 8)
+assert sys.version_info >= (3, 12)
 sql.expression.Select.inherit_cache = False  # https://github.com/tiangolo/sqlmodel/issues/189
 sql.expression.SelectOfScalar.inherit_cache = False
 
