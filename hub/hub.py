@@ -378,9 +378,8 @@ def entry_point():
         logger.error(f"B50313 DB error (may need to increase db_schema_version): {e}")
         sys.exit(1)
     try:
-        ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
-        server_app.mount('/ui', StaticFiles(directory=ui_path), name='ui')
-        nicegui.ui.add_css(os.path.join(ui_path, 'theme.css'), shared=True)
+        server_app.mount('/ui', StaticFiles(directory=util.ui_path), name='ui')
+        nicegui.ui.add_css(os.path.join(util.ui_path, 'theme.css'), shared=True)
         server_app.include_router(api.router)
         server_app.bind_entrypoint(api.jsonrpc_entrypoint)
         nicegui.ui.run_with(

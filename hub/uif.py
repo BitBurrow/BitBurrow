@@ -13,7 +13,6 @@ import hub.util as util
 Berror = util.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
-ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
 
 ###
 ### HTML page set-up
@@ -462,7 +461,7 @@ def render_expansion(title_md: str, within=None):
 
 
 def parse_markdown_sections(md_page: str):
-    md_path = os.path.join(ui_path, f'{md_page}.md')
+    md_path = os.path.join(util.ui_path, f'{md_page}.md')
     with open(md_path, 'r', encoding='utf-8') as f:
         md = f.read()
     lines = md.splitlines(keepends=True)
@@ -587,7 +586,7 @@ def render_content(sections):
 def render_stepper(stage: str, idelem_lambdas=None):
     if idelem_lambdas is None:
         idelem_lambdas = dict()
-    yaml_path = os.path.join(ui_path, f'setup-{stage}.yaml')
+    yaml_path = os.path.join(util.ui_path, f'setup-{stage}.yaml')
     with open(yaml_path, 'r', encoding='utf-8') as f:
         data = yaml.safe_load(f)
     idelem = dict()  # map of maps

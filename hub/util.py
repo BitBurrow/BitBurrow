@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 
 shutdown_event = asyncio.Event()
+project_root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ui_path = os.path.join(project_root_path, 'hub', 'ui')
 
 
 class Berror(Exception):
@@ -296,3 +298,23 @@ def tls_cert_script():  # script to run certbot for wildcard TLS cert
         sudo setfacl -Rm d:user:bitburrow:rx,user:bitburrow:rx /etc/letsencrypt/
     '''
     print(textwrap.dedent(script).strip().replace('{domain}', conf.get('frontend.domain')))
+
+
+def read_versions_file() -> None:
+    versions = dict()
+    versions_path = os.path.join(project_root_path, 'versions')  # updated in git_hooks/pre-commit
+    try:
+        with open(versions_path, encoding='utf-8') as f:
+            for line in f:
+                line = line.rstrip('\n')
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    versions[parts[0]] = parts[1]
+    except OSError:
+        return None
+    return versions
+
+
+source_file_datetime = read_versions_file()

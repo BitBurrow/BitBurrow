@@ -27,7 +27,6 @@ adopt5l_route = '/5l/{subd}'  # download adopt5p.sh  (list of adopt stages in cl
 adopt5s_route = '/5s/{subd}'  # download bbbased.lua
 log_err_route = '/er/{subd}'  # errors from base router
 jsonrpc_route = '/api/v1'
-project_root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 router = APIRouter()
 
 ###
@@ -44,7 +43,7 @@ def get_file(
     request: Request, subd: str, filename: str, expand, info_msg: str
 ) -> PlainTextResponse:
     ip_address = request.client.host if request.client else '(unknown)'
-    file_path = os.path.join(project_root_path, filename)
+    file_path = os.path.join(util.project_root_path, filename)
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -57,26 +56,6 @@ def get_file(
         media_type='text/plain; charset=utf-8',
         headers={'Cache-Control': 'no-store'},
     )
-
-
-def read_versions_file() -> None:
-    versions = dict()
-    versions_path = os.path.join(project_root_path, 'versions')  # updated in git_hooks/pre-commit
-    try:
-        with open(versions_path, encoding='utf-8') as f:
-            for line in f:
-                line = line.rstrip('\n')
-                if not line or line.startswith('#'):
-                    continue
-                parts = line.split('\t')
-                if len(parts) >= 2:
-                    versions[parts[0]] = parts[1]
-    except OSError:
-        return None
-    return versions
-
-
-source_file_datetime = read_versions_file()
 
 
 @router.get(adopt5l_route, response_class=PlainTextResponse)
@@ -98,7 +77,7 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
 def get_adopt5s_script(request: Request, subd: str) -> PlainTextResponse:
     subd = sanitize_subd(subd)  # unverified; 'bbbased.lua' does not contain any secrets
     expand_braces = (
-        lambda s: s.replace('{file_version}', source_file_datetime['hub/bbbased.lua'])
+        lambda s: s.replace('{file_version}', util.source_file_datetime['hub/bbbased.lua'])
         .replace('{api_url}', conf.base_url() + jsonrpc_route)
         .replace('{download_url}', conf.base_url() + adopt5s_route.format(subd=subd))
         .replace('{subd}', subd)
@@ -428,7 +407,7 @@ async def ping(
         logger.info(f"B37237 base {subd} at {ip} ping {uptime.lstrip(' ')}")
         file_version = telemetry.get('file_version', None)
         if file_version is not None:
-            available_version = source_file_datetime['hub/bbbased.lua']
+            available_version = util.source_file_datetime['hub/bbbased.lua']
             if file_version != available_version:
                 from_to = f"updating bbbased.lua from {file_version} to {available_version}"
                 if file_version > available_version:
