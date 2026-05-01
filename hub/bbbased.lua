@@ -612,6 +612,281 @@ local function sleep(seconds)
 end
 
 --
+-- installation
+--
+
+local run_context = nil
+local running_path = arg and arg[0] or ''
+if running_path == '' then fail_early('B72200 cannot find running_path') end
+if running_path:sub(1, 5) == '/tmp/' then
+    run_context = '/tmp'
+end
+for i = 1, #arg do
+    if arg[i] == '--flock-locked' then
+        run_context = 'flock_locked'
+    end
+    local v = arg[i]:match("^%-(v+)$")
+    if v then
+        logging_level = logging_level - #v * 10
+    elseif arg[i] == "--verbose" then
+        logging_level = logging_level - 10
+    end
+end
+
+local function find_install_dir()
+    local home = os.getenv('HOME') or ''
+    local try1_paths = {
+        '/usr/local/sbin/',
+        '/usr/sbin/',
+        '/sbin/',
+        '/usr/local/bin/',
+        '/usr/bin/',
+        '/bin/',
+        home .. '/.local/bin/',
+        home .. '/bin/',
+    }
+    local try2_paths = {
+        home .. '/.local/bin/',
+        home .. '/bin/',
+    }
+    for _, path in ipairs(try1_paths) do
+        if is_writable(path) then
+            return path
+        end
+    end
+    for _, path in ipairs(try2_paths) do
+        run_command('mkdir -p ' .. shell_quote(path), true, true)
+        if is_writable(path) then
+            return path
+        end
+    end
+    log_error("B95830 cannot find_install_dir(); home is " .. home)
+    return ''
+end
+
+local function install_init_service(lua_path, init_path)
+    -- return nil on failure
+    -- return true after successful install or reinstall (running under /tmp)
+    local tmp_path = make_temp_path('/tmp/')  -- not in bbsubd_tmp_dir because it doesn't exist
+    local locked_runner = table.concat({
+        'mkdir -p ' .. shell_quote(bbsubd_tmp_dir) .. ' || exit 1',
+        'chmod 0700 ' .. shell_quote(bbsubd_tmp_dir) .. ' 2>/dev/null',
+        'mkdir -p ' .. shell_quote(lock_dir) .. ' || exit 1',
+        'chmod 0700 ' .. shell_quote(lock_dir) .. ' 2>/dev/null',
+        'exec 9>' .. shell_quote(lock_file_path) .. ' || exit 1',
+        'i=0',
+        'while [ "$i" -lt 7 ]; do',
+        '    if flock -n 9; then',
+        '        rm -f ' .. shell_quote(lock_dir_stop_request_path),
+        '        echo $$ > ' .. shell_quote(lock_dir_pid_path),
+        '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' --flock-locked',
+        '    fi',
+        '    # too noisy: logger -t ' .. shell_quote(bbsubd) .. ' "B53125 waiting for another instance to quit"',
+        '    sleep 1',
+        '    i=$((i + 1))',
+        'done',
+        'logger -t ' .. shell_quote(bbsubd) .. ' "B64135 giving up; another instance is still running"',
+        'exit 0',
+    }, '\n')
+    local init_text = table.concat({
+        '#!/bin/sh /etc/rc.common',
+        '',
+        'START=95',
+        'STOP=10',
+        'USE_PROCD=1',
+        '',
+        'start_service() {',
+        '    procd_open_instance',
+        '    procd_set_param command /bin/sh -c ' .. shell_quote(locked_runner),
+        '    procd_set_param respawn',
+        '    procd_set_param stdout 1', -- 1 means make output viewable via `logread`
+        '    procd_set_param stderr 1',
+        '    procd_close_instance',
+        '}',
+        '',
+        'stop_service() {',
+        '    logger -t ' .. bbsubd .. ' "stop_service called from procd"',
+        '    mkdir -p ' .. shell_quote(lock_dir),
+        '    touch ' .. shell_quote(lock_dir_stop_request_path),
+        '    for i in 0 1 2 3 4 5 6; do',
+        '        pid="$(cat ' .. shell_quote(lock_dir_pid_path) .. ' 2>/dev/null)"',
+        '        [ -z "$pid" ] && break',
+        '        kill -0 "$pid" 2>/dev/null || break',
+        '        sleep 1',
+        '    done',
+        '    # do not remove lock_dir or lock_file_path here',
+        '}',
+        '',
+    }, '\n')
+    if not write_text_file(tmp_path, init_text) then
+        remove_path(tmp_path)
+        return nil
+    end
+    if not file_copy(tmp_path, init_path, '0755') then
+        remove_path(tmp_path)
+        return nil
+    end
+    remove_path(tmp_path)
+    if not file_copy(running_path, lua_path, '0644') then return nil end
+    if not run_command(shell_quote(init_path) .. ' enabled', true, true) then
+        if not run_command(shell_quote(init_path) .. ' enable') then
+            return nil
+        end
+    end
+    if not run_command(shell_quote(init_path) .. ' running', true, true) then
+        if not run_command(shell_quote(init_path) .. ' start') then return nil end
+        log_debug("successfully installed; exiting")
+    else
+        if not run_command(shell_quote(init_path) .. ' restart') then return nil end
+        log_debug("successfully reinstalled; exiting")
+    end
+    -- new service should run now; don't use this here: dofile(lua_path)
+    remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
+    remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
+    return true
+end
+
+local packager_cmds = nil
+local spec = {
+    {'apt-get', {update = {'apt-get', 'update'}, install = {'apt-get', 'install', '-y'}}},
+    {'apk', {update = {'apk', 'update'}, install = {'apk', 'add'}}},
+    {'opkg', {update = {'opkg', 'update'}, install = {'opkg', 'install'}}},
+    {'dnf', {update = {'dnf', 'makecache'}, install = {'dnf', 'install', '-y'}}},
+    {'yum', {update = {'yum', 'makecache'}, install = {'yum', 'install', '-y'}}},
+    {'pacman', {update = {'pacman', '-Sy', '--noconfirm'}, install = {'pacman', '-S', '--noconfirm'}}},
+    {'zypper', {update = {'zypper', '--non-interactive', 'refresh'}, install = {'zypper', '--non-interactive', 'install'}}},
+}
+local unpack_fn = table.unpack or unpack
+
+local function packager(action, arg)
+    if not packager_cmds then  -- find first valid package manager and cache it for future calls
+        for i = 1, #spec do
+            local candidate = spec[i]
+            if run_command('command -v ' .. candidate[1], true, true) then
+                packager_cmds = candidate[2]
+                break
+            end
+        end
+    end
+    if not packager_cmds then
+        log_error("B91049 cannot find package manager")
+        return nil
+    end
+    local cmd = packager_cmds[action]
+    if not cmd then return nil end
+    local parts = {unpack_fn(cmd)}
+    if action == 'install' and arg then
+        parts[#parts + 1] = arg
+    end
+    return run_command(table.concat(parts, ' '), true, true)
+end
+
+local function install_one_of(package_list, command)
+    local retry = 0
+    while retry < 4 do
+        if run_command('command -v ' .. command, true, true) then return true end
+        if retry >= 2 then  -- wait before retries 2, 3
+            run_command("sleep 75")
+        end
+        if retry >= 1 then  -- update before retries 1, 2, 3
+            packager('update')
+        end
+        for pkg in package_list:gmatch("%S+") do
+            packager('install', pkg)
+            if run_command('command -v ' .. command, true, true) then
+                log_info("installed package " .. pkg .. " for " .. command)
+                return true
+            end
+        end
+        retry = retry + 1
+    end
+    log_error("B80574 cannot install package for " .. command)
+    return nil
+end
+
+local function delete_adopt5c_code(path)
+    -- removes adopt5c_code from path, normally '/etc/rc.local'
+    -- return true iff adopt5c code was not found
+    -- return false iff adopt5c code was found and deleted
+    -- return nil on failure
+    local prefixes = {  -- should mirror get_adopt5c_code(); search: tag_adopt5c_code
+        'T=/tmp/',
+        'echo ',
+        'echo ',
+        'U=http',
+        '(curl $U || wget -O- $U) |sh',
+    }
+    local mode = get_mode(path)
+    if not mode then
+        log_error("B70513 cannot get mode for " .. path)
+        return nil
+    end
+    local content = read_text_file(path, false, true)
+    if content == nil then return nil end
+    local lines = {}
+    local pos = 1
+    while pos <= #content do
+        local eol_start, eol_end, eol = content:find('(\r?\n)', pos)
+        if eol_start then
+            lines[#lines + 1] = {
+                text = content:sub(pos, eol_start - 1),
+                eol = eol,
+            }
+            pos = eol_end + 1
+        else
+            lines[#lines + 1] = {
+                text = content:sub(pos),
+                eol = '',
+            }
+            break
+        end
+    end
+    local delete_at = nil
+    for i = 1, #lines - #prefixes + 1 do
+        local found = true
+        for j = 1, #prefixes do
+            local line = lines[i + j - 1].text
+            local prefix = prefixes[j]
+            if line:sub(1, #prefix) ~= prefix then
+                found = false
+                break
+            end
+        end
+        if found then
+            delete_at = i
+            break
+        end
+    end
+    if not delete_at then
+        log_debug("adopt5c code not found in " .. path)
+        return true
+    end
+    local kept = {}
+    for i = 1, #lines do
+        if i < delete_at or i >= delete_at + #prefixes then
+            kept[#kept + 1] = lines[i].text .. lines[i].eol
+        end
+    end
+    local new_content = table.concat(kept)
+    local temp_path = make_temp_path('/tmp')
+    if not temp_path then return nil end
+    if not write_text_file(temp_path, new_content) then
+        remove_path(temp_path)
+        return nil
+    end
+    if not chmod(temp_path, mode) then
+        remove_path(temp_path)
+        return nil
+    end
+    if not run_command('mv ' .. shell_quote(temp_path) .. ' ' .. shell_quote(path), true) then
+        remove_path(temp_path)
+        return nil
+    end
+    log_info("B25039 deleted adopt5c code from " .. path)
+    return false
+end
+
+--
 -- keys management
 --
 
@@ -1104,281 +1379,6 @@ local function do_ping()
     end
     log_error("B64445 ping rejected: " .. displayable(response_body, 300))
     return nil
-end
-
---
--- installation
---
-
-local run_context = nil
-local running_path = arg and arg[0] or ''
-if running_path == '' then fail_early('B72200 cannot find running_path') end
-if running_path:sub(1, 5) == '/tmp/' then
-    run_context = '/tmp'
-end
-for i = 1, #arg do
-    if arg[i] == '--flock-locked' then
-        run_context = 'flock_locked'
-    end
-    local v = arg[i]:match("^%-(v+)$")
-    if v then
-        logging_level = logging_level - #v * 10
-    elseif arg[i] == "--verbose" then
-        logging_level = logging_level - 10
-    end
-end
-
-local function find_install_dir()
-    local home = os.getenv('HOME') or ''
-    local try1_paths = {
-        '/usr/local/sbin/',
-        '/usr/sbin/',
-        '/sbin/',
-        '/usr/local/bin/',
-        '/usr/bin/',
-        '/bin/',
-        home .. '/.local/bin/',
-        home .. '/bin/',
-    }
-    local try2_paths = {
-        home .. '/.local/bin/',
-        home .. '/bin/',
-    }
-    for _, path in ipairs(try1_paths) do
-        if is_writable(path) then
-            return path
-        end
-    end
-    for _, path in ipairs(try2_paths) do
-        run_command('mkdir -p ' .. shell_quote(path), true, true)
-        if is_writable(path) then
-            return path
-        end
-    end
-    log_error("B95830 cannot find_install_dir(); home is " .. home)
-    return ''
-end
-
-local function install_init_service(lua_path, init_path)
-    -- return nil on failure
-    -- return true after successful install or reinstall (running under /tmp)
-    local tmp_path = make_temp_path('/tmp/')  -- not in bbsubd_tmp_dir because it doesn't exist
-    local locked_runner = table.concat({
-        'mkdir -p ' .. shell_quote(bbsubd_tmp_dir) .. ' || exit 1',
-        'chmod 0700 ' .. shell_quote(bbsubd_tmp_dir) .. ' 2>/dev/null',
-        'mkdir -p ' .. shell_quote(lock_dir) .. ' || exit 1',
-        'chmod 0700 ' .. shell_quote(lock_dir) .. ' 2>/dev/null',
-        'exec 9>' .. shell_quote(lock_file_path) .. ' || exit 1',
-        'i=0',
-        'while [ "$i" -lt 7 ]; do',
-        '    if flock -n 9; then',
-        '        rm -f ' .. shell_quote(lock_dir_stop_request_path),
-        '        echo $$ > ' .. shell_quote(lock_dir_pid_path),
-        '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' --flock-locked',
-        '    fi',
-        '    # too noisy: logger -t ' .. shell_quote(bbsubd) .. ' "B53125 waiting for another instance to quit"',
-        '    sleep 1',
-        '    i=$((i + 1))',
-        'done',
-        'logger -t ' .. shell_quote(bbsubd) .. ' "B64135 giving up; another instance is still running"',
-        'exit 0',
-    }, '\n')
-    local init_text = table.concat({
-        '#!/bin/sh /etc/rc.common',
-        '',
-        'START=95',
-        'STOP=10',
-        'USE_PROCD=1',
-        '',
-        'start_service() {',
-        '    procd_open_instance',
-        '    procd_set_param command /bin/sh -c ' .. shell_quote(locked_runner),
-        '    procd_set_param respawn',
-        '    procd_set_param stdout 1', -- 1 means make output viewable via `logread`
-        '    procd_set_param stderr 1',
-        '    procd_close_instance',
-        '}',
-        '',
-        'stop_service() {',
-        '    logger -t ' .. bbsubd .. ' "stop_service called from procd"',
-        '    mkdir -p ' .. shell_quote(lock_dir),
-        '    touch ' .. shell_quote(lock_dir_stop_request_path),
-        '    for i in 0 1 2 3 4 5 6; do',
-        '        pid="$(cat ' .. shell_quote(lock_dir_pid_path) .. ' 2>/dev/null)"',
-        '        [ -z "$pid" ] && break',
-        '        kill -0 "$pid" 2>/dev/null || break',
-        '        sleep 1',
-        '    done',
-        '    # do not remove lock_dir or lock_file_path here',
-        '}',
-        '',
-    }, '\n')
-    if not write_text_file(tmp_path, init_text) then
-        remove_path(tmp_path)
-        return nil
-    end
-    if not file_copy(tmp_path, init_path, '0755') then
-        remove_path(tmp_path)
-        return nil
-    end
-    remove_path(tmp_path)
-    if not file_copy(running_path, lua_path, '0644') then return nil end
-    if not run_command(shell_quote(init_path) .. ' enabled', true, true) then
-        if not run_command(shell_quote(init_path) .. ' enable') then
-            return nil
-        end
-    end
-    if not run_command(shell_quote(init_path) .. ' running', true, true) then
-        if not run_command(shell_quote(init_path) .. ' start') then return nil end
-        log_debug("successfully installed; exiting")
-    else
-        if not run_command(shell_quote(init_path) .. ' restart') then return nil end
-        log_debug("successfully reinstalled; exiting")
-    end
-    -- new service should run now; don't use this here: dofile(lua_path)
-    remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
-    remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
-    return true
-end
-
-local packager_cmds = nil
-local spec = {
-    {'apt-get', {update = {'apt-get', 'update'}, install = {'apt-get', 'install', '-y'}}},
-    {'apk', {update = {'apk', 'update'}, install = {'apk', 'add'}}},
-    {'opkg', {update = {'opkg', 'update'}, install = {'opkg', 'install'}}},
-    {'dnf', {update = {'dnf', 'makecache'}, install = {'dnf', 'install', '-y'}}},
-    {'yum', {update = {'yum', 'makecache'}, install = {'yum', 'install', '-y'}}},
-    {'pacman', {update = {'pacman', '-Sy', '--noconfirm'}, install = {'pacman', '-S', '--noconfirm'}}},
-    {'zypper', {update = {'zypper', '--non-interactive', 'refresh'}, install = {'zypper', '--non-interactive', 'install'}}},
-}
-local unpack_fn = table.unpack or unpack
-
-local function packager(action, arg)
-    if not packager_cmds then  -- find first valid package manager and cache it for future calls
-        for i = 1, #spec do
-            local candidate = spec[i]
-            if run_command('command -v ' .. candidate[1], true, true) then
-                packager_cmds = candidate[2]
-                break
-            end
-        end
-    end
-    if not packager_cmds then
-        log_error("B91049 cannot find package manager")
-        return nil
-    end
-    local cmd = packager_cmds[action]
-    if not cmd then return nil end
-    local parts = {unpack_fn(cmd)}
-    if action == 'install' and arg then
-        parts[#parts + 1] = arg
-    end
-    return run_command(table.concat(parts, ' '), true, true)
-end
-
-local function install_one_of(package_list, command)
-    local retry = 0
-    while retry < 4 do
-        if run_command('command -v ' .. command, true, true) then return true end
-        if retry >= 2 then  -- wait before retries 2, 3
-            run_command("sleep 75")
-        end
-        if retry >= 1 then  -- update before retries 1, 2, 3
-            packager('update')
-        end
-        for pkg in package_list:gmatch("%S+") do
-            packager('install', pkg)
-            if run_command('command -v ' .. command, true, true) then
-                log_info("installed package " .. pkg .. " for " .. command)
-                return true
-            end
-        end
-        retry = retry + 1
-    end
-    log_error("B80574 cannot install package for " .. command)
-    return nil
-end
-
-local function delete_adopt5c_code(path)
-    -- removes adopt5c_code from path, normally '/etc/rc.local'
-    -- return true iff adopt5c code was not found
-    -- return false iff adopt5c code was found and deleted
-    -- return nil on failure
-    local prefixes = {  -- should mirror get_adopt5c_code(); search: tag_adopt5c_code
-        'T=/tmp/',
-        'echo ',
-        'echo ',
-        'U=http',
-        '(curl $U || wget -O- $U) |sh',
-    }
-    local mode = get_mode(path)
-    if not mode then
-        log_error("B70513 cannot get mode for " .. path)
-        return nil
-    end
-    local content = read_text_file(path, false, true)
-    if content == nil then return nil end
-    local lines = {}
-    local pos = 1
-    while pos <= #content do
-        local eol_start, eol_end, eol = content:find('(\r?\n)', pos)
-        if eol_start then
-            lines[#lines + 1] = {
-                text = content:sub(pos, eol_start - 1),
-                eol = eol,
-            }
-            pos = eol_end + 1
-        else
-            lines[#lines + 1] = {
-                text = content:sub(pos),
-                eol = '',
-            }
-            break
-        end
-    end
-    local delete_at = nil
-    for i = 1, #lines - #prefixes + 1 do
-        local found = true
-        for j = 1, #prefixes do
-            local line = lines[i + j - 1].text
-            local prefix = prefixes[j]
-            if line:sub(1, #prefix) ~= prefix then
-                found = false
-                break
-            end
-        end
-        if found then
-            delete_at = i
-            break
-        end
-    end
-    if not delete_at then
-        log_debug("adopt5c code not found in " .. path)
-        return true
-    end
-    local kept = {}
-    for i = 1, #lines do
-        if i < delete_at or i >= delete_at + #prefixes then
-            kept[#kept + 1] = lines[i].text .. lines[i].eol
-        end
-    end
-    local new_content = table.concat(kept)
-    local temp_path = make_temp_path('/tmp')
-    if not temp_path then return nil end
-    if not write_text_file(temp_path, new_content) then
-        remove_path(temp_path)
-        return nil
-    end
-    if not chmod(temp_path, mode) then
-        remove_path(temp_path)
-        return nil
-    end
-    if not run_command('mv ' .. shell_quote(temp_path) .. ' ' .. shell_quote(path), true) then
-        remove_path(temp_path)
-        return nil
-    end
-    log_info("B25039 deleted adopt5c code from " .. path)
-    return false
 end
 
 --
