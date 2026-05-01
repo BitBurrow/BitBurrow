@@ -469,30 +469,30 @@ async def task_result(
     output: str = Body(...),
 ) -> BaseResult:
     ip = request.client.host if request.client else '(unknown)'
-    try:
-        device = db.get_device_by_subd(subd)
-        payload = await verify_signed_request(
-            request=request,
-            auth_pubkey_pem=device.auth_pubkey,
-            allow_sha256_fallback=True,
-            max_clock_skew_seconds=300,
-            nonce_ttl_seconds=600,
-        )
-        params = payload['params']
-        if params.get('subd') != subd:
-            raise Berror(f"B99725 subd mismatch: {params.get('subd')} != {subd}")
-        if params.get("task_id") != task_id:
-            raise Berror("B43120 task_id mismatch")
-        if params.get("task_method") != task_method:
-            raise Berror("B68410 task_method mismatch")
-        if len(output) > 20000:
-            raise Berror("B32614 task output too large")
-    except (Berror, db.CredentialsError) as e:
-        logger.warning(f"{e} (base {subd} at {ip})")
-        raise BaseError("B34089 invalid task_result request")
-    else:
-        logger.info(
-            f"B79852 base {subd} {task_id=} {task_method=} {ok=}: "
-            + f"{re.sub(r'\n[ \t]*', r'\\n', re.sub(r'[ \t]+', ' ', output[:150]))}"
-        )
+    with db.device_by_subd(subd) as device:
+        try:
+            payload = await verify_signed_request(
+                request=request,
+                auth_pubkey_pem=device.auth_pubkey,
+                allow_sha256_fallback=True,
+                max_clock_skew_seconds=300,
+                nonce_ttl_seconds=600,
+            )
+            params = payload['params']
+            if params.get('subd') != subd:
+                raise Berror(f"B99725 subd mismatch: {params.get('subd')} != {subd}")
+            if params.get("task_id") != task_id:
+                raise Berror("B43120 task_id mismatch")
+            if params.get("task_method") != task_method:
+                raise Berror("B68410 task_method mismatch")
+            if len(output) > 20000:
+                raise Berror("B32614 task output too large")
+        except (Berror, db.CredentialsError) as e:
+            logger.warning(f"{e} (base {subd} at {ip})")
+            raise BaseError("B34089 invalid task_result request")
+        # device.telemetry = ...
+    logger.info(
+        f"B79852 base {subd} {task_id=} {task_method=} {ok=}: "
+        + f"{re.sub(r'\n[ \t]*', r'\\n', re.sub(r'[ \t]+', ' ', output[:25]))}"
+    )
     return BaseResult(subd=subd, status="ok")
