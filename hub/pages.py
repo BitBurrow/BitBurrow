@@ -159,19 +159,19 @@ def home(client: Client):
         rows = list()
         now = DateTime.now(TimeZone.utc)
         id_to_query = None if kind == db.AccountKind.ADMIN else aid
-        for dev, inf in db.iter_get_device_by_account_id(aid=id_to_query):
+        for device in db.iter_get_device_by_account_id(aid=id_to_query):
             new_row = {
-                'id': dev.id,
-                'login': dev.account.login,
-                'name': dev.name,
-                'slug': dev.name_slug,
-                'subd': f'{dev.subd}.{conf.get('frontend.domain')}' if dev.subd else '-',
+                'id': device.id,
+                'login': device.account.login,
+                'name': device.name,
+                'slug': device.name_slug,
+                'subd': f'{device.subd}.{conf.get('frontend.domain')}' if device.subd else '-',
             }
-            if inf and inf.last_endpoint:
-                new_row['last_ip'] = inf.last_endpoint
-                last_seen = now - DateTime.fromtimestamp(inf.last_handshake, TimeZone.utc)
-                if last_seen < TimeDelta(minutes=10):
-                    new_row['last_seen'] = "just now"  # values below 7 minutes are somewhat random
+            if device.last_endpoint:
+                new_row['last_ip'] = device.last_endpoint
+                last_seen = now - DateTime.fromtimestamp(device.last_handshake, TimeZone.utc)
+                if last_seen < TimeDelta(minutes=4):
+                    new_row['last_seen'] = "just now"
                 else:
                     new_row['last_seen'] = uif.human_duration(last_seen, positive_only=True)
             else:

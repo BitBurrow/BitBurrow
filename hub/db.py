@@ -1,5 +1,6 @@
 import argon2
 import base64
+from contextlib import contextmanager
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import enum
 import fastapi
@@ -387,6 +388,8 @@ class Device(SQLModel, table=True):
     name_slug: Optional[str] = Field(index=True)  # URL-safe version of name
     # for bases, subd is the left-most label of FQDN, e.g. y99g in y99g.vxm.example.org
     subd: Optional[str] = Field(index=True, unique=True)
+    last_endpoint: str | None = None  # most recent public IP
+    last_handshake: int | None = None  # seconds past Unix epoch
     ott_id: Optional[int] = Field(foreign_key='loginsession.id')  # one-time token for adopting
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Optional[Account] = Relationship(back_populates="devices")
@@ -973,6 +976,23 @@ def get_device_by_subd(subd: str) -> Device:
             raise Berror(f"B27072 multiple devices found for subd {subd}")
 
 
+@contextmanager
+def device_by_subd(subd: str):
+    with Session(engine) as session:
+        try:
+            device: Device = session.exec(select(Device).where(Device.subd == subd)).one()
+        except sqlalchemy.exc.NoResultFound:
+            raise Berror(f"B59719 device for subd {subd} not found")
+        except sqlalchemy.exc.MultipleResultsFound:
+            raise Berror(f"B53274 multiple devices found for subd {subd}")
+        try:
+            yield device
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+
+
 def iter_get_device_by_account_id(aid: int | None):
     """Yield each device for account aid."""
     with Session(engine) as session:
@@ -980,9 +1000,8 @@ def iter_get_device_by_account_id(aid: int | None):
             statement = select(Device).where(Device.id != hub_id)  # don't show hub device
         else:
             statement = select(Device).where(Device.account_id == aid)
-        for dev in session.exec(statement):
-            inf = session.exec(select(Intf).where(Intf.device_id == dev.id)).one_or_none()
-            yield dev, inf
+        for device in session.exec(statement):
+            yield device
 
 
 def delete_device(id: int) -> None:
@@ -1057,18 +1076,6 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
             )  # in RAM for 60 minutes (safely longer than OTT validity)
             get_adopt5c_code.cache[device_id] = (now + cache_ttl, value)
             return value
-
-
-def invalidate_device_ott(device_id):
-    with Session(engine) as session:
-        try:
-            device: Device = session.exec(select(Device).where(Device.id == device_id)).one()
-        except sqlalchemy.exc.NoResultFound:
-            raise Berror(f"B09987 device {device_id} not found")
-        if device.ott_id is not None:
-            log_out(device.ott_id)
-            device.ott_id = None
-            session.commit()
 
 
 def store_adopt6c_pubkeys(device_id, auth_pubkey: str | None = None, wg_pubkey: str | None = None):

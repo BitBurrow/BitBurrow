@@ -20,7 +20,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 31
+db_schema_version = 32
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -135,6 +135,16 @@ def migrate(db_path: str) -> None:
             session.exec(statement)
             session.commit()
         current_version = 30
+    if current_version < 32:  # version 31 → 32: add 2 Device fields
+        engine = create_engine(f"sqlite:///{db_path}")
+        with Session(engine) as session:
+            statement = update(db.Device).values(
+                last_endpoint=None,
+                last_handshake=None,
+            )
+            session.exec(statement)
+            session.commit()
+        current_version = 32
     # if current_version < ...
     #     ...
     #     current_version = ...

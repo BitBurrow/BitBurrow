@@ -163,7 +163,7 @@ def adopt6c(
         raise BaseError("B87908 invalid adopt6c request")  # for security, give generic API response
     else:
         logger.info(f"B70924 base {subd} completed adopt6c from {ip}")
-    # keep OTT valid until client confirms handshake; search: db.invalidate_device_ott(device.id)
+    # keep OTT valid until client confirms handshake; search: tag_invalidate_device_ott
     return BaseResult(subd=subd, status="ok")
 
 
@@ -383,47 +383,50 @@ async def ping(
     request_id: str = Body(...),
 ) -> BaseResult:
     ip = request.client.host if request.client else '(unknown)'
+    ping_now = DateTime.now(TimeZone.utc)
     wait_seconds: int = 60  # long polling max time
-    try:
-        device = db.get_device_by_subd(subd)
-        payload = await verify_signed_request(
-            request=request,
-            auth_pubkey_pem=device.auth_pubkey,
-            allow_sha256_fallback=True,
-            max_clock_skew_seconds=300,
-            nonce_ttl_seconds=600,
-        )
-        params = payload['params']
-        if params.get('subd') != subd:
-            raise Berror(f"B33465 subd mismatch: {params.get('subd')} != {subd}")
-    except (Berror, db.CredentialsError) as e:
-        logger.warning(f"{e} (base {subd} at {ip})")
-        raise BaseError("B23086 invalid ping request")  # for security, give generic API response
-    else:
+    with db.device_by_subd(subd) as device:
+        try:
+            payload = await verify_signed_request(
+                request=request,
+                auth_pubkey_pem=device.auth_pubkey,
+                allow_sha256_fallback=True,
+                max_clock_skew_seconds=300,
+                nonce_ttl_seconds=600,
+            )
+            params = payload['params']
+            if params.get('subd') != subd:
+                raise Berror(f"B33465 subd mismatch: {params.get('subd')} != {subd}")
+        except (Berror, db.CredentialsError) as e:
+            logger.warning(f"{e} (base {subd} at {ip})")
+            raise BaseError("B23086 invalid ping request")  # generic API response for security
         if device.ott_id is not None:
-            db.invalidate_device_ott(device.id)
+            device.ott_id = None  # tag_invalidate_device_ott
+            db.log_out(device.ott_id)
             logger.info(f"B51437 base {device.subd} completed adopt6e from {ip}")
-        uptime = str(telemetry.get('uptime', ''))
-        logger.info(f"B37237 base {subd} at {ip} ping {uptime.lstrip(' ')}")
-        file_version = telemetry.get('file_version', None)
-        if file_version is not None:
-            available_version = util.source_file_datetime['hub/bbbased.lua']
-            if file_version != available_version:
-                from_to = f"updating bbbased.lua from {file_version} to {available_version}"
-                if file_version > available_version:
-                    logger.warning(f"B91300 base {subd} {from_to} (downgrading)")
-                else:
-                    logger.info(f"B83121 base {subd} {from_to}")
-                # add_queued_task(device.id, 'update')
-                return BaseResult(
-                    subd=subd,
-                    status='ok',
-                    task_id='update-1',
-                    task_method='update',
-                    task_args='',
-                    timeout_seconds=60,
-                )
-    wait_until = DateTime.now(TimeZone.utc) + TimeDelta(seconds=wait_seconds)
+        device.last_endpoint = ip
+        device.last_handshake = ping_now.timestamp()
+    uptime = str(telemetry.get('uptime', ''))
+    logger.info(f"B37237 base {subd} at {ip} ping {uptime.lstrip(' ')}")
+    file_version = telemetry.get('file_version', None)
+    if file_version is not None:  # automatic software updates
+        available_version = util.source_file_datetime['hub/bbbased.lua']
+        if file_version != available_version:
+            from_to = f"updating bbbased.lua from {file_version} to {available_version}"
+            if file_version > available_version:
+                logger.warning(f"B91300 base {subd} {from_to} (downgrading)")
+            else:
+                logger.info(f"B83121 base {subd} {from_to}")
+            # add_queued_task(device.id, 'update')
+            return BaseResult(
+                subd=subd,
+                status='ok',
+                task_id='update-1',
+                task_method='update',
+                task_args='',
+                timeout_seconds=60,
+            )
+    wait_until = ping_now + TimeDelta(seconds=wait_seconds)
     while True:
         now = DateTime.now(TimeZone.utc)
         if now > wait_until:  # long polling timeout
