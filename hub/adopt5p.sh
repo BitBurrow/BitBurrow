@@ -18,7 +18,7 @@ log_error() {
 }
 
 download() {
-    echo "download $1 $2" >&2
+    echo "downloading $1 $2" >&2
     if command -v curl >/dev/null 2>&1; then
         curl -f --max-time 120 -o "$2" "$1" >/dev/null 2>&1
         return $?
@@ -43,7 +43,6 @@ find_packager_exe() {
 }
 
 run_as_root() {
-    echo "run_as_root $1" >&2
     if [ "$(id -u)" -eq 0 ]; then
         "$@"
         return $?
@@ -84,6 +83,9 @@ packager() {
             ;;
         apt-get:install)
             run_as_root apt-get install -y "$2"
+            ;;
+        apt-get:fix-broken)
+            run_as_root apt-get install --fix-broken -y
             ;;
         apk:update)
             run_as_root apk update
@@ -135,20 +137,27 @@ make_temp_path() {
 }
 
 ### set-up
+sleep 1; echo "" >&2  # clean separation from curl output
+echo "" >&2  # blank line
+echo "installing BitBurow ..." >&2
 make_temp_path
 bbbased_path="$temp_path/bbbased.lua"
 find_packager_exe || true
 
 ### install curl or wget
+echo "installing required packages" >&2
 loop_count=0
 while [ "$loop_count" -le 3 ]; do
     if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then break; fi
     if [ "$loop_count" -gt 1 ]; then
-        echo "wait 75 seconds to retry" >&2
+        echo "error installing curl and wget; waiting 75 seconds to retry" >&2
         sleep 75
     fi
     if [ "$loop_count" -gt 0 ]; then
         packager update >/dev/null 2>&1 || true
+    fi
+    if [ "$loop_count" -gt 1 ]; then
+        packager fix-broken >/dev/null 2>&1 || true
     fi
     packager install curl >/dev/null 2>&1 || true
     if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then break; fi
@@ -162,7 +171,7 @@ loop_count=0
 while [ "$loop_count" -le 3 ]; do
     if find_lua_exe; then break; fi
     if [ "$loop_count" -gt 1 ]; then
-        echo "wait 75 seconds to retry" >&2
+        echo "error installing lua; waiting 75 seconds to retry" >&2
         sleep 75
     fi
     if [ "$loop_count" -gt 0 ]; then
@@ -209,10 +218,8 @@ done
 
 ### run Lua script
 if [ -s "$bbbased_path" ]; then
-    echo "run $lua_exe $bbbased_path" >&2
-    exec "$lua_exe" "$bbbased_path"
-    log_error "B65151 cannot run: exec $lua_exe $bbbased_path"
-    "$lua_exe" "$bbbased_path"
+    echo "running $lua_exe $bbbased_path" >&2
+    run_as_root "$lua_exe" "$bbbased_path"
 else
     log_error "B29909 cannot download $download_url"
 fi
