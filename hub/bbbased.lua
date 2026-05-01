@@ -21,7 +21,6 @@ local lock_dir = bbsubd_tmp_dir .. 'lock/'
 local lock_dir_pid_path = lock_dir .. 'pid'
 local lock_file_path = lock_dir .. 'flock'
 local lock_dir_stop_request_path = lock_dir .. 'stop_request'
-local init_d_path = '/etc/init.d/' .. bbsubd
 
 --
 -- logging
@@ -88,7 +87,7 @@ local function log(message, level)
         end
     end
     if level >= logging_level then
-        if not log_path or logging_level < 30 or not log_path then  -- when using logread or -v
+        if not log_path or logging_level < 30 then  -- when using logread or -v
             io.stderr:write(message .. '\n')  -- send to stderr
         end
         if log_handle then
@@ -436,6 +435,7 @@ local function file_copy(src_path, dst_path, mode)
     if not dst then
         log_error("B73772 cannot open " .. tmp_path .. " (" .. tostring(err) .. ")")
         src:close()
+        remove_path(tmp_path)
         return nil
     end
     while true do
@@ -615,6 +615,12 @@ end
 -- installation
 --
 
+local daemon_service = nil
+if run_command('command -v systemctl', true, true) then
+    daemon_service = 'systemd'
+else
+    daemon_service = 'init'
+end
 local run_context = nil
 local running_path = arg and arg[0] or ''
 if running_path == '' then fail_early('B72200 cannot find running_path') end
@@ -664,9 +670,10 @@ local function find_install_dir()
     return ''
 end
 
-local function install_init_service(lua_path, init_path)
+local function install_init_service(lua_path)
     -- return nil on failure
     -- return true after successful install or reinstall (running under /tmp)
+    local init_path = '/etc/init.d/' .. bbsubd
     local tmp_path = make_temp_path('/tmp/')  -- not in bbsubd_tmp_dir because it doesn't exist
     local locked_runner = table.concat({
         'mkdir -p ' .. shell_quote(bbsubd_tmp_dir) .. ' || exit 1',
@@ -744,6 +751,149 @@ local function install_init_service(lua_path, init_path)
     remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
     remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
     return true
+end
+
+local function install_systemd_service(lua_path)
+    -- return nil on failure
+    -- return true after successful install or reinstall (running under /tmp)
+    local service_name = bbsubd .. '.service'
+    local service_path = '/etc/systemd/system/' .. service_name
+    local start_script_path = '/usr/local/sbin/' .. bbsubd .. '-start.sh'
+    local stop_script_path = '/usr/local/sbin/' .. bbsubd .. '-stop.sh'
+    local tmp_service_path = make_temp_path('/tmp/')  -- not in bbsubd_tmp_dir because it doesn't exist
+    local tmp_start_path = make_temp_path('/tmp/')
+    local tmp_stop_path = make_temp_path('/tmp/')
+    local start_text = table.concat({
+        '#!/bin/sh',
+        'mkdir -p ' .. shell_quote(bbsubd_tmp_dir) .. ' || exit 1',
+        'chmod 0700 ' .. shell_quote(bbsubd_tmp_dir) .. ' 2>/dev/null',
+        'mkdir -p ' .. shell_quote(lock_dir) .. ' || exit 1',
+        'chmod 0700 ' .. shell_quote(lock_dir) .. ' 2>/dev/null',
+        'exec 9>' .. shell_quote(lock_file_path) .. ' || exit 1',
+        'i=0',
+        'while [ "$i" -lt 7 ]; do',
+        '    if flock -n 9; then',
+        '        rm -f ' .. shell_quote(lock_dir_stop_request_path),
+        '        echo $$ > ' .. shell_quote(lock_dir_pid_path),
+        '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' --flock-locked',
+        '    fi',
+        '    # too noisy: logger -t ' .. shell_quote(bbsubd) .. ' "B22393 waiting for another instance to quit"',
+        '    sleep 1',
+        '    i=$((i + 1))',
+        'done',
+        'logger -t ' .. shell_quote(bbsubd) .. ' "B44696 giving up; another instance is still running"',
+        'exit 0',
+        '',
+    }, '\n')
+    local stop_text = table.concat({
+        '#!/bin/sh',
+        'logger -t ' .. shell_quote(bbsubd) .. ' "stop called from systemd"',
+        'mkdir -p ' .. shell_quote(lock_dir),
+        'touch ' .. shell_quote(lock_dir_stop_request_path),
+        'for i in 0 1 2 3 4 5 6; do',
+        '    pid="$(cat ' .. shell_quote(lock_dir_pid_path) .. ' 2>/dev/null)"',
+        '    [ -z "$pid" ] && break',
+        '    kill -0 "$pid" 2>/dev/null || break',
+        '    sleep 1',
+        'done',
+        '# do not remove lock_dir or lock_file_path here',
+        'exit 0',
+        '',
+    }, '\n')
+    local service_text = table.concat({
+        '[Unit]',
+        'Description=' .. bbsubd .. ' daemon',
+        'After=network-online.target',
+        'Wants=network-online.target',
+        '',
+        '[Service]',
+        'Type=simple',
+        'ExecStart=' .. start_script_path,
+        'ExecStop=' .. stop_script_path,
+        'Restart=always',
+        'RestartSec=5',
+        'StandardOutput=journal',
+        'StandardError=journal',
+        '',
+        '[Install]',
+        'WantedBy=multi-user.target',
+        '',
+    }, '\n')
+    if not write_text_file(tmp_start_path, start_text) then
+        remove_path(tmp_service_path)
+        remove_path(tmp_start_path)
+        remove_path(tmp_stop_path)
+        return nil
+    end
+    if not write_text_file(tmp_stop_path, stop_text) then
+        remove_path(tmp_service_path)
+        remove_path(tmp_start_path)
+        remove_path(tmp_stop_path)
+        return nil
+    end
+    if not write_text_file(tmp_service_path, service_text) then
+        remove_path(tmp_service_path)
+        remove_path(tmp_start_path)
+        remove_path(tmp_stop_path)
+        return nil
+    end
+    if not file_copy(tmp_start_path, start_script_path, '0755') then
+        remove_path(tmp_service_path)
+        remove_path(tmp_start_path)
+        remove_path(tmp_stop_path)
+        return nil
+    end
+    if not file_copy(tmp_stop_path, stop_script_path, '0755') then
+        remove_path(tmp_service_path)
+        remove_path(tmp_start_path)
+        remove_path(tmp_stop_path)
+        return nil
+    end
+    if not file_copy(tmp_service_path, service_path, '0644') then
+        remove_path(tmp_service_path)
+        remove_path(tmp_start_path)
+        remove_path(tmp_stop_path)
+        return nil
+    end
+    remove_path(tmp_service_path)
+    remove_path(tmp_start_path)
+    remove_path(tmp_stop_path)
+    if not file_copy(running_path, lua_path, '0644') then return nil end
+    remove_path('/etc/init.d/' .. bbsubd)
+    if not run_command('systemctl daemon-reload') then return nil end
+    if not run_command('systemctl is-enabled ' .. shell_quote(service_name), true, true) then
+        if not run_command('systemctl enable ' .. shell_quote(service_name)) then
+            return nil
+        end
+    end
+    if not run_command('systemctl is-active ' .. shell_quote(service_name), true, true) then
+        if not run_command('systemctl start ' .. shell_quote(service_name)) then return nil end
+        log_debug("successfully installed; exiting")
+    else
+        if not run_command('systemctl restart ' .. shell_quote(service_name)) then return nil end
+        log_debug("successfully reinstalled; exiting")
+    end
+    -- new service should run now; don't use this here: dofile(lua_path)
+    remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
+    remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
+    return true
+end
+
+local function install_daemon_service(lua_path)
+    if daemon_service == 'systemd' then
+        return install_systemd_service(lua_path)
+    else  -- 'init'
+        return install_init_service(lua_path)
+    end
+end
+
+local function daemon_ctl(action)  -- action is 'start', 'stop', or 'restart'
+    if daemon_service == 'systemd' then
+        return run_command('systemctl ' .. action .. ' ' .. shell_quote(bbsubd .. '.service'))
+    else
+        local daemon_path = '/etc/init.d/' .. bbsubd
+        return run_command(shell_quote(daemon_path) .. ' ' .. action)  -- will log_error() on failure
+    end
 end
 
 local packager_cmds = nil
@@ -1325,7 +1475,7 @@ local function handle_task(task_id, task_method, task_args)
         local running_path = arg and arg[0]
         if not running_path or not running_path:match('^/') then
             return send_task_result(task_id, task_method, false, "B09761 invalid arg[0]:"
-                .. running_path)
+                .. tostring(running_path))
         end
         local temp_path = make_temp_path(dirname(running_path))
         local command = 'curl -f --max-time 120 -o '
@@ -1341,7 +1491,7 @@ local function handle_task(task_id, task_method, task_args)
             return send_task_result(task_id, task_method, false, "B57225 mv failed")
         end
         local result = send_task_result(task_id, task_method, true, 'ok')  -- reply, then restart
-        run_command(shell_quote(init_d_path) .. ' restart')  -- will log_error() on failure
+        daemon_ctl('restart')  -- will log_error() on failure
         return result
     end
     if task_method == 'df' then
@@ -1391,10 +1541,10 @@ if get_uid() ~= 0 then
     os.exit(2)
 end
 if run_context == '/tmp' then
-    install_one_of('flock', 'flock')  -- the only 'install' prerequisite, but probably already installed
+    install_one_of('flock util-linux', 'flock')  -- the only 'install' prerequisite, but probably already installed
     local install_path = find_install_dir() .. bbsubd .. '.lua'
     local exit_code = 99
-    if install_init_service(install_path, init_d_path) then
+    if install_daemon_service(install_path) then
         log_info("B32020 successfully installed; exiting")
         exit_code = 0
     else
@@ -1405,7 +1555,7 @@ if run_context == '/tmp' then
     os.exit(exit_code)
 end
 if run_context ~= 'flock_locked' then
-    log_error("B16646 to install, run from '/tmp'; to run, use: " .. init_d_path .. " start")
+    log_error("B16646 to install the BitBurrow daemon, run from '/tmp'")
     close_log()
     os.exit(12)
 end
