@@ -22,6 +22,8 @@ import hub.util as util
 Berror = db.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
+active_long_polls = 0
+active_long_polls_lock = asyncio.Lock()
 
 adopt5l_route = '/5l/{subd}'  # download adopt5p.sh  (list of adopt stages in class Device())
 adopt5s_route = '/5s/{subd}'  # download bbbased.lua
@@ -401,13 +403,14 @@ async def ping(
             logger.warning(f"{e} (base {subd} at {ip})")
             raise BaseError("B23086 invalid ping request")  # generic API response for security
         if device.ott_id is not None:
-            device.ott_id = None  # tag_invalidate_device_ott
             db.log_out(device.ott_id)
+            device.ott_id = None  # tag_invalidate_device_ott
             logger.info(f"B51437 base {device.subd} completed adopt6e from {ip}")
         device.last_endpoint = ip
         device.last_handshake = ping_now.timestamp()
-    uptime = str(telemetry.get('uptime', ''))
-    logger.info(f"B37237 base {subd} at {ip} ping {uptime.lstrip(' ')}")
+    global active_long_polls
+    # uptime = str(telemetry.get('uptime', ''))  # FUTURE: change to using /proc/* data instead
+    logger.debug(f"B37237 base {subd} at {ip} connect (1 of {active_long_polls+1})")
     file_version = telemetry.get('file_version', None)
     if file_version is not None:  # automatic software updates
         available_version = util.source_file_datetime['hub/bbbased.lua']
@@ -426,37 +429,43 @@ async def ping(
                 task_args='',
                 timeout_seconds=60,
             )
-    wait_until = ping_now + TimeDelta(seconds=wait_seconds)
-    while True:
-        now = DateTime.now(TimeZone.utc)
-        if now > wait_until:  # long polling timeout
-            return BaseResult(
-                subd=subd,
-                status='ok',
-                task_id='demo-df-1',
-                task_method='df',
-                task_args='-hT',
-                timeout_seconds=60,
-            )
-        if util.shutdown_event.is_set():  # e.g. ctrl-c
-            remaining = round((wait_until - now).total_seconds())
-            logger.info(f'B64194 base {subd} long polling canceled ({remaining}s remaining)')
-            return BaseResult(subd=subd, status='ok')
-        if await request.is_disconnected():
-            remaining = round((wait_until - now).total_seconds())
-            logger.info(f'B88349 base {subd} connection disconnected ({remaining}s remaining)')
-            return BaseResult(subd=subd, status='ok')
-        # task = get_queued_task(device.id)
-        # if task:
-        #     return BaseResult(
-        #         subd=subd,
-        #         status='ok',
-        #         task_id=task.id,
-        #         task_method=task.method,
-        #         task_args=task.args,
-        #         timeout_seconds=task.timeout_seconds,
-        #     )
-        await asyncio.sleep(1)
+    async with active_long_polls_lock:
+        active_long_polls += 1
+    try:
+        wait_until = ping_now + TimeDelta(seconds=wait_seconds)
+        while True:
+            now = DateTime.now(TimeZone.utc)
+            if now > wait_until:  # long polling timeout
+                return BaseResult(
+                    subd=subd,
+                    status='ok',
+                    task_id='no_op',
+                    task_method='no_op',
+                    task_args='',
+                    timeout_seconds=60,
+                )
+            if util.shutdown_event.is_set():  # e.g. ctrl-c
+                remaining = round((wait_until - now).total_seconds())
+                logger.info(f'B64194 base {subd} long polling canceled ({remaining}s remaining)')
+                return BaseResult(subd=subd, status='ok')
+            if await request.is_disconnected():
+                remaining = round((wait_until - now).total_seconds())
+                logger.info(f'B88349 base {subd} connection disconnected ({remaining}s remaining)')
+                return BaseResult(subd=subd, status='ok')
+            # task = get_queued_task(device.id)
+            # if task:
+            #     return BaseResult(
+            #         subd=subd,
+            #         status='ok',
+            #         task_id=task.id,
+            #         task_method=task.method,
+            #         task_args=task.args,
+            #         timeout_seconds=task.timeout_seconds,
+            #     )
+            await asyncio.sleep(1)
+    finally:
+        async with active_long_polls_lock:
+            active_long_polls -= 1
 
 
 @jsonrpc_entrypoint.method(errors=[BaseError])
