@@ -17,7 +17,7 @@ from sqlmodel import Field, Session, SQLModel, select, JSON, Column, Relationshi
 import subprocess
 import tempfile
 import threading
-from typing import Optional, Any
+from typing import Any
 import urllib.parse
 import hub.login_key as lk
 import hub.net as net
@@ -112,7 +112,7 @@ lkocc_string = '__login_key_or_coupon_code__'
 
 
 class Account(SQLModel, table=True):
-    id: Optional[int] = Field(primary_key=True, default=None)
+    id: int | None = Field(primary_key=True, default=None)
     login: str = Field(index=True, unique=True)  # 'login' field is used like a username
     key_hash: str = ''  # Argon2 hash of key (used like a hashed password)
     clients_max: int = 7
@@ -122,12 +122,12 @@ class Account(SQLModel, table=True):
     )
     valid_until: DateTime = Field(
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
-        default=DateTime(1970, 1, 1, tzinfo=TimeZone.utc),  # Unix epoc
+        default=DateTime(1970, 1, 1, tzinfo=TimeZone.utc),  # Unix epoch
     )
     kind: AccountKind = AccountKind.NONE
-    parent_id: int = 0  # id of Account that created this one, e.g. coupon code
-    intf_id: Optional[int] = Field(foreign_key='intf.id')  # used only if kind == USER
-    email: str = ""  # optional, allow login key reset
+    parent_id: int | None = Field(foreign_key='account.id', default=None)  # this account's creator
+    intf_id: int | None = Field(foreign_key='intf.id', default=None)  # used only if kind == USER
+    email: str = ''  # optional, allow login key reset
     comment: str = ""
     login_sessions: list['LoginSession'] = Relationship(back_populates='account')
     devices: list['Device'] = Relationship(back_populates='account')
@@ -299,7 +299,7 @@ class LoginSessionKind(enum.Enum):
 
 
 class LoginSession(SQLModel, table=True):
-    id: Optional[int] = Field(primary_key=True, default=None)
+    id: int | None = Field(primary_key=True, default=None)
     account_id: int = Field(foreign_key='account.id')
     kind: LoginSessionKind = LoginSessionKind.DISABLED
     token_hash: str = Field(index=True, unique=True)
@@ -315,9 +315,9 @@ class LoginSession(SQLModel, table=True):
         sa_column=Column(sqlalchemy.DateTime(timezone=True), index=True),
         default_factory=lambda: DateTime.now(TimeZone.utc) + TimeDelta(days=1),
     )
-    account: Optional[Account] = Relationship(back_populates="login_sessions")
-    ip: str
-    user_agent: str
+    account: Account | None = Relationship(back_populates='login_sessions')
+    ip: str = ''
+    user_agent: str = ''
 
 
 def new_login_session(
@@ -379,20 +379,20 @@ def iter_get_login_session_by_account_id(aid: int | None):
 
 class Device(SQLModel, table=True):
     __table_args__ = (  # name_slug must be unique *for this user*
-        sqlalchemy.UniqueConstraint("account_id", "name_slug", name="uq_device_account_slug"),
-        sqlalchemy.Index("ix_device_account_slug", "account_id", "name_slug"),
+        sqlalchemy.UniqueConstraint('account_id', 'name_slug', name='uq_device_account_slug'),
+        sqlalchemy.Index('ix_device_account_slug', 'account_id', 'name_slug'),
     )
-    id: Optional[int] = Field(primary_key=True, default=None)
-    account_id: Optional[int] = Field(index=True, foreign_key='account.id')  # device admin--manager
+    id: int | None = Field(primary_key=True, default=None)
+    account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager
     name: str = ''  # e.g. "Base SPW" but user can modify
-    name_slug: Optional[str] = Field(index=True)  # URL-safe version of name
+    name_slug: str = Field(index=True)  # URL-safe version of name
     # for bases, subd is the left-most label of FQDN, e.g. y99g in y99g.vxm.example.org
-    subd: Optional[str] = Field(index=True, unique=True)
+    subd: str = Field(index=True, unique=True)
     last_endpoint: str | None = None  # most recent public IP
     last_handshake: int | None = None  # seconds past Unix epoch
-    ott_id: Optional[int] = Field(foreign_key='loginsession.id')  # one-time token for adopting
+    ott_id: int | None = Field(foreign_key='loginsession.id', default=None)  # one-time token
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
-    account: Optional[Account] = Relationship(back_populates="devices")
+    account: Account | None = Relationship(back_populates='devices')
     comment: str = ""
 
     def adopt_state(self) -> str:
@@ -443,8 +443,8 @@ class IntfMethod(enum.Enum):  # method used to configure Wireguard
 
 
 class Intf(SQLModel, table=True):
-    id: Optional[int] = Field(primary_key=True, default=None)
-    device_id: Optional[int] = Field(index=True, foreign_key='device.id')  # device this intf is on
+    id: int | None = Field(primary_key=True, default=None)
+    device_id: int = Field(index=True, foreign_key='device.id')  # device this intf is on
     ipv4_base: str = ''  # ipaddress.ip_network() but without the subnet prefix
     ipv6_base: str = ''
     host_id: int = 0  # host portion of IP address, e.g. 1 for muti-peer; applies to IPv4 and IPv6
@@ -452,19 +452,19 @@ class Intf(SQLModel, table=True):
     allowed_ipv4_subnet: int = 32  # our allowed IPs, i.e. AllowedIPs in Peer section of our peer
     allowed_ipv6_subnet: int = 128
     # 'base_intf_id' is our peer (server) on single-peer interfaces; otherwise None
-    base_intf_id: Optional[int] = Field(index=True, foreign_key='intf.id')
+    base_intf_id: int | None = Field(index=True, foreign_key='intf.id', default=None)
     wg_privkey: str = Field(index=True, unique=True, nullable=False)
     wg_pubkey: str = Field(index=True, unique=True, nullable=False)
-    backend_port: int | None
+    backend_port: int | None = None
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
-    frontend_ports: list[int] = Field(sa_column=Column(JSON))  # on base's public IP
+    frontend_ports: list[int] = Field(sa_column=Column(JSON), default_factory=list)  # on public IP
     # 'other' is a dict of all other config options, official and custom
-    keepalive: int | None
+    keepalive: int | None = None
     other: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
-    last_endpoint: str | None
-    last_handshake: int | None  # seconds past Unix epoch
-    ssh_privkey: str | None
-    ssh_pubkey: str | None
+    last_endpoint: str | None = None
+    last_handshake: int | None = None  # seconds past Unix epoch
+    ssh_privkey: str | None = None
+    ssh_pubkey: str | None = None
     comment: str = ""
     default_method: IntfMethod = IntfMethod.NONE
     model_config = ConfigDict(arbitrary_types_allowed=True)  # for Column(JSON)
