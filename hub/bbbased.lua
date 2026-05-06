@@ -1564,7 +1564,8 @@ end
 -- make sure prerequisites are installed
 --
 
-log_warning("B20392 start BitBurrow base daemon (log level " .. logging_level .. ")")
+log_warning("B20392 BitBurrow base daemon, log level " .. logging_level
+    .. ", version " .. file_version)
 install_one_of('curl', 'curl')
 install_one_of('openssl openssl-util', 'openssl')
 install_one_of('wireguard-tools wg-installer-server', 'wg')

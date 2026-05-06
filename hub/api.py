@@ -102,9 +102,13 @@ async def log_error(subd: str, request: Request) -> Response:
     body_text = body_unsafe[:900].decode('utf-8', errors='replace')
     disp = ''.join(c if c.isprintable() and c not in '\r\n\t' else repr(c)[1:-1] for c in body_text)
     if re.match(r'^B[0-9]{5} ', disp):  # front the Berror code
-        logger.warning(f"{disp[0:7]}base {subd} {disp[7:]}")  # client errors are warnings here
+        message = f"{disp[0:7]}base {subd} {disp[7:]}"
     else:
-        logger.warning(f"base {subd} {disp}")
+        message = f"base {subd} {disp}"
+    if message[0] == 'B' and message[1:6] == '20392':  # bypass Berror code dup detection
+        logger.info(message)  # use logger.info() for base daemon startup message
+    else:
+        logger.warning(message)  # other client errors are warnings here
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
