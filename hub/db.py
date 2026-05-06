@@ -980,19 +980,8 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
             + f''' {net.default_route_interface()} --jump MASQUERADE'''
         )
     elif platform_l2 == 'linux.openwrt':
-        do("""ip -4 addr |awk '/inet /{split($2,a,"/");if(a[2]!=24)next;""")
-        do("""split(a[1],o,".");k=o[1]"."o[2]"."o[3];if(++s[k]==2)h=1}END{exit h?0:1}'""")
-        do("""if [ $? -eq 0 ]; then""")  # if needed, set LAN subnet to not overlap with upstream
-        do("""    OCTET3=$(awk 'BEGIN{srand(); print 110 + int(rand()*131)}')""")  # random 110..240
-        do("""    uci set network.lan.ipaddr=192.168.$OCTET3.1""")  # hoping this subnet is unused
-        do("""    uci set network.lan.netmask=255.255.255.0""")
-        do("""    uci set network.lan.proto=static""")
-        do("""    uci commit network""")
-        do("""    /etc/init.d/network restart""")
-        do("""    /etc/init.d/dnsmasq restart""")
-        do("""    rm -f /tmp/dhcp.leases""")
-        do("""    killall -HUP dnsmasq""")
-        do("""fi""")
+        for line in util.fix_lan_overlap_shell_code().splitlines():
+            do(line)
         # FIXME: IPv6 is disabled by default on some OpenWrt routers, resulting in
         # `RTNETLINK answers: Permission denied` even as root. A possible
         # fix is:
@@ -1028,15 +1017,11 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
             f'''# DISCONNECT: ip rule del table main suppress_prefixlength 0;'''
             + f''' ip link del dev {wgif}'''
         )
+    lines = '\n'.join(out) + '\n'
     if platform.endswith('.gzb'):
-        meta_out = list()
-        meta_out.append('''T=$(mktemp)''')
-        meta_out.append(util.gzip_base64('\n'.join(out) + '\n', 33, 'echo ', '>>$T\n').rstrip())
-        meta_out.append('''sh -c "$(cat $T|openssl base64 -d|gunzip)"''')  # 33 matches this width
-        meta_out.append('''rm -f $T''')
-        return '\n'.join(meta_out) + '\n'
+        return '\n'.join(util.gzbify(lines)) + '\n'
     else:
-        return '\n'.join(out) + '\n'
+        return lines
 
 
 def hub_intf_exists(session):
@@ -1232,10 +1217,13 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
             device.ott_id = lsid
             session.commit()
             logger.info(f"B87566 base {device.subd} completed adopt5a (OTT {lsid} created)")
+            # don't gzipify last 5 lines in case openssl isn't installed
+            lan_overlap_fix = util.gzbify(util.fix_lan_overlap_shell_code())
             # note: if token[0] or token[22] is '-', echo still just echos, i.e. it
             # doesn't complain about an invalid option :-)
             value = (  # should be mirrored in delete_adopt5c_code(); search: tag_adopt5c_code
-                f'T=/tmp/{ott_filename(device.subd)}\n'
+                lan_overlap_fix
+                + f'T=/tmp/{ott_filename(device.subd)}\n'
                 + f'echo {token[0:22]}>$T\n'
                 + f'echo {token[22:]}>>$T\n'
                 + f'U={conf.base_url()}{api_path.format(subd=device.subd)}\n'

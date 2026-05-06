@@ -960,7 +960,24 @@ local function delete_adopt5c_code(path)
     -- return false iff adopt5c code was found and deleted
     -- return nil on failure
     local prefixes = {  -- should mirror get_adopt5c_code(); search: tag_adopt5c_code
-        'T=/tmp/',
+        'T=$(mktemp)',  -- lan_overlap_fix part
+        'echo ',
+        'echo ',
+        'echo ',
+        'echo ',
+        'echo ',
+        'echo ',
+        'echo ',
+        'echo ',
+        'echo ',
+        'echo ',
+        'echo ',
+        'echo ',
+        'echo ',
+        'echo ',
+        'sh -c ',
+        'rm -f ',
+        'T=/tmp/',  -- OTT part
         'echo ',
         'echo ',
         'U=http',

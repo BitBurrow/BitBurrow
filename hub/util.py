@@ -186,12 +186,45 @@ def integrity_test_by_id(test_id):
     return failed_count == 0
 
 
+def fix_lan_overlap_shell_code():
+    """Return Ash shell code that checks for and tries to fix overlapping LAN subnets.
+
+    This can happen if the router's WAN port is connected downstream of another
+    router with the same LAN subnet, e.g. 192.168.8.0/24."""
+    return (
+        """ip -4 addr |awk '/inet /{split($2,a,"/");if(a[2]!=24)next;\n"""
+        + """split(a[1],o,".");k=o[1]"."o[2]"."o[3];if(++s[k]==2)h=1}END{exit h?0:1}'\n"""
+        + """if [ $? -eq 0 ]; then\n"""
+        # choose a random subnet; avoid 192.168.100.x famously associated with cable modems, etc.
+        + """    OCTET3=$(awk 'BEGIN{srand(); print 104 + int(rand()*137)}')\n"""
+        + """    uci set network.lan.ipaddr=192.168.$OCTET3.1\n"""  # hoping this subnet is unused
+        + """    uci set network.lan.netmask=255.255.255.0\n"""
+        + """    uci set network.lan.proto=static\n"""
+        + """    uci commit network\n"""
+        + """    /etc/init.d/network restart\n"""
+        + """    /etc/init.d/dnsmasq restart\n"""
+        + """    rm -f /tmp/dhcp.leases\n"""
+        + """    killall -HUP dnsmasq\n"""
+        + """fi\n"""
+    )
+
+
 def gzip_base64(s: str, wrap: int = 76, prefix: str = '', postfix: str = '\n') -> str:
     buf = io.BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=9) as f:
         f.write(s.encode("utf-8"))
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return ''.join([f'{prefix}{b64[i:i+wrap]}{postfix}' for i in range(0, len(b64), wrap)])
+
+
+def gzbify(input: str, max_width=33) -> str:
+    """gzip, then base64-encode, then wrap in extraction code"""
+    return (
+        '''T=$(mktemp)\n'''
+        + gzip_base64(input, max_width, 'echo ', '>>$T\n').rstrip()
+        + '''\nsh -c "$(cat $T|openssl base64 -d|gunzip)"\n'''  # 33 matches this width
+        + '''rm -f $T\n'''
+    )
 
 
 def slugify(s: str, *, max_len: int = 32) -> str:
