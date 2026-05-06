@@ -10,7 +10,9 @@ import json
 import os
 import logging
 import re
+from sqlmodel import Field
 import time
+from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -124,7 +126,7 @@ class BaseResult(BaseModel):
     status: str
     task_id: str | None = None
     task_method: str | None = None
-    task_args: str | None = None
+    task_args: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int | None = None
 
 
@@ -411,7 +413,8 @@ async def ping(
             device.ott_id = None  # tag_invalidate_device_ott
             logger.info(f"B51437 base {device.subd} completed adopt6e from {ip}")
         device.last_endpoint = ip
-        device.last_handshake = ping_now.timestamp()
+        device.last_handshake = int(ping_now.timestamp())
+        device_id = device.id
     global active_long_polls
     # uptime = str(telemetry.get('uptime', ''))  # FUTURE: change to using /proc/* data instead
     logger.debug(f"B37237 base {subd} at {ip} connect (1 of {active_long_polls+1})")
@@ -424,14 +427,11 @@ async def ping(
                 logger.warning(f"B91300 base {subd} {from_to} (downgrading)")
             else:
                 logger.info(f"B83121 base {subd} {from_to}")
-            # add_queued_task(device.id, 'update')
-            return BaseResult(
-                subd=subd,
-                status='ok',
-                task_id='update-1',
-                task_method='update',
-                task_args='',
-                timeout_seconds=60,
+            db.enqueue_task(
+                device_id=device_id,
+                method='update',
+                priority=5,
+                dedupe=True,
             )
     async with active_long_polls_lock:
         active_long_polls += 1
@@ -440,14 +440,7 @@ async def ping(
         while True:
             now = DateTime.now(TimeZone.utc)
             if now > wait_until:  # long polling timeout
-                return BaseResult(
-                    subd=subd,
-                    status='ok',
-                    task_id='no_op',
-                    task_method='no_op',
-                    task_args='',
-                    timeout_seconds=60,
-                )
+                return BaseResult(subd=subd, status='ok')
             if util.shutdown_event.is_set():  # e.g. ctrl-c
                 remaining = round((wait_until - now).total_seconds())
                 logger.info(f'B64194 base {subd} long polling canceled ({remaining}s remaining)')
@@ -456,17 +449,17 @@ async def ping(
                 remaining = round((wait_until - now).total_seconds())
                 logger.info(f'B88349 base {subd} connection disconnected ({remaining}s remaining)')
                 return BaseResult(subd=subd, status='ok')
-            # task = get_queued_task(device.id)
-            # if task:
-            #     return BaseResult(
-            #         subd=subd,
-            #         status='ok',
-            #         task_id=task.id,
-            #         task_method=task.method,
-            #         task_args=task.args,
-            #         timeout_seconds=task.timeout_seconds,
-            #     )
-            await asyncio.sleep(1)
+            task = db.next_task(device_id)
+            if task:
+                return BaseResult(
+                    subd=subd,
+                    status='ok',
+                    task_id=str(task.id),
+                    task_method=task.method,
+                    task_args=task.args or dict(),
+                    timeout_seconds=wait_seconds,
+                )
+            await asyncio.sleep(2)
     finally:
         async with active_long_polls_lock:
             active_long_polls -= 1
@@ -494,18 +487,19 @@ async def task_result(
             params = payload['params']
             if params.get('subd') != subd:
                 raise Berror(f"B99725 subd mismatch: {params.get('subd')} != {subd}")
-            if params.get("task_id") != task_id:
+            if params.get('task_id') != task_id:
                 raise Berror("B43120 task_id mismatch")
-            if params.get("task_method") != task_method:
+            if params.get('task_method') != task_method:
                 raise Berror("B68410 task_method mismatch")
             if len(output) > 20000:
                 raise Berror("B32614 task output too large")
+            status = db.DeviceTaskStatus.DONE if ok else db.DeviceTaskStatus.FAILED
+            try:
+                db.mark_task_status(int(task_id), status, device_id=device.id)
+            except ValueError:
+                raise Berror(f"B72809 invalid task_id: {task_id}")
         except (Berror, db.CredentialsError) as e:
             logger.warning(f"{e} (base {subd} at {ip})")
             raise BaseError("B34089 invalid task_result request")
         # device.telemetry = ...
-    logger.info(
-        f"B79852 base {subd} {task_id=} {task_method=} {ok=}: "
-        + f"{re.sub(r'\n[ \t]*', r'\\n', re.sub(r'[ \t]+', ' ', output[:25]))}"
-    )
-    return BaseResult(subd=subd, status="ok")
+    return BaseResult(subd=subd, status='ok')

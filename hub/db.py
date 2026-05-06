@@ -575,6 +575,186 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
         return intf.id
 
 
+###
+### DB table DeviceTask - queued item for a Device to do
+###
+
+
+class DeviceTaskStatus(enum.Enum):
+    QUEUED = 20  # new, waiting
+    ASSIGNED = 40  # given to a device to do
+    DONE = 60
+    FAILED = 80
+
+
+class DeviceTask(SQLModel, table=True):
+    __table_args__ = (
+        sqlalchemy.Index('ix_device_task_next', 'device_id', 'status', 'priority', 'position'),
+    )
+    id: int | None = Field(primary_key=True, default=None)
+    device_id: int = Field(index=True, foreign_key='device.id')
+    status: DeviceTaskStatus = Field(default=DeviceTaskStatus.QUEUED)
+    priority: int = Field(default=0)  # range -9 (lowest) to 9 (highest)
+    position: int  # larger for newer tasks; multiple workers can cause dups
+    method: str  # e.g. 'update', 'no_op'
+    args: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
+    created_at: DateTime = Field(
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default_factory=lambda: DateTime.now(TimeZone.utc),
+    )
+    assigned_at: DateTime | None = Field(
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default=None,
+    )
+    finished_at: DateTime | None = Field(
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default=None,
+    )
+
+
+def next_task(device_id: int) -> DeviceTask | None:
+    """Assign and return the next (top) queued task for a device."""
+    with Session(engine) as session:
+
+        def requeue_stale_assigned_tasks(stale_after_seconds: int = 600) -> None:
+            stale_before = DateTime.now(TimeZone.utc) - TimeDelta(seconds=stale_after_seconds)
+            statement = (
+                sqlalchemy.update(DeviceTask)
+                .where(DeviceTask.device_id == device_id)
+                .where(DeviceTask.status == DeviceTaskStatus.ASSIGNED)
+                .where(DeviceTask.assigned_at != None)
+                .where(DeviceTask.assigned_at < stale_before)
+                .values(
+                    status=DeviceTaskStatus.QUEUED,
+                    assigned_at=None,
+                )
+            )
+            result = session.exec(statement)
+            if result.rowcount:
+                logger.warning(f"B14627 requeued {result.rowcount} stale task(s), {device_id=}")
+            session.commit()
+
+        requeue_stale_assigned_tasks()
+        for retry in range(20):
+            statement = (
+                select(DeviceTask.id)
+                .where(DeviceTask.device_id == device_id)
+                .where(DeviceTask.status == DeviceTaskStatus.QUEUED)
+                .order_by(
+                    DeviceTask.priority.desc(),  # high priority trumps position
+                    DeviceTask.position.asc(),
+                    DeviceTask.id.asc(),  # is is tie-breaker if all others are equal
+                )
+                .limit(1)
+            )
+            task_id = session.exec(statement).first()
+            if task_id is None:
+                return None  # no pending tasks
+            update_statement = (
+                sqlalchemy.update(DeviceTask)
+                .where(DeviceTask.id == task_id)
+                .where(DeviceTask.status == DeviceTaskStatus.QUEUED)
+                .values(
+                    status=DeviceTaskStatus.ASSIGNED,
+                    assigned_at=DateTime.now(TimeZone.utc),
+                )
+            )
+            result = session.exec(update_statement)
+            if result.rowcount == 1:
+                session.commit()
+                return session.get(DeviceTask, task_id)
+            session.rollback()
+        raise Berror(f"B19708 could not find next task, {device_id=}")
+
+
+def enqueue_task(
+    device_id: int,
+    method: str,
+    args: dict[str, Any] | None = None,
+    priority: int = 0,
+    dedupe: bool = False,
+) -> DeviceTask:
+    """Add a task to the bottom of a device's queue.
+
+    If dedupe, and method is already queued or assigned, return existing task. Note dedupe
+    can count tasks with different args as duplicate. Note dedup is best-effort (race-prone).
+    """
+    if priority < -9 or priority > 9:
+        raise Berror(f"B25273 invalid priority {priority}")
+    with Session(engine) as session:
+        if dedupe:
+            existing_statement = (
+                select(DeviceTask)
+                .where(DeviceTask.device_id == device_id)
+                .where(DeviceTask.method == method)
+                .where(
+                    DeviceTask.status.in_(
+                        [
+                            DeviceTaskStatus.QUEUED,
+                            DeviceTaskStatus.ASSIGNED,
+                        ],
+                    ),
+                )
+                .order_by(
+                    DeviceTask.priority.desc(),
+                    DeviceTask.position.asc(),
+                    DeviceTask.id.asc(),
+                )
+                .limit(1)
+            )
+            existing_task = session.exec(existing_statement).first()
+            if existing_task is not None:
+                return existing_task
+        position_statement = select(func.max(DeviceTask.position)).where(
+            DeviceTask.device_id == device_id,
+        )
+        max_position = session.exec(position_statement).one()  # max() always returns 1 value
+        task = DeviceTask(
+            device_id=device_id,
+            status=DeviceTaskStatus.QUEUED,
+            priority=priority,
+            position=0 if max_position is None else max_position + 1,
+            method=method,
+            args=args or dict(),
+            created_at=DateTime.now(TimeZone.utc),
+        )
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+        return task
+
+
+def mark_task_status(
+    task_id: int,
+    status: DeviceTaskStatus,
+    device_id: int | None = None,
+) -> None:
+    """Mark an assigned task as done or failed. Raise Berror on failure."""
+    if status not in (DeviceTaskStatus.DONE, DeviceTaskStatus.FAILED):
+        raise Berror(f"B14766 invalid task status {status}")
+    with Session(engine) as session:
+        statement = (
+            sqlalchemy.update(DeviceTask)
+            .where(DeviceTask.id == task_id)
+            .where(DeviceTask.status == DeviceTaskStatus.ASSIGNED)
+            .values(
+                status=status,
+                finished_at=DateTime.now(TimeZone.utc),
+            )
+        )
+        if device_id is not None:
+            statement = statement.where(DeviceTask.device_id == device_id)
+        result = session.exec(statement)
+        session.commit()
+        if result.rowcount != 1:
+            raise Berror(f"B92552 task {task_id} was not assigned")
+
+
+###
+### helper methods
+###
+
+
 def update_wg_show():
     now = DateTime.now(TimeZone.utc)
     last = getattr(update_wg_show, "last_update", None)  # FIXME: is this thread-safe?
@@ -1131,11 +1311,6 @@ def delete_our_wgif(isShutdown):  # clean up wg network interfaces
 def on_shutdown():
     net.sudo_undo_iptables()
     delete_our_wgif(isShutdown=True)
-
-
-###
-### helper methods
-###
 
 
 def simplify(obj):
