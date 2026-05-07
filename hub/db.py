@@ -1227,6 +1227,8 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
                 + f'U={conf.base_url()}{api_path.format(subd=device.subd)}\n'
                 + f'(curl $U || wget -O- $U) |sh\n'
             )
+            # try to make sure delete_adopt5c_code() in bbbased.lua will work
+            util.verify_adopt5c_code_prefixes(value)  # logs errors; should we fail too?
             cache_ttl = TimeDelta(
                 hours=1
             )  # in RAM for 60 minutes (safely longer than OTT validity)

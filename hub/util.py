@@ -192,6 +192,7 @@ def fix_lan_overlap_shell_code() -> str:
     This can happen if the router's WAN port is connected downstream of another
     router with the same LAN subnet, e.g. 192.168.8.0/24."""
     return (
+        # should be mirrored in delete_adopt5c_code(); search: tag_adopt5c_code
         """if ip -4 addr |{\n"""
         + """  s=,\n"""
         + """  while read -r x y z; do\n"""
@@ -372,6 +373,45 @@ async def test_fix_lan_overlap_shell_code() -> None:
                     f"B65449 fix_lan_overlap test {test_num} failed: "
                     + f"expected '{expected}', got '{result}' (using {shell})"
                 )
+
+
+def verify_adopt5c_code_prefixes(adopt5c_code):
+    """Return true iff Lua prefixes match the start of adopt5c_code lines."""
+    lua_path = os.path.join(project_root_path, 'hub/bbbased.lua')
+    adopt5c_lines = adopt5c_code.splitlines()
+    in_prefixes = False
+    with open(lua_path, encoding='utf-8') as f:
+        for line_num, line in enumerate(f):
+            line = line.split('--', 1)[0].strip()
+            if not in_prefixes:
+                if line == 'local prefixes = {':
+                    in_prefixes = True
+                    line_offset = line_num + 1  # file offset of first prefix line
+                continue
+            if line == '}':
+                break
+            if not line or not line.endswith(','):
+                logger.error(f"B27184 malformed prefixes line in {lua_path}: {line}")
+                return False
+            value = line[:-1].strip()
+            if len(value) < 2 or value[0] != "'" or value[-1] != "'":
+                logger.error(f"B88758 malformed prefixes line in {lua_path}: {line}")
+                return False
+            try:
+                rline = line_num - line_offset
+                have = adopt5c_lines[rline][0 : len(value) - 2]
+                if have != value[1:-1]:
+                    logger.error(
+                        f"B70722 adopt5c_code line {rline}"
+                        + f" begins '{have}', expecting '{value[1:-1]}'"
+                    )
+            except IndexError:
+                logger.error(f"B67971 {len(adopt5c_lines)=}, {rline=}")
+                return False
+        if not in_prefixes:
+            logger.error(f"B61331 no prefixes found in {lua_path}")
+            return False
+    return True
 
 
 def gzip_base64(s: str, wrap: int = 76, prefix: str = '', postfix: str = '\n') -> str:
