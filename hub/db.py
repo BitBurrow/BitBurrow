@@ -1217,12 +1217,10 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
             device.ott_id = lsid
             session.commit()
             logger.info(f"B87566 base {device.subd} completed adopt5a (OTT {lsid} created)")
-            # don't gzipify last 5 lines in case openssl isn't installed
-            lan_overlap_fix = util.gzbify(util.fix_lan_overlap_shell_code())
             # note: if token[0] or token[22] is '-', echo still just echos, i.e. it
             # doesn't complain about an invalid option :-)
             value = (  # should be mirrored in delete_adopt5c_code(); search: tag_adopt5c_code
-                lan_overlap_fix
+                util.fix_lan_overlap_shell_code()  # avoid gzbify() OpenSSL dependency
                 + f'T=/tmp/{ott_filename(device.subd)}\n'
                 + f'echo {token[0:22]}>$T\n'
                 + f'echo {token[22:]}>>$T\n'
