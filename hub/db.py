@@ -534,9 +534,10 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
         intf.allowed_ipv4_subnet = 0
         intf.allowed_ipv6_subnet = 0
     intf.base_intf_id = base_intf_id
-    intf.wg_privkey = net.sudo_wg(['genkey'])
-    intf.wg_pubkey = net.sudo_wg(['pubkey'], input=intf.wg_privkey)
-    if base_is_hub:  # on the hub, use ports from config file
+    if base_is_hub:
+        intf.wg_privkey = net.sudo_wg(['genkey'])  # all managed devices generate own privkey
+        intf.wg_pubkey = net.sudo_wg(['pubkey'], input=intf.wg_privkey)
+        # on the hub, use ports from config file
         intf.backend_port = conf.get('backend.wg_port')
         intf.frontend_ports = [conf.get('frontend.wg_port')]
         intf.default_method = IntfMethod.LOCAL
@@ -1045,7 +1046,7 @@ def create_hub_if_missing(session):
 
 
 def new_device(account_id, is_base: bool, name: str) -> str:
-    """Create a new device and return it's name_slug. For bases, set up WireGuard on the hub."""
+    """Create a new device and return it's name_slug."""
     with Session(engine) as session:
         if is_base:
             create_hub_if_missing(session)  # in case this is the first base router
@@ -1062,10 +1063,8 @@ def new_device(account_id, is_base: bool, name: str) -> str:
         # find a unique (for this user) name_slug
         name_slug = lambda attempt: slugged + ('' if attempt == 0 else str(attempt))
         set_unique_value(session, device, 'name_slug', retry=1000, valuef=name_slug)
-        if is_base:  # create WireGuard connection between the new device and the hub
+        if is_base:  # create an Intf for a WireGuard connection between the new device and the hub
             hub_peer_id = new_intf(device_id=device.id, base_intf_id=hub_id)
-            hub_peer_conf = get_conf_activate_peer(hub_peer_id)
-            methodize(hub_peer_conf, 'local.linux')
             logger.info(f"B16979 base {device.subd} completed adopt0c (Device {device.id} created)")
         else:
             logger.debug(f"B04560 device {device.id} created")
@@ -1236,26 +1235,37 @@ def get_adopt5c_code(device_id, api_path: str) -> str:
             return value
 
 
-def store_adopt6c_pubkeys(device_id, auth_pubkey: str | None = None, wg_pubkey: str | None = None):
+def store_adopt6c_pubkey(device_id, auth_pubkey: str):
     with Session(engine) as session:
         try:
             device: Device = session.exec(select(Device).where(Device.id == device_id)).one()
         except sqlalchemy.exc.NoResultFound:
             raise Berror(f"B49534 device {device_id} not found")
-        if auth_pubkey:
-            device.auth_pubkey = auth_pubkey
-            session.add(device)
-        if wg_pubkey:
-            statement = select(Intf).where(Intf.device_id == device.id, Intf.base_intf_id == hub_id)
-            try:
-                intf: Intf = session.exec(statement).one()
-            except sqlalchemy.exc.NoResultFound:
-                raise Berror(f"B92660 wgbb1 not found for subd {device.subd}")
-            except sqlalchemy.exc.MultipleResultsFound:
-                raise Berror(f"B59694 multiple wgbb1 found for subd {device.subd}")
-            intf.wg_pubkey = wg_pubkey
-            session.add(intf)
+        device.auth_pubkey = auth_pubkey
+        session.add(device)
         session.commit()
+
+
+def store_wg_pubkey(device_id, wg_pubkey: str) -> str:
+    """Configure WireGuard for a new client; return an IPv4,IPv6 address pair"""
+    with Session(engine) as session:
+        try:
+            device: Device = session.exec(select(Device).where(Device.id == device_id)).one()
+        except sqlalchemy.exc.NoResultFound:
+            raise Berror(f"B99176 device {device_id} not found")
+        statement = select(Intf).where(Intf.device_id == device.id, Intf.base_intf_id == hub_id)
+        try:
+            intf: Intf = session.exec(statement).one()
+        except sqlalchemy.exc.NoResultFound:
+            raise Berror(f"B92660 wgbb1 not found for subd {device.subd}")
+        except sqlalchemy.exc.MultipleResultsFound:
+            raise Berror(f"B59694 multiple wgbb1 found for subd {device.subd}")
+        intf.wg_pubkey = wg_pubkey
+        session.add(intf)
+        session.commit()
+        hub_peer_conf = get_conf_activate_peer(intf.id)
+        methodize(hub_peer_conf, 'local.linux')  # runs 'wg set wgbb1 peer ... allowed-ips ...'
+        return f'{intf.ipv4cidr()},{intf.ipv6cidr()}'
 
 
 def hub_peer_id(device_id) -> int | None:

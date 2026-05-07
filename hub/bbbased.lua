@@ -1158,8 +1158,7 @@ local function do_adopt6c()
     local retry_wait = 7
     local retries_left = 2
     local auth_pubkey = read_text_file(auth_pubkey_path, false)
-    local wg_pubkey = read_text_file(wg_pubkey_path, false)
-    if not auth_pubkey or not wg_pubkey then
+    if not auth_pubkey then
         -- log_error() already called from read_text_file()
         return nil
     end
@@ -1191,8 +1190,7 @@ local function do_adopt6c()
             .. '"params":{'
                 .. '"subd":"' .. json_escape(subd) .. '",'
                 .. '"token":"' .. json_escape(token) .. '",'
-                .. '"auth_pubkey":"' .. json_escape(auth_pubkey) .. '",'
-                .. '"wg_pubkey":"' .. json_escape(wg_pubkey) .. '"'
+                .. '"auth_pubkey":"' .. json_escape(auth_pubkey) .. '"'
                 .. '}'
             .. '}'
         local write_ok = write_text_file(request_path, request_body, '0600')
@@ -1605,7 +1603,7 @@ install_one_of('wireguard-tools wg-installer-server', 'wg')
 --
 
 mkdir(config_dir, '0700')
-if not ensure_auth_keys() or not ensure_wg_keys() then
+if not ensure_auth_keys() then
     log_error("B60585 cannot continue without key files; exiting")
     cleanup_and_exit(5)
 end

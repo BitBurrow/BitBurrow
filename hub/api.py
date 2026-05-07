@@ -145,7 +145,6 @@ def adopt6c(
     subd: str = Body(...),
     token: str = Body(...),
     auth_pubkey: str = Body(...),
-    wg_pubkey: str = Body(...),
 ) -> BaseResult:
     ip = request.client.host if request.client else '(unknown)'
     try:
@@ -165,7 +164,7 @@ def adopt6c(
         if public_key.key_size < 2048:
             raise Berror("B99756 auth_pubkey too small")
         # store public keys
-        db.store_adopt6c_pubkeys(device.id, auth_pubkey, wg_pubkey)
+        db.store_adopt6c_pubkey(device.id, auth_pubkey)
     except (Berror, db.CredentialsError) as e:
         logger.warning(f"{e} (base {subd} at {ip})")
         raise BaseError("B87908 invalid adopt6c request")  # for security, give generic API response
@@ -503,3 +502,32 @@ async def task_result(
             raise BaseError("B34089 invalid task_result request")
         # device.telemetry = ...
     return BaseResult(subd=subd, status='ok')
+
+
+@jsonrpc_entrypoint.method(errors=[BaseError])
+async def wg(
+    request: Request,
+    subd: str = Body(...),
+    pubkey: str = Body(...),
+) -> BaseResult:
+    """Store WireGuard pubkey and return assigned WireGuard addresses."""
+    ip = request.client.host if request.client else '(unknown)'
+    with db.device_by_subd(subd) as device:
+        try:
+            payload = await verify_signed_request(
+                request=request,
+                auth_pubkey_pem=device.auth_pubkey,
+                allow_sha256_fallback=True,
+                max_clock_skew_seconds=300,
+                nonce_ttl_seconds=600,
+            )
+            params = payload['params']
+            if params.get('subd') != subd:
+                raise Berror(f"B71924 subd mismatch: {params.get('subd')} != {subd}")
+            if params.get('pubkey') != pubkey:
+                raise Berror("B21788 pubkey mismatch")
+            addresses = db.store_wg_pubkey(device.id, pubkey)
+        except (Berror, db.CredentialsError) as e:
+            logger.warning(f"{e} (base {subd} at {ip})")
+            raise BaseError("B80541 invalid wg request")
+    return BaseResult(subd=subd, status='ok', addresses=addresses)
