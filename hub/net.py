@@ -182,7 +182,7 @@ def run_external(args: list[str], input: str | None = None):
     """Run an external executable, capturing output. Searches standard system directories.
 
     Return stdout or raises RuntimeError, depending on the return code."""
-    logger.debug(f"running: {arg_string(args)}")
+    # logger.debug(f"running: {arg_string(args)}")
     prepend_path_to_prog(args)
     proc = subprocess.run(
         args,
@@ -198,30 +198,28 @@ def run_external(args: list[str], input: str | None = None):
     return proc.stdout.decode().rstrip()
 
 
-async def run_external_async(args: list[str]):
+async def run_external_async(args: list[str], input: str | None = None):
     """Run an external executable, capturing output. Searches standard system directories.
 
     Return stdout or raises RuntimeError, depending on the return code."""
-    exec_count = 2 if args[0] == 'sudo' else 1
-    for i, a in enumerate(args[:exec_count]):  # e.g. expand 'wg' to '/usr/bin/wg'
-        for p in '/usr/sbin:/usr/bin:/sbin:/bin:~/.local/bin'.split(':'):
-            joined = os.path.join(p.replace('~', os.path.expanduser('~')), a)
-            if os.path.isfile(joined):
-                args[i] = joined
-                break
+    # logger.debug(f"running: {arg_string(args)}")
+    prepend_path_to_prog(args)
     # docs: https://docs.python.org/3/library/asyncio-subprocess.html#creating-subprocesses
     proc = await asyncio.create_subprocess_exec(
         *args,
+        stdin=None if input is None else asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
-    output = f"{arg_string(args)}\n"
-    output += ''.join([f"    1: {line}\n" for line in stdout.decode().splitlines()])
-    output += ''.join([f"    2: {line}\n" for line in stderr.decode().splitlines()])
+    stdout, stderr = await proc.communicate(
+        None if input is None else input.encode(),
+    )
     if proc.returncode != 0:
-        raise RuntimeError(output).rstrip()
-    return output.rstrip()
+        error = stderr.decode().rstrip() or stdout.decode().rstrip()
+        if '' in args:
+            raise Berror(f"B74064 {error} probably caused by empty arg in {arg_string(args)}")
+        raise Berror(f"B57013 {arg_string(args)} failed: {error}")
+    return stdout.decode().rstrip()
 
 
 def arg_string(args):

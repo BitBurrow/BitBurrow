@@ -197,25 +197,32 @@ async def on_shutdown():
 
 async def watch_tls_cert() -> None:
     """Verify TLS certificate; run at startup"""
+    frontend_site = f'{conf.get('frontend.domain')}:{conf.get('frontend.web_port')}'
+    iaddr = net.default_listen_address(conf.get('backend.ip'))
+    backend_site = f'{iaddr}:{conf.get("backend.web_port")}'
+    if conf.get('backend.web_proto') == 'http':  # only check the public-facing domain
+        await net.check_tls_cert(frontend_site)
+    else:  # otherwise, a valid cert should be at backend.web_port too
+        await net.check_tls_cert(frontend_site, backend_site)
+
+
+async def async_background_tasks():
     a_day = 60 * 60 * 24
-    rep_count = 0
+    day_count = 0
     while True:
-        if rep_count == 0:
-            await asyncio.sleep(20)  # check cert 20 seconds after startup
-        else:
-            frontend_site = f'{conf.get('frontend.domain')}:{conf.get('frontend.web_port')}'
-            iaddr = net.default_listen_address(conf.get('backend.ip'))
-            backend_site = f'{iaddr}:{conf.get("backend.web_port")}'
-            if conf.get('backend.web_proto') == 'http':  # only check the public-facing domain
-                await net.check_tls_cert(frontend_site)
-            else:  # otherwise, a valid cert should be at backend.web_port too
-                await net.check_tls_cert(frontend_site, backend_site)
-            await asyncio.sleep(a_day)  # check again in 24 hours
-        rep_count += 1
+        if day_count == 0:  # first day
+            await asyncio.sleep(20)
+            await watch_tls_cert()
+            await asyncio.sleep(20)
+            await util.test_fix_lan_overlap_shell_code()
+        else:  # every other day
+            await watch_tls_cert()
+        await asyncio.sleep(a_day)
+        day_count += 1
 
 
 async def start_background_tasks():
-    asyncio.create_task(watch_tls_cert())
+    asyncio.create_task(async_background_tasks())
 
 
 server_app = jsonrpc.API(

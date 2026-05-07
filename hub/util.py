@@ -186,27 +186,192 @@ def integrity_test_by_id(test_id):
     return failed_count == 0
 
 
-def fix_lan_overlap_shell_code():
+def fix_lan_overlap_shell_code() -> str:
     """Return Ash shell code that checks for and tries to fix overlapping LAN subnets.
 
     This can happen if the router's WAN port is connected downstream of another
     router with the same LAN subnet, e.g. 192.168.8.0/24."""
     return (
-        """ip -4 addr |awk '/inet /{split($2,a,"/");if(a[2]!=24)next;\n"""
-        + """split(a[1],o,".");k=o[1]"."o[2]"."o[3];if(++s[k]==2)h=1}END{exit h?0:1}'\n"""
-        + """if [ $? -eq 0 ]; then\n"""
+        """if ip -4 addr |{\n"""
+        + """  s=,\n"""
+        + """  while read -r x y z; do\n"""
+        + """    [ "$x" = inet ] || continue\n"""
+        + """    case "$y" in\n"""
+        + """      */24) ;;\n"""
+        + """      *) continue;;\n"""
+        + """    esac\n"""
+        + """    a=${y%/*}\n"""
+        + """    p=${a%.*}\n"""
+        + """    case "$s" in\n"""
+        + """      *,"$p",*) exit 0;;\n"""
+        + """    esac\n"""
+        + """    s="$s$p,"\n"""
+        + """  done\n"""
+        + """  exit 1\n"""
+        + """}; then\n"""
         # choose a random subnet; avoid 192.168.100.x famously associated with cable modems, etc.
-        + """    OCTET3=$(awk 'BEGIN{srand(); print 104 + int(rand()*137)}')\n"""
-        + """    uci set network.lan.ipaddr=192.168.$OCTET3.1\n"""  # hoping this subnet is unused
-        + """    uci set network.lan.netmask=255.255.255.0\n"""
-        + """    uci set network.lan.proto=static\n"""
-        + """    uci commit network\n"""
-        + """    /etc/init.d/network restart\n"""
-        + """    /etc/init.d/dnsmasq restart\n"""
-        + """    rm -f /tmp/dhcp.leases\n"""
-        + """    killall -HUP dnsmasq\n"""
+        + r"""  r=srand\(\)\;print\ 104+\n"""
+        + """  r=$r'int(rand()*137)'\n"""
+        + """  OCTET3=$(awk "BEGIN{$r}")\n"""
+        + """  u(){ uci set network.lan.$1=$2;}\n"""
+        + """  u ipaddr 192.168.$OCTET3.1\n"""  # hoping this subnet is unused
+        + """  u netmask 255.255.255.0\n"""
+        + """  u proto static\n"""
+        + """  uci commit network\n"""
+        + """  /etc/init.d/network restart\n"""
+        + """  /etc/init.d/dnsmasq restart\n"""
+        + """  rm -f /tmp/dhcp.leases\n"""
+        + """  killall -HUP dnsmasq\n"""
         + """fi\n"""
     )
+
+
+async def test_fix_lan_overlap_shell_code() -> None:
+    def lan_overlap_if_body() -> str:
+        code = fix_lan_overlap_shell_code()
+        prefix = 'if ip -4 addr |{\n'
+        suffix = '\n}; then\n'
+        start = code.index(prefix) + len(prefix)
+        end = code.index(suffix, start)
+        return code[start:end]
+
+    cases = [
+        (
+            """\
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
+    inet 127.0.0.1/8 scope host lo
+2: wan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 192.168.8.20/24 brd 192.168.8.255 scope global wan
+3: lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 192.168.8.1/24 brd 192.168.8.255 scope global lan
+""",
+            'overlap',
+        ),
+        (
+            """\
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
+    inet 127.0.0.1/8 scope host lo
+2: wan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 10.0.5.22/24 brd 10.0.5.255 scope global wan
+3: lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 192.168.1.1/24 brd 192.168.1.255 scope global lan
+4: guest: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 10.0.5.1/24 brd 10.0.5.255 scope global guest
+""",
+            'overlap',
+        ),
+        (
+            """\
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
+    inet 127.0.0.1/8 scope host lo
+2: wan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 192.168.8.20/24 brd 192.168.8.255 scope global wan
+3: lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 192.168.1.1/24 brd 192.168.1.255 scope global lan
+""",
+            'no-overlap',
+        ),
+        (
+            """\
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
+    inet 127.0.0.1/8 scope host lo
+2: lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 192.168.1.1/24 brd 192.168.1.255 scope global lan
+""",
+            'no-overlap',
+        ),
+        (
+            """\
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
+    inet 127.0.0.1/8 scope host lo
+2: wan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 192.168.8.120/24 brd 192.168.8.255 scope global wan
+3: lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    inet 192.168.8.1/24 brd 192.168.8.255 scope global lan
+""",
+            'overlap',
+        ),
+        (
+            """\
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
+    inet 127.0.0.1/8 scope host lo
+2: vpn: <POINTOPOINT,UP,LOWER_UP> mtu 1420
+    inet 127.0.0.2/8 scope global vpn
+""",
+            'no-overlap',
+        ),
+        (
+            '',
+            'no-overlap',
+        ),
+        (
+            """\
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+11: br-lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default qlen 1000
+    inet 192.168.196.1/24 brd 192.168.196.255 scope global br-lan
+       valid_lft forever preferred_lft forever
+13: eth0.2@eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1600 qdisc noqueue state UP group default qlen 1000
+    inet 192.168.1.101/24 brd 192.168.1.255 scope global eth0.2
+       valid_lft forever preferred_lft forever
+16: wgbb1: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN group default qlen 1000
+    inet 172.24.188.39/32 scope global wgbb1
+       valid_lft forever preferred_lft forever
+""",
+            'no-overlap',
+        ),
+        (
+            """\
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    inet 192.168.1.66/24 brd 192.168.1.255 scope global eth0
+       valid_lft forever preferred_lft forever
+5: br-lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default qlen 1000
+    inet 192.168.8.1/24 brd 192.168.8.255 scope global br-lan
+       valid_lft forever preferred_lft forever
+26: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN group default qlen 1000
+    inet 10.79.112.222/32 brd 255.255.255.255 scope global wg0
+       valid_lft forever preferred_lft forever
+""",
+            'no-overlap',
+        ),
+        (
+            """\
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    inet 192.168.8.51/24 brd 192.168.1.255 scope global eth0
+       valid_lft forever preferred_lft forever
+5: br-lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default qlen 1000
+    inet 192.168.8.1/24 brd 192.168.8.255 scope global br-lan
+       valid_lft forever preferred_lft forever
+""",
+            'overlap',
+        ),
+    ]
+    body = lan_overlap_if_body()
+    for test_num, (ip_out, expected) in enumerate(cases):
+        script = (
+            'if (\n'
+            + body
+            + '\n); then\n'
+            + "  echo overlap\n"
+            + 'else\n'
+            + "  echo no-overlap\n"
+            + 'fi\n'
+        )
+        for shell in ['bash', 'sh']:
+            args = [shell, '-c', script]
+            result = await net.run_external_async(args, input=ip_out)
+            if expected != result:
+                logger.error(
+                    f"B65449 fix_lan_overlap test {test_num} failed: "
+                    + f"expected '{expected}', got '{result}' (using {shell})"
+                )
 
 
 def gzip_base64(s: str, wrap: int = 76, prefix: str = '', postfix: str = '\n') -> str:
