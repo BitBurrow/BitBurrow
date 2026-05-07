@@ -210,7 +210,7 @@ def fix_lan_overlap_shell_code() -> str:
         + """  exit 1\n"""
         + """}; then\n"""
         # choose a random subnet; avoid 192.168.100.x famously associated with cable modems, etc.
-        + r"""  r=srand\(\)\;print\ 104+\n"""
+        + """  r=srand\\(\\)\\;print\\ 104+\n"""  # careful backslashing
         + """  r=$r'int(rand()*137)'\n"""
         + """  OCTET3=$(awk "BEGIN{$r}")\n"""
         + """  u(){ uci set network.lan.$1=$2;}\n"""
