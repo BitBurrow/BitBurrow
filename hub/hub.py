@@ -232,6 +232,21 @@ server_app = jsonrpc.API(
     redoc_url=None,
 )
 
+
+def a_404_handler(berror_code: str):
+    # note: this does not catch Uvicorn's:
+    #     WARNING:  Invalid HTTP request received.
+    # when BitBurrow is run without a reverse proxy; reproduce this via:
+    #     printf 'garbage\r\n\r\n' |openssl s_client -connect vxm.example.org >/dev/null 2>&1
+    # this can be caught by finding self.client via inspect.currentframe() but doing so is fragile
+    async def not_found_handler(request: Request, exc: HTTPException):
+        ip = request.client.host if request.client else '(unknown)'
+        logger.debug(f"{berror_code} {ip}: {request.method} {request.url.path} not found")
+        return responses.PlainTextResponse('Not Found', status_code=404)
+
+    return not_found_handler
+
+
 # FIXME: rewrite this to monitor conf.get('path.restart_on_change')
 # FIXME: perhaps delay restart of there are any active OTTs
 # @app.on_event("startup")
@@ -389,6 +404,8 @@ def entry_point():
         nicegui.ui.add_css(os.path.join(util.ui_path, 'theme.css'), shared=True)
         server_app.include_router(api.router)
         server_app.bind_entrypoint(api.jsonrpc_entrypoint)
+        server_app.add_exception_handler(404, a_404_handler("B39369"))  # e.g. GET /ui/f.php
+        nicegui.app.add_exception_handler(404, a_404_handler("B26511"))  # e.g. GET /f.php
         nicegui.ui.run_with(
             server_app,
             title='BitBurrow',
