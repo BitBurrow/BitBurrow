@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric import rsa
 import hub.db as db
 import hub.config as conf
+import hub.uif as uif
 import hub.util as util
 
 Berror = db.Berror
@@ -317,8 +318,8 @@ async def verify_signed_request(
     request: Request,
     auth_pubkey_pem: str,
     allow_sha256_fallback: bool = True,
-    max_clock_skew_seconds: int = 300,
-    nonce_ttl_seconds: int = 600,
+    max_skew: int = 300,  # allowed clock time difference in seconds
+    nonce_ttl: int = 600,  # in seconds
 ) -> dict:
     """Verify that the requester posesses the privkey for auth_pubkey via RFC 9421"""
     body = await request.body()
@@ -350,8 +351,11 @@ async def verify_signed_request(
         raise Berror("B40097 Content-Digest mismatch")
     created, keyid, nonce, alg = parse_signature_input(signature_input_header)
     now = int(time.time())
-    if abs(now - created) > max_clock_skew_seconds:
-        raise Berror("B87034 created is outside acceptable clock skew")
+    skew = now - created
+    if abs(skew) > max_skew:
+        skew_str = uif.human_duration(TimeDelta(seconds=abs(skew)))
+        direction = "slow" if skew > 0 else "fast"
+        raise Berror(f"B87034 caller clock appears to be {skew_str} {direction}")
     signature = parse_signature_header(signature_header)
     target_uri = conf.base_url() + jsonrpc_route
     signature_base = build_signature_base(
@@ -374,9 +378,10 @@ async def verify_signed_request(
             allow_sha256_fallback=allow_sha256_fallback,
         )
     except Exception:
-        logger.warning(f'{signature_base=}')
+        # enable to debug signature issues (search: tag_rfc9421_signature_debug):
+        logger.warning(f'B62913 {signature_base=}')
         raise
-    if not consume_nonce(nonce, now, nonce_ttl_seconds):  # consume nonce *after* sig verification
+    if not consume_nonce(nonce, now, nonce_ttl):  # consume nonce *after* sig verification
         raise Berror("B56057 replayed nonce")
     return payload
 
@@ -398,14 +403,16 @@ async def ping(
                 request=request,
                 auth_pubkey_pem=device.auth_pubkey,
                 allow_sha256_fallback=True,
-                max_clock_skew_seconds=300,
-                nonce_ttl_seconds=600,
             )
             params = payload['params']
             if params.get('subd') != subd:
                 raise Berror(f"B33465 subd mismatch: {params.get('subd')} != {subd}")
         except (Berror, db.CredentialsError) as e:
-            logger.warning(f"{e} (base {subd} at {ip})")
+            disp = str(e)
+            if re.match(r'^B[0-9]{5} ', disp):  # front the Berror code
+                logger.warning(f"{disp[0:7]}base {subd} at {ip} {disp[7:]}")
+            else:
+                logger.warning(f"{disp} (base {subd} at {ip})")
             raise BaseError("B23086 invalid ping request")  # generic API response for security
         if device.ott_id is not None:
             db.log_out(device.ott_id)
@@ -480,8 +487,6 @@ async def task_result(
                 request=request,
                 auth_pubkey_pem=device.auth_pubkey,
                 allow_sha256_fallback=True,
-                max_clock_skew_seconds=300,
-                nonce_ttl_seconds=600,
             )
             params = payload['params']
             if params.get('subd') != subd:
@@ -518,8 +523,6 @@ async def wg(
                 request=request,
                 auth_pubkey_pem=device.auth_pubkey,
                 allow_sha256_fallback=True,
-                max_clock_skew_seconds=300,
-                nonce_ttl_seconds=600,
             )
             params = payload['params']
             if params.get('subd') != subd:

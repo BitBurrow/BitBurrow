@@ -1446,9 +1446,10 @@ local function send_signed_jsonrpc(request_body)
         local response_body = read_text_file(response_path, true)
         if not response_body then break end
         log_debug("ping response body: " .. displayable(response_body, 300))
-        if response_body:match('"error"%s*:') ~= nil then
-            log_error("signature_base='" .. displayable(signature_base, 900) .. "'")
-        end
+        -- enable to debug signature issues (search: tag_rfc9421_signature_debug):
+        -- if response_body:match('"error"%s*:') ~= nil then
+        --     log_error("B05156 signature_base='" .. displayable(signature_base, 900) .. "'")
+        -- end
         result = response_body
     until true
     remove_path(body_path)
