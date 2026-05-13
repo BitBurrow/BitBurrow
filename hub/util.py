@@ -547,9 +547,9 @@ def read_versions_file() -> None:
                 line = line.rstrip('\n')
                 if not line or line.startswith('#'):
                     continue
-                parts = line.split('\t')
+                parts = line.split('\t')  # format: verno\tpath/to/file.txt
                 if len(parts) >= 2:
-                    versions[parts[0]] = parts[1]
+                    versions[parts[1]] = parts[0]
     except OSError:
         return None
     return versions

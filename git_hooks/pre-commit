@@ -43,7 +43,7 @@ watch_list=(
 )
 [ -e "$versions_path" ] || touch "$versions_path"
 staged_files="$(git diff --cached --name-only --diff-filter=ACMR)"
-timestamp="$(date --utc '+%Y-%m-%dT%H:%M:%SZ')"
+timestamp="$(date '+%s' |perl -Mbigint -E 'sub b36{my $n=shift; return 0 if $n==0; my $s=""; while($n){$s=substr("0123456789abcdefghijklmnopqrstuvwxyz",$n%36,1).$s; $n=int($n/36)} $s} while(<>){chomp; say b36($_)}')"  # Unix date in base 36
 for watched_path in "${watch_list[@]}"; do
     if printf '%s\n' "$watched_path" |grep -q $'\t'; then
         echo "ERROR: versioned path contains a tab: $watched_path" >&2
@@ -67,7 +67,7 @@ for watched_path in "${watch_list[@]}"; do
     fi
     tmp_versions="$(mktemp)"
     awk -F '\t' -v target="$watched_path" '$1 != target { print }' "$versions_path" > "$tmp_versions"
-    printf '%s\t%s\n' "$watched_path" "$timestamp" >> "$tmp_versions"
+    printf '%s\t%s\n' "$timestamp" "$watched_path" >> "$tmp_versions"
     if ! cmp -s "$versions_path" "$tmp_versions"; then
         mv "$tmp_versions" "$versions_path"
         versions_changed=1
