@@ -421,8 +421,8 @@ async def ping(
         device.last_endpoint = ip
         device.last_handshake = int(ping_now.timestamp())
         device_id = device.id
+    db.store_telemetry(device_id=device_id, ip=ip, telemetry=telemetry)
     global active_long_polls
-    # uptime = str(telemetry.get('uptime', ''))  # FUTURE: change to using /proc/* data instead
     logger.debug(f"B37237 base {subd} at {ip} connect (1 of {active_long_polls+1})")
     file_version = telemetry.get('file_version', None)
     if file_version is not None:  # automatic software updates
@@ -515,7 +515,7 @@ async def wg(
     subd: str = Body(...),
     pubkey: str = Body(...),
 ) -> BaseResult:
-    """Store WireGuard pubkey and return assigned WireGuard addresses."""
+    """Store WireGuard pubkey and return assigned WireGuard wg_shape."""
     ip = request.client.host if request.client else '(unknown)'
     with db.device_by_subd(subd) as device:
         try:
@@ -529,8 +529,8 @@ async def wg(
                 raise Berror(f"B71924 subd mismatch: {params.get('subd')} != {subd}")
             if params.get('pubkey') != pubkey:
                 raise Berror("B21788 pubkey mismatch")
-            addresses = db.store_wg_pubkey(device.id, pubkey)
+            wg_shape = db.store_wg_pubkey(device.id, pubkey)
         except (Berror, db.CredentialsError) as e:
             logger.warning(f"{e} (base {subd} at {ip})")
             raise BaseError("B80541 invalid wg request")
-    return BaseResult(subd=subd, status='ok', addresses=addresses)
+    return BaseResult(subd=subd, status='ok', wg_shape=wg_shape)

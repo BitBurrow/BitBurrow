@@ -615,11 +615,11 @@ end
 -- installation
 --
 
-local daemon_service = nil
+local platform = nil
 if run_command('command -v systemctl', true, true) then
-    daemon_service = 'systemd'
+    platform = 'systemd'
 else
-    daemon_service = 'init'
+    platform = 'init'
 end
 local run_context = nil
 local running_path = arg and arg[0] or ''
@@ -880,7 +880,7 @@ local function install_systemd_service(lua_path)
 end
 
 local function install_daemon_service(lua_path)
-    if daemon_service == 'systemd' then
+    if platform == 'systemd' then
         return install_systemd_service(lua_path)
     else  -- 'init'
         return install_init_service(lua_path)
@@ -888,7 +888,7 @@ local function install_daemon_service(lua_path)
 end
 
 local function daemon_ctl(action)  -- action is 'start', 'stop', or 'restart'
-    if daemon_service == 'systemd' then
+    if platform == 'systemd' then
         return run_command('systemctl ' .. action .. ' ' .. shell_quote(bbsubd .. '.service'))
     else
         local daemon_path = '/etc/init.d/' .. bbsubd
@@ -1247,12 +1247,19 @@ local function do_adopt6c()
 end
 
 local function collect_telemetry()
-    local uptime = run_command('uptime', true)
-    if not uptime then return nil end
     local telemetry = '{'
-        .. '"uptime":"' .. json_escape(uptime) .. '"'
-    -- don't need to send this every time, but it's needed if hub *or* we restart
-    telemetry = telemetry .. ',' .. '"file_version":"' .. file_version .. '"'
+        .. '"proc_uptime":"' .. json_escape(read_text_file('/proc/uptime', true, false)) .. '",'
+        .. '"proc_loadavg":"' .. json_escape(read_text_file('/proc/loadavg', true, false)) .. '",'
+        .. '"proc_meminfo":"' .. json_escape(read_text_file('/proc/meminfo', true, false)) .. '",'
+        .. '"proc_net_dev":"' .. json_escape(read_text_file('/proc/net/dev', true, false)) .. '",'
+        .. '"proc_net_route":"' .. json_escape(read_text_file('/proc/net/route', true, false)) .. '",'
+        -- maybe add: df or /proc/mounts + stat
+        -- maybe add: ip addr, /proc/net/fib_trie
+        -- maybe add: wg
+        .. '"etc_os_release":"' .. json_escape(read_text_file('/etc/os-release', true, false)) .. '",'
+        -- don't need file_version every time, but it's low-cost and needed if hub or we restart
+        .. '"file_version":"' .. json_escape(file_version) .. '"',
+        .. '"telemetry_version": 1'
     return telemetry .. '}'
 end
 
@@ -1260,9 +1267,8 @@ local function build_ping_request()
     -- return the request body, or nil on failure
     log_debug("building ping request for subd " .. subd)
     local utc_time = run_command("date -u '+%Y-%m-%dT%H:%M:%SZ'", true)
-    local telemetry = collect_telemetry()
     local request_id = run_command('openssl rand -hex 16', true)
-    if not utc_time or not telemetry or not request_id then
+    if not utc_time or not request_id then
         log_debug('cannot build ping request because one or more inputs were unavailable')
         return nil
     end
@@ -1273,7 +1279,7 @@ local function build_ping_request()
         .. '"params":{'
             .. '"subd":"' .. json_escape(subd) .. '",'
             .. '"time":"' .. json_escape(utc_time) .. '",'
-            .. '"telemetry":' .. telemetry .. ','
+            .. '"telemetry":' .. collect_telemetry() .. ','
             .. '"request_id":"' .. json_escape(request_id) .. '"'
             .. '}'
         .. '}'

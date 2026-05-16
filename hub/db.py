@@ -752,6 +752,184 @@ def mark_task_status(
 
 
 ###
+### DB table Telemetry - health data for devices
+###
+
+
+class Telemetry(SQLModel, table=True):
+    id: int | None = Field(primary_key=True, default=None)
+    device_id: int = Field(index=True, foreign_key='device.id')
+    created_at: DateTime = Field(
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default_factory=lambda: DateTime.now(TimeZone.utc),
+    )
+    ip: str = ''
+    uptime: int | None = None  # seconds; see: man proc_uptime
+    idle: int | None = None  # aggretate idle seconds across all CPUs
+    load_01m: int | None = None  #  1-minute load average × 1000, i.e. 420 → 0.42
+    load_05m: int | None = None  #  5-minute load average × 1000; see: man proc_loadavg
+    load_15m: int | None = None  # 15-minute load average × 1000
+    mem_total: int | None = None  # KiB (1024 bytes); see: man proc_meminfo
+    mem_avail: int | None = None  # KiB (1024 bytes)
+    mem_free: int | None = None  # KiB (1024 bytes)
+    net_rx: int | None = None  # bytes; may be 32-bit and wrap; see: man proc_net
+    net_tx: int | None = None  # bytes
+    def_route_if: str | None = None
+    def_route_gateway: str | None = None
+    def_route_rx: int | None = None  # bytes
+    def_route_tx: int | None = None  # bytes
+    os_id: str | None = None  # 'ID' in: man os-release
+    os_version_id: str | None = None  # 'VERSION_ID' in: man os-release
+
+
+def parse_float_int(value: str, scale: int = 1) -> int | None:
+    try:
+        return int(round(float(value) * scale))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def parse_proc_uptime(text: object) -> tuple[int | None, int | None]:
+    if not isinstance(text, str) or len(fields := text.split()) < 2:
+        return None, None
+    return parse_float_int(fields[0]), parse_float_int(fields[1])
+
+
+def parse_proc_loadavg(text: object) -> tuple[int | None, int | None, int | None]:
+    if not isinstance(text, str) or len(fields := text.split()) < 3:
+        return None, None, None
+    return tuple(parse_float_int(value, 1000) for value in fields[:3])
+
+
+def parse_proc_meminfo(text: object) -> dict[str, int]:
+    values = dict()
+    if isinstance(text, str):
+        for line in text.splitlines():
+            fields = line.split()
+            try:
+                values[fields[0].rstrip(':')] = int(fields[1])
+            except (IndexError, ValueError):
+                pass
+    return values
+
+
+def parse_proc_net_dev(text: object) -> dict[str, dict[str, int]]:
+    values = dict()
+    if isinstance(text, str):
+        for line in text.splitlines():
+            if ':' not in line:
+                continue
+            iface, data = line.split(':', 1)
+            fields = data.split()
+            try:
+                values[iface.strip()] = {'rx': int(fields[0]), 'tx': int(fields[8])}
+            except (IndexError, ValueError):
+                pass
+    return values
+
+
+def parse_route_ipv4(value: str) -> str | None:
+    if not re.fullmatch(r'[0-9A-Fa-f]{8}', value):
+        return None
+    return '.'.join(str(int(value[i : i + 2], 16)) for i in range(6, -1, -2))
+
+
+def parse_proc_net_route(text: object) -> dict[str, str | None]:
+    best = None
+    if isinstance(text, str):
+        for line in text.splitlines()[1:]:
+            fields = line.split()
+            if len(fields) < 8:
+                continue
+            iface, destination, gateway, flags, _, _, metric, mask = fields[:8]
+            try:
+                metric = int(metric)
+                flags = int(flags, 16)
+            except ValueError:
+                continue
+            if (
+                destination == '00000000'
+                and mask == '00000000'
+                and flags & 0x1
+                and (best is None or metric < best['metric'])
+            ):
+                best = {
+                    'iface': iface,
+                    'gateway': parse_route_ipv4(gateway),
+                    'metric': metric,
+                }
+    return dict() if best is None else {'iface': best['iface'], 'gateway': best['gateway']}
+
+
+def unquote_os_release_value(value: str) -> str:
+    result = list()
+    escaped = False
+    for char in value:
+        if escaped:
+            result.extend((char,) if char in ('"', "'", '\\', '$', '`') else ('\\', char))
+            escaped = False
+        elif char == '\\':
+            escaped = True
+        else:
+            result.append(char)
+    if escaped:
+        result.append('\\')
+    return ''.join(result)
+
+
+def parse_os_release(text: object) -> dict[str, str]:
+    values = dict()
+    if not isinstance(text, str):
+        return values
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = (part.strip() for part in line.split('=', 1))
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = unquote_os_release_value(value[1:-1])
+        values[key] = value
+    return values
+
+
+def store_telemetry(device_id: int, ip: str, telemetry: dict) -> None:
+    """As of 2026-05-16, stores around 82 KB per base per day to DB size"""
+    uptime, idle = parse_proc_uptime(telemetry.get('proc_uptime'))
+    load_01m, load_05m, load_15m = parse_proc_loadavg(telemetry.get('proc_loadavg'))
+    meminfo = parse_proc_meminfo(telemetry.get('proc_meminfo'))
+    net_dev = parse_proc_net_dev(telemetry.get('proc_net_dev'))
+    route = parse_proc_net_route(telemetry.get('proc_net_route'))
+    os_release = parse_os_release(telemetry.get('etc_os_release'))
+    def_route_if = route.get('iface')
+    def_route_stats = net_dev.get(def_route_if, dict()) if def_route_if else dict()
+    with Session(engine) as session:
+        session.add(
+            Telemetry(
+                device_id=device_id,
+                created_at=DateTime.now(TimeZone.utc),
+                ip=ip,
+                uptime=uptime,
+                idle=idle,
+                load_01m=load_01m,
+                load_05m=load_05m,
+                load_15m=load_15m,
+                mem_total=meminfo.get('MemTotal'),
+                mem_avail=meminfo.get('MemAvailable'),
+                mem_free=meminfo.get('MemFree'),
+                net_rx=sum(v['rx'] for k, v in net_dev.items() if k != 'lo'),
+                net_tx=sum(v['tx'] for k, v in net_dev.items() if k != 'lo'),
+                def_route_if=def_route_if,
+                def_route_gateway=route.get('gateway'),
+                def_route_rx=def_route_stats.get('rx'),
+                def_route_tx=def_route_stats.get('tx'),
+                os_id=os_release.get('ID'),
+                os_version_id=os_release.get('VERSION_ID'),
+            )
+        )
+        session.commit()
+
+
+###
 ### helper methods
 ###
 
