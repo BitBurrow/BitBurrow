@@ -547,9 +547,11 @@ def read_versions_file() -> None:
                 line = line.rstrip('\n')
                 if not line or line.startswith('#'):
                     continue
-                parts = line.split('\t')  # format: verno\tpath/to/file.txt
-                if len(parts) >= 2:
+                parts = line.split(' ', 1)  # path can begin with or contain spaces
+                if len(parts) == 2:
                     versions[parts[1]] = parts[0]
+                else:
+                    logger.error(f"B21888 invalid line in 'versions': {line}")
     except OSError:
         return None
     return versions

@@ -67,7 +67,7 @@ for watched_path in "${watch_list[@]}"; do
     fi
     tmp_versions="$(mktemp)"
     awk -F '\t' -v target="$watched_path" '$1 != target { print }' "$versions_path" > "$tmp_versions"
-    printf '%s\t%s\n' "$timestamp" "$watched_path" >> "$tmp_versions"
+    printf '%s %s\n' "$timestamp" "$watched_path" >> "$tmp_versions"
     if ! cmp -s "$versions_path" "$tmp_versions"; then
         mv "$tmp_versions" "$versions_path"
         versions_changed=1
