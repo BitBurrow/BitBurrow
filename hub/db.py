@@ -383,11 +383,11 @@ class Device(SQLModel, table=True):
         sqlalchemy.Index('ix_device_account_slug', 'account_id', 'name_slug'),
     )
     id: int | None = Field(primary_key=True, default=None)
-    account_id: int = Field(index=True, foreign_key='account.id')  # device admin--manager
+    account_id: int | None = Field(index=True, foreign_key='account.id')  # device admin--manager
     name: str = ''  # e.g. "Base SPW" but user can modify
-    name_slug: str = Field(index=True)  # URL-safe version of name
+    name_slug: str = Field(index=True, default='')  # URL-safe version of name
     # for bases, subd is the left-most label of FQDN, e.g. y99g in y99g.vxm.example.org
-    subd: str = Field(index=True, unique=True)
+    subd: str = Field(index=True, unique=True, default='')
     last_endpoint: str | None = None  # most recent public IP
     last_handshake: int | None = None  # seconds past Unix epoch
     ott_id: int | None = Field(foreign_key='loginsession.id', default=None)  # one-time token
@@ -1207,11 +1207,19 @@ def hub_intf_exists(session):
     return session.exec(select(Intf).where(Intf.id == hub_id)).first() is not None
 
 
+def new_device_subd(session, device: Device) -> None:
+    # a domain name that begins with a digit is legal but occasionally problematic
+    # up to 439,040 base routers; Linux probably can't handle nearly that many anyhow
+    subd = lambda _: (lk.generate_login_key_letters(1) + lk.generate_login_key(3)).lower()
+    set_unique_value(session, device, 'subd', retry=200, valuef=subd)
+
+
 def create_hub_if_missing(session):
     """Don't call before needed in case conf.get('frontend.wg_port') is changed."""
     if not hub_intf_exists(session):
         # create the hub Device
         hub_device = Device(account_id=None, name="BitBurrow hub")
+        new_device_subd(session, hub_device)
         session.add(hub_device)
         session.commit()
         assert hub_device.id == hub_id, f"B12466 unexpected {hub_device.id=}"
@@ -1229,13 +1237,7 @@ def new_device(account_id, is_base: bool, name: str) -> str:
         if is_base:
             create_hub_if_missing(session)  # in case this is the first base router
         device = Device(account_id=account_id)
-        if is_base:
-            # a domain name that begins with a digit is legal but occasionally problematic
-            # up to 439,040 base routers; Linux probably can't handle nearly that many anyhow
-            subd = lambda _: (lk.generate_login_key_letters(1) + lk.generate_login_key(3)).lower()
-            set_unique_value(session, device, 'subd', retry=200, valuef=subd)
-        else:
-            device.subd = None
+        new_device_subd(session, device)
         device.name = name
         slugged = util.slugify(device.name)
         # find a unique (for this user) name_slug
