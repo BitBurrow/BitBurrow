@@ -377,6 +377,21 @@ def iter_get_login_session_by_account_id(aid: int | None):
 ###
 
 
+class TestLevel(enum.StrEnum):  # values are in string compare order
+    FAILED = '0'  # code contains a bug
+    UNTESTED = 'a'
+    PARSES = 'c'  # is valid Lua code
+    CAN_PING = 'e'  # successful api.ping() call
+    CAN_UPDATE = 'g'  # successul software download → install → api.ping()
+
+
+class Platform(enum.StrEnum):
+    INIT = 'init'  # Linux SysVinit init system (e.g. OpenWrt)
+    SYSTEMD = 'sysd'  # Linux systemd (e.g. Debian)
+    WINDOWS = 'wind'  # Microsoft Windows 10, 11, etc.
+    MACOS = 'macs'  # macOS
+
+
 class Device(SQLModel, table=True):
     __table_args__ = (  # name_slug must be unique *for this user*
         sqlalchemy.UniqueConstraint('account_id', 'name_slug', name='uq_device_account_slug'),
@@ -390,6 +405,7 @@ class Device(SQLModel, table=True):
     subd: str = Field(index=True, unique=True, default='')
     last_endpoint: str | None = None  # most recent public IP
     last_handshake: int | None = None  # seconds past Unix epoch
+    min_test_level: TestLevel = TestLevel.CAN_UPDATE  # let the canary testers try updates first
     ott_id: int | None = Field(foreign_key='loginsession.id', default=None)  # one-time token
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='devices')
@@ -420,11 +436,41 @@ class Device(SQLModel, table=True):
         else:
             return "adopt6c"  # OTT verified; auth_pubkey accepted
 
+    def platform(self) -> Platform | None:
+        with Session(engine) as session:
+            telemetry = session.exec(
+                select(Telemetry)
+                .where(
+                    Telemetry.device_id == self.id,
+                    Telemetry.os_id.is_not(None),
+                    Telemetry.os_id != '',
+                )
+                .order_by(Telemetry.created_at.desc(), Telemetry.id.desc())
+                .limit(1)
+            ).first()
+        if telemetry is None or telemetry.os_id is None:
+            logger.error(f"B45350 cannot find telemetry for base {self.subd}")
+            return None
+        if telemetry.os_id.lower().startswith('openwrt'):
+            return Platform.INIT
+        return Platform.SYSTEMD
+
 
 def ott_filename(subd: str) -> str:  # a random-ish 8 characters that is unique to this device
     fingerprint = f'{subd}/{conf.base_url()}'
     hash = hashlib.md5(fingerprint.encode('utf-8')).digest()
     return base64.urlsafe_b64encode(hash).decode()[0:8]
+
+
+def canary_list(platform: Platform) -> list[str]:
+    with Session(engine) as session:
+        devices = session.exec(select(Device)).all()
+    return [
+        device.subd
+        for device in devices
+        if device.min_test_level.value < TestLevel.CAN_UPDATE.value
+        and device.platform() == platform
+    ]
 
 
 ###
@@ -892,8 +938,8 @@ def parse_os_release(text: object) -> dict[str, str]:
     return values
 
 
-def store_telemetry(device_id: int, ip: str, telemetry: dict) -> None:
-    """As of 2026-05-16, stores around 82 KB per base per day to DB size"""
+def store_telemetry(device_id: int, ip: str, telemetry: dict, subd: str) -> None:
+    """As of 2026-05-19, stores around 99 KB per base per day to DB size"""
     uptime, idle = parse_proc_uptime(telemetry.get('proc_uptime'))
     load_01m, load_05m, load_15m = parse_proc_loadavg(telemetry.get('proc_loadavg'))
     meminfo = parse_proc_meminfo(telemetry.get('proc_meminfo'))
@@ -927,6 +973,86 @@ def store_telemetry(device_id: int, ip: str, telemetry: dict) -> None:
             )
         )
         session.commit()
+
+
+###
+### DB table VersionsBbbased - copies and metadata of 'bbbased.lua'
+###
+
+
+class VersionsBbbased(SQLModel, table=True):
+    id: int | None = Field(primary_key=True, default=None)
+    commit_date: str = Field(index=True, default='')  # see: cat git_hooks/pre-commit |grep perl
+    # test_level_x must match class Platform() values
+    test_level_init: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.INIT
+    test_level_sysd: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.SYSTEMD
+    test_level_wind: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.WINDOWS
+    test_level_macs: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.MACOS
+    code: str = ''  # actual Lua
+
+    def test_level(self, platform: Platform) -> TestLevel:
+        return getattr(self, f'test_level_{platform.value}')
+
+    def file_version(self):  # e.g. 0tf4ijm-geac
+        if len(self.commit_date) != 7:
+            raise Berror(f"B49018 bad commit_date {self.commit_date}")
+        test_levels = ''.join([getattr(self, f'test_level_{p.value}').value for p in Platform])
+        return f'{self.commit_date}-{test_levels}'
+
+
+def parse_file_version(file_version: str) -> tuple[str, dict[Platform, TestLevel]]:
+    ver_len = 7 + 1 + len(Platform)
+    if not isinstance(file_version, str) or len(file_version) != ver_len or file_version[7] != '-':
+        raise Berror(f"B73952 bad file_version format: {file_version}")
+    levels = file_version[8:]
+    return file_version[0:7], {
+        platform: TestLevel(level) for platform, level in zip(Platform, levels, strict=True)
+    }
+
+
+def update_bbbased_version() -> None:
+    commit_dates = util.read_versions_file()
+    filename = 'hub/bbbased.lua'
+    commit_date = commit_dates[filename]
+    with Session(engine) as session:
+        statement = select(VersionsBbbased).where(VersionsBbbased.commit_date == commit_date)
+        if session.exec(statement).one_or_none() is not None:  # version already exists in DB
+            return
+        file_path = os.path.join(util.project_root_path, filename)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                code = f.read()
+        except FileNotFoundError as e:
+            logger.error(f"B57645 cannot open {file_path}")
+            return
+        logger.info(f"B96927 indexing new {filename} version {commit_date}")
+        session.add(VersionsBbbased(commit_date=commit_date, code=code))
+        session.commit()
+
+
+def check_bbbased_test_levels() -> None:
+    """Log errors if no version of bbbased is tested. Normally run 5 minutes after startup."""
+    with Session(engine) as session:
+        statement = select(VersionsBbbased).order_by(VersionsBbbased.commit_date.desc()).limit(1)
+        version: VersionsBbbased = session.exec(statement).one_or_none()  # *latest* version
+        if version is None:
+            logger.error(f"B53565 cannot find a bbbased version")  # should never happen
+            return
+        for p in Platform:
+            if version.test_level(p).value < TestLevel.CAN_UPDATE.value:
+                canaries = canary_list(p)
+                error_msg = f"bbbased.lua {version.commit_date} testing on {p.value} failed"
+                n = len(canaries)
+                if n == 0:
+                    logger.warning(
+                        f"B15159 {error_msg} because there are no canary testers; add via: "
+                        + '''bbadmin sqlite3 .config/bitburrow/data.sqlite'''
+                        + ''' "UPDATE device SET min_test_level = 'UNTESTED' '''
+                        + '''WHERE subd IS 'y99g';"'''
+                    )
+                else:
+                    pl = "tester" if n == 1 else "testers"
+                    logger.warning(f"B97013 {error_msg} ({n} canary {pl}: {",".join(canaries)})")
 
 
 ###

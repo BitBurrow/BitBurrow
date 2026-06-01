@@ -417,7 +417,7 @@ async def ping(
         device.last_endpoint = ip
         device.last_handshake = int(ping_now.timestamp())
         device_id = device.id
-    db.store_telemetry(device_id=device_id, ip=ip, telemetry=telemetry)
+    db.store_telemetry(device_id=device_id, ip=ip, telemetry=telemetry, subd=subd)
     global active_long_polls
     logger.debug(f"B37237 base {subd} at {ip} connect (1 of {active_long_polls+1})")
     file_version = telemetry.get('file_version', None)

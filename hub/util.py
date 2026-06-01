@@ -547,7 +547,7 @@ def tls_cert_script():  # script to run certbot for wildcard TLS cert
     print(textwrap.dedent(script).strip().replace('{domain}', conf.get('frontend.domain')))
 
 
-def read_versions_file() -> None:
+def read_versions_file() -> dict:
     versions = dict()
     versions_path = os.path.join(project_root_path, 'versions')  # updated in git_hooks/pre-commit
     try:
@@ -562,8 +562,5 @@ def read_versions_file() -> None:
                 else:
                     logger.error(f"B21888 invalid line in 'versions': {line}")
     except OSError:
-        return None
+        return versions
     return versions
-
-
-source_file_datetime = read_versions_file()
