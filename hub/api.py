@@ -408,11 +408,7 @@ async def ping(
             if params.get('subd') != subd:
                 raise Berror(f"B33465 subd mismatch: {params.get('subd')} != {subd}")
         except (Berror, db.CredentialsError) as e:
-            disp = str(e)
-            if re.match(r'^B[0-9]{5} ', disp):  # front the Berror code
-                logger.warning(f"{disp[0:7]}base {subd} at {ip} {disp[7:]}")
-            else:
-                logger.warning(f"{disp} (base {subd} at {ip})")
+            logger.warning(util.front_berror_code(e, subd, ip))
             raise BaseError("B23086 invalid ping request")  # generic API response for security
         if device.ott_id is not None:
             db.log_out(device.ott_id)

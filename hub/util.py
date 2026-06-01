@@ -27,6 +27,15 @@ class Berror(Exception):
     pass
 
 
+def front_berror_code(e: Exception, subd: str, ip: str = None) -> str:
+    disp = str(e)
+    id_string = f"base {subd} at {ip}" if ip else f"base {subd}"
+    if re.match(r'^B[0-9]{5} ', disp):  # front the Berror code
+        return f"{disp[0:7]}{id_string} {disp[7:]}"
+    else:
+        return f"{disp} ({id_string})"
+
+
 def rotate_backups(file_path: str, prefile_path: str, max_versions: int = 9):
     """Rotate file backups e.g. name.1.txt → name.2.txt and then name.txt → name.1.txt (via
     hard link for atomic replacement) and finally pre.txt → name.txt. The file_path and
