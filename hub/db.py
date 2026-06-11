@@ -730,7 +730,7 @@ def enqueue_task(
         raise Berror(f"B25273 invalid priority {priority}")
     with Session(engine) as session:
         if dedupe:
-            existing_statement = (
+            statement = (
                 select(DeviceTask)
                 .where(DeviceTask.device_id == device_id)
                 .where(DeviceTask.method == method)
@@ -749,7 +749,7 @@ def enqueue_task(
                 )
                 .limit(1)
             )
-            existing_task = session.exec(existing_statement).first()
+            existing_task = session.exec(statement).first()
             if existing_task is not None:
                 return existing_task
         position_statement = select(func.max(DeviceTask.position)).where(
@@ -938,6 +938,86 @@ def parse_os_release(text: object) -> dict[str, str]:
     return values
 
 
+###
+### DB table BasedVer - copies and metadata of 'bbbased.lua'
+###
+
+
+class BasedVer(SQLModel, table=True):
+    id: int | None = Field(primary_key=True, default=None)
+    commit_date: str = Field(index=True, default='')  # see: cat git_hooks/pre-commit |grep perl
+    # test_level_x must match class Platform() values
+    test_level_init: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.INIT
+    test_level_sysd: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.SYSTEMD
+    test_level_wind: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.WINDOWS
+    test_level_macs: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.MACOS
+    code: str = ''  # actual Lua
+
+    def test_level(self, platform: Platform) -> TestLevel:
+        return getattr(self, f'test_level_{platform.value}')
+
+    def file_version(self):  # e.g. 0tf4ijm-geac
+        if len(self.commit_date) != 7:
+            raise Berror(f"B49018 bad commit_date {self.commit_date}")
+        test_levels = ''.join([getattr(self, f'test_level_{p.value}').value for p in Platform])
+        return f'{self.commit_date}-{test_levels}'
+
+
+def parse_file_version(file_version: str) -> tuple[str, dict[Platform, TestLevel]]:
+    ver_len = 7 + 1 + len(Platform)
+    if not isinstance(file_version, str) or len(file_version) != ver_len or file_version[7] != '-':
+        raise Berror(f"B73952 bad file_version format: {file_version}")
+    levels = file_version[8:]
+    return file_version[0:7], {
+        platform: TestLevel(level) for platform, level in zip(Platform, levels, strict=True)
+    }
+
+
+def update_bbbased_version() -> None:
+    commit_dates = util.read_versions_file()
+    filename = 'hub/bbbased.lua'
+    commit_date = commit_dates[filename]
+    with Session(engine) as session:
+        statement = select(BasedVer).where(BasedVer.commit_date == commit_date)
+        if session.exec(statement).one_or_none() is not None:  # version already exists in DB
+            return
+        file_path = os.path.join(util.project_root_path, filename)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                code = f.read()
+        except FileNotFoundError as e:
+            logger.error(f"B57645 cannot open {file_path}")
+            return
+        logger.info(f"B96927 indexing new {filename} version {commit_date}")
+        session.add(BasedVer(commit_date=commit_date, code=code))
+        session.commit()
+
+
+def check_bbbased_test_levels() -> None:
+    """Log errors if no version of bbbased is tested. Normally run 5 minutes after startup."""
+    with Session(engine) as session:
+        statement = select(BasedVer).order_by(BasedVer.commit_date.desc()).limit(1)
+        bv: BasedVer = session.exec(statement).one_or_none()  # *latest* version
+        if bv is None:
+            logger.error(f"B53565 cannot find a bbbased version")  # should never happen
+            return
+        for p in Platform:
+            if bv.test_level(p).value < TestLevel.CAN_UPDATE.value:
+                canaries = canary_list(p)
+                error_msg = f"bbbased.lua {bv.commit_date} testing on {p.value} failed"
+                n = len(canaries)
+                if n == 0:
+                    logger.warning(
+                        f"B15159 {error_msg} because there are no canary testers; add via: "
+                        + '''bbadmin sqlite3 .config/bitburrow/data.sqlite'''
+                        + ''' "UPDATE device SET min_test_level = 'UNTESTED' '''
+                        + '''WHERE subd IS 'y99g';"'''
+                    )
+                else:
+                    pl = "tester" if n == 1 else "testers"
+                    logger.warning(f"B97013 {error_msg} ({n} canary {pl}: {",".join(canaries)})")
+
+
 def store_telemetry(device_id: int, ip: str, telemetry: dict, subd: str) -> None:
     """As of 2026-05-19, stores around 99 KB per base per day to DB size"""
     uptime, idle = parse_proc_uptime(telemetry.get('proc_uptime'))
@@ -973,86 +1053,6 @@ def store_telemetry(device_id: int, ip: str, telemetry: dict, subd: str) -> None
             )
         )
         session.commit()
-
-
-###
-### DB table VersionsBbbased - copies and metadata of 'bbbased.lua'
-###
-
-
-class VersionsBbbased(SQLModel, table=True):
-    id: int | None = Field(primary_key=True, default=None)
-    commit_date: str = Field(index=True, default='')  # see: cat git_hooks/pre-commit |grep perl
-    # test_level_x must match class Platform() values
-    test_level_init: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.INIT
-    test_level_sysd: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.SYSTEMD
-    test_level_wind: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.WINDOWS
-    test_level_macs: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.MACOS
-    code: str = ''  # actual Lua
-
-    def test_level(self, platform: Platform) -> TestLevel:
-        return getattr(self, f'test_level_{platform.value}')
-
-    def file_version(self):  # e.g. 0tf4ijm-geac
-        if len(self.commit_date) != 7:
-            raise Berror(f"B49018 bad commit_date {self.commit_date}")
-        test_levels = ''.join([getattr(self, f'test_level_{p.value}').value for p in Platform])
-        return f'{self.commit_date}-{test_levels}'
-
-
-def parse_file_version(file_version: str) -> tuple[str, dict[Platform, TestLevel]]:
-    ver_len = 7 + 1 + len(Platform)
-    if not isinstance(file_version, str) or len(file_version) != ver_len or file_version[7] != '-':
-        raise Berror(f"B73952 bad file_version format: {file_version}")
-    levels = file_version[8:]
-    return file_version[0:7], {
-        platform: TestLevel(level) for platform, level in zip(Platform, levels, strict=True)
-    }
-
-
-def update_bbbased_version() -> None:
-    commit_dates = util.read_versions_file()
-    filename = 'hub/bbbased.lua'
-    commit_date = commit_dates[filename]
-    with Session(engine) as session:
-        statement = select(VersionsBbbased).where(VersionsBbbased.commit_date == commit_date)
-        if session.exec(statement).one_or_none() is not None:  # version already exists in DB
-            return
-        file_path = os.path.join(util.project_root_path, filename)
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                code = f.read()
-        except FileNotFoundError as e:
-            logger.error(f"B57645 cannot open {file_path}")
-            return
-        logger.info(f"B96927 indexing new {filename} version {commit_date}")
-        session.add(VersionsBbbased(commit_date=commit_date, code=code))
-        session.commit()
-
-
-def check_bbbased_test_levels() -> None:
-    """Log errors if no version of bbbased is tested. Normally run 5 minutes after startup."""
-    with Session(engine) as session:
-        statement = select(VersionsBbbased).order_by(VersionsBbbased.commit_date.desc()).limit(1)
-        version: VersionsBbbased = session.exec(statement).one_or_none()  # *latest* version
-        if version is None:
-            logger.error(f"B53565 cannot find a bbbased version")  # should never happen
-            return
-        for p in Platform:
-            if version.test_level(p).value < TestLevel.CAN_UPDATE.value:
-                canaries = canary_list(p)
-                error_msg = f"bbbased.lua {version.commit_date} testing on {p.value} failed"
-                n = len(canaries)
-                if n == 0:
-                    logger.warning(
-                        f"B15159 {error_msg} because there are no canary testers; add via: "
-                        + '''bbadmin sqlite3 .config/bitburrow/data.sqlite'''
-                        + ''' "UPDATE device SET min_test_level = 'UNTESTED' '''
-                        + '''WHERE subd IS 'y99g';"'''
-                    )
-                else:
-                    pl = "tester" if n == 1 else "testers"
-                    logger.warning(f"B97013 {error_msg} ({n} canary {pl}: {",".join(canaries)})")
 
 
 ###
