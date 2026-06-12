@@ -1258,7 +1258,7 @@ local function collect_telemetry()
         -- maybe add: wg
         .. '"etc_os_release":"' .. json_escape(read_text_file('/etc/os-release', true, false)) .. '",'
         -- don't need file_version every time, but it's low-cost and needed if hub or we restart
-        .. '"file_version":"' .. json_escape(file_version) .. '"',
+        .. '"file_version":"' .. json_escape(file_version) .. '",'
         .. '"telemetry_version": 1'
     return telemetry .. '}'
 end
