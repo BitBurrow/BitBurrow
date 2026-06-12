@@ -174,7 +174,7 @@ end
 
 local function trim_trailing_slashes(path)
     return (path:gsub('/+$', ''))
-end     
+end
 
 local function make_temp_path(in_dir, failure_ok)
     -- create a temp file and return its path, or nil on failure; all args optional
@@ -228,40 +228,40 @@ local function get_mode(path)
     if not line then return nil end
     local perms = line:match('^(%S+)')
     if not perms or #perms < 10 then return nil end
-    local mode = 0 
-    local spec = { 
-        {2, 'r', 256}, {3, 'w', 128}, {4, 'x', 64}, 
-        {5, 'r', 32}, {6, 'w', 16}, {7, 'x', 8}, 
-        {8, 'r', 4}, {9, 'w', 2}, {10, 'x', 1}, 
-    } 
-    for i = 1, #spec do 
-        local c = perms:sub(spec[i][1], spec[i][1]) 
-        if c == spec[i][2] then 
-            mode = mode + spec[i][3] 
-        end 
-    end 
-    local executable_special = { 
-        {4, 's', 64}, {7, 's', 8}, {10, 't', 1}, 
-    } 
-    for i = 1, #executable_special do 
-        local c = perms:sub(executable_special[i][1], executable_special[i][1]) 
-        if c == executable_special[i][2] then 
-            mode = mode + executable_special[i][3] 
-        end 
-    end 
-    local special = { 
-        {4, 's', 2048}, {4, 'S', 2048}, 
-        {7, 's', 1024}, {7, 'S', 1024}, 
-        {10, 't', 512}, {10, 'T', 512}, 
-    } 
-    for i = 1, #special do 
-        local c = perms:sub(special[i][1], special[i][1]) 
-        if c == special[i][2] then 
-            mode = mode + special[i][3] 
-        end 
-    end 
-    return string.format('%04o', mode) 
-end 
+    local mode = 0
+    local spec = {
+        {2, 'r', 256}, {3, 'w', 128}, {4, 'x', 64},
+        {5, 'r', 32}, {6, 'w', 16}, {7, 'x', 8},
+        {8, 'r', 4}, {9, 'w', 2}, {10, 'x', 1},
+    }
+    for i = 1, #spec do
+        local c = perms:sub(spec[i][1], spec[i][1])
+        if c == spec[i][2] then
+            mode = mode + spec[i][3]
+        end
+    end
+    local executable_special = {
+        {4, 's', 64}, {7, 's', 8}, {10, 't', 1},
+    }
+    for i = 1, #executable_special do
+        local c = perms:sub(executable_special[i][1], executable_special[i][1])
+        if c == executable_special[i][2] then
+            mode = mode + executable_special[i][3]
+        end
+    end
+    local special = {
+        {4, 's', 2048}, {4, 'S', 2048},
+        {7, 's', 1024}, {7, 'S', 1024},
+        {10, 't', 512}, {10, 'T', 512},
+    }
+    for i = 1, #special do
+        local c = perms:sub(special[i][1], special[i][1])
+        if c == special[i][2] then
+            mode = mode + special[i][3]
+        end
+    end
+    return string.format('%04o', mode)
+end
 
 local function mkdir(path, mode, err_if_exists)
     -- return true iff successful; mode and err_if_exists are optional
@@ -385,19 +385,19 @@ local function write_text_file_atomic(path, content, mode)  -- well-tested but e
     -- return true iff successful; fail if path already exists
     if is_directory(path) then
         log_error("B73491 " .. path .. " is a directory")
-        return nil 
+        return nil
     end
     log_debug("writing atomically " .. tostring(#content) .. " bytes to: " .. path)
     log_debug("--data: " .. displayable(content, 60))
     local tmp_path = make_temp_path(dirname(path))
-    if not tmp_path then return nil end 
+    if not tmp_path then return nil end
     local ok = nil
     repeat
         local handle = io.open(tmp_path, 'w')
         if not handle then
             log_error("B90582 cannot write temp file: " .. tmp_path)
-            break 
-        end 
+            break
+        end
         local write_ok, write_err = handle:write(content)
         local close_ok, close_err = handle:close()
         if not write_ok then
@@ -1625,8 +1625,8 @@ if adopt6c_result == nil or adopt6c_result == true then  -- fatal error or succe
     remove_path(token_path)
 end
 if adopt6c_result == nil then  -- fatal error, no point in retrying
-    log_error("B36017 cannot continue with uploading keys") 
-    cleanup_and_exit(6) 
+    log_error("B36017 cannot continue with uploading keys")
+    cleanup_and_exit(6)
 end
 
 --
