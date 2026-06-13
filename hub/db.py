@@ -53,10 +53,14 @@ def set_unique_value(session, rec, attr, retry, valuef):
         try:
             session.add(rec)
             session.commit()
-        except sqlalchemy.exc.IntegrityError:
+        except sqlalchemy.exc.IntegrityError as e:
             session.rollback()
+            if isinstance(e.orig, sqlite3.IntegrityError) and str(e.orig).startswith(
+                'NOT NULL constraint failed'
+            ):
+                raise Berror(f"B23097 setattr {attr} {getattr(rec, attr)}: {e}") from e
             if attempt > warn_at:
-                logger.warning(f"B97484 duplicate {attr} {getattr(rec, attr)} (retry {attempt})")
+                logger.warning(f"B97484 duplicate {attr} {getattr(rec, attr)} (try {attempt}): {e}")
             continue
         else:
             break
@@ -483,8 +487,8 @@ class Intf(SQLModel, table=True):
     allowed_ipv6_subnet: int = 128
     # 'base_intf_id' is our peer (server) on single-peer interfaces; otherwise None
     base_intf_id: int | None = Field(index=True, foreign_key='intf.id', default=None)
-    wg_privkey: str = Field(index=True, unique=True, nullable=False)
-    wg_pubkey: str = Field(index=True, unique=True, nullable=False)
+    wg_privkey: str | None = None
+    wg_pubkey: str | None = None
     backend_port: int | None = None
     # use JSON because lists are not yet supported: https://github.com/tiangolo/sqlmodel/issues/178
     frontend_ports: list[int] = Field(sa_column=Column(JSON), default_factory=list)  # on public IP
