@@ -13,7 +13,18 @@ import secrets
 import sqlalchemy
 import sqlalchemy.engine
 import sqlite3
-from sqlmodel import Field, Session, SQLModel, select, JSON, Column, Relationship, func
+from sqlmodel import (
+    Field,
+    Session,
+    SQLModel,
+    select,
+    update,
+    delete,
+    JSON,
+    Column,
+    Relationship,
+    func,
+)
 import subprocess
 import tempfile
 import threading
@@ -1568,17 +1579,28 @@ def iter_get_device_by_account_id(aid: int | None):
 
 def delete_device(id: int) -> None:
     with Session(engine) as session:
-        try:
-            device = session.exec(select(Device).where(Device.id == id)).one()
-        except sqlalchemy.exc.NoResultFound:
+        device = session.get(Device, id)
+        if device is None:
             logger.error(f"B54609 cannot find device {id} in delete_device()")
             return
-        for row in session.exec(select(Intf).where(Intf.device_id == id)):
-            logger.info(f"B75179 deleting Intf {row.id}")
-            session.delete(row)
-        session.commit()
+        ott_id = device.ott_id
+        intf_ids = session.exec(select(Intf.id).where(Intf.device_id == id)).all()
+        session.exec(delete(Telemetry).where(Telemetry.device_id == id))
+        session.exec(delete(DeviceTask).where(DeviceTask.device_id == id))
+        if intf_ids:
+            session.exec(update(Account).where(Account.intf_id.in_(intf_ids)).values(intf_id=None))
+            session.exec(
+                update(Intf)
+                .where(Intf.base_intf_id.in_(intf_ids))
+                .values(base_intf_id=None)  # clear 'pointer' to peer Intf we're about to delete
+            )
+            session.exec(delete(Intf).where(Intf.device_id == id))
         logger.info(f"B74506 deleting Device {id}")
         session.delete(device)
+        if ott_id is not None:
+            ott = session.get(LoginSession, ott_id)
+            if ott is not None and ott.kind == LoginSessionKind.DEVICE_OTT:
+                session.delete(ott)
         session.commit()
 
 
