@@ -397,6 +397,7 @@ class Platform(enum.StrEnum):
 
 
 any_platform = (Platform.INIT, Platform.SYSTEMD, Platform.WINDOWS, Platform.MACOS)
+default_fv = '0000000-aaaa'
 
 
 class Device(SQLModel, table=True):
@@ -956,21 +957,6 @@ class BasedVer(SQLModel, table=True):
         return f'{self.commit_date}-{test_levels}'
 
 
-def parse_file_version(file_version: str) -> tuple[str, dict[Platform, TestLevel]]:
-    if len(file_version) == 7:
-        file_version += '-aaaa'  # support legacy
-    ver_len = 7 + 1 + len(Platform)
-    if not isinstance(file_version, str) or len(file_version) != ver_len or file_version[7] != '-':
-        raise Berror(f"B73952 bad file_version format: {file_version}")
-    levels = file_version[8:]
-    try:
-        return file_version[0:7], {
-            platform: TestLevel(level) for platform, level in zip(Platform, levels, strict=True)
-        }
-    except ValueError as e:
-        raise Berror(f"B33291 bad file_version: {file_version} ({e})")
-
-
 def update_bbbased_version() -> None:
     """Add 'hub/bbbased.lua' from disk to DB if not yet indexed."""
     commit_dates = util.read_versions_file()
@@ -1091,17 +1077,28 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
                 e = f"B14954 platform changed from {device.platform} to {platform}"
                 logger.warning(util.front_berror_code(e, subd, ip))
             device.platform = platform
-        ## 3. promote bbbased.lua version if appropriate
-        reported_fv = telem_data.get('file_version')
+        ## 3. safely extract and parse file_version provided by the base router
+        reported_fv = telem_data.get('file_version', default_fv)
         if not isinstance(reported_fv, str):
-            reported_fv = '0000000-aaaa'
-        reported_commit, reported_levels = parse_file_version(reported_fv)
-        reported_level = reported_levels[platform]
+            reported_fv = default_fv
+        if len(reported_fv) == 7:
+            reported_fv = f'{reported_fv}-{default_fv[8:]}'  # support legacy versions
+        if len(reported_fv) != len(default_fv) or reported_fv[7] != '-':
+            reported_fv = default_fv
+        reported_commit = reported_fv[0:7]
+        tls = reported_fv[8:]  # test levels, (string of Platform values)
+        try:
+            reported_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
+        except ValueError as e:
+            tls = default_fv[8:]
+            reported_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
+        reported_tl = reported_tls[platform]
+        ## 4. promote bbbased.lua version if appropriate
         promote_to = None
         # for testing, resend same bbbased.lua file: prior → new-a, new-a → new-e, new-e → new-g
-        if reported_level == TestLevel.CAN_PING.value:  # ping-after-update from this commit
+        if reported_tl == TestLevel.CAN_PING.value:  # ping-after-update from this commit
             promote_to = TestLevel.CAN_UPDATE
-        elif reported_level < TestLevel.CAN_PING.value:  # ping-after-update from prior commit
+        elif reported_tl < TestLevel.CAN_PING.value:  # ping-after-update from prior commit
             promote_to = TestLevel.CAN_PING
         statement = select(BasedVer).where(BasedVer.commit_date == reported_commit)
         # commit_bv is commit_date from base router with test levels from DB
@@ -1119,7 +1116,7 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
         else:  # unknown version
             e = f"B12284 unknown version bbbased {reported_fv}"
             logger.warning(util.front_berror_code(e, subd, ip))
-        ## 4. enqueue bbbased update if ready
+        ## 5. enqueue bbbased update if ready
         approved_bv = newest_approved_ver(device, session)
         if approved_bv is None:
             e = f"B74409 no approved bbbased version available on {platform}"
