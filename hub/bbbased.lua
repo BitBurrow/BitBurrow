@@ -1504,7 +1504,7 @@ local function handle_task(task_id, task_method, task_args)
     if not task_id or not task_method then return true end
     log_info("received task " .. task_method .. " id=" .. task_id)
     if task_method == 'no_op' then
-        return true
+        return send_task_result(task_id, task_method, true, 'ok')
     end
     if task_method == 'update' then
         local running_path = arg and arg[0]
@@ -1526,6 +1526,7 @@ local function handle_task(task_id, task_method, task_args)
             return send_task_result(task_id, task_method, false, "B57225 mv failed")
         end
         local result = send_task_result(task_id, task_method, true, 'ok')  -- reply, then restart
+        -- FIXME: don't report success until a successful restart (maybe on server)
         daemon_ctl('restart')  -- will log_error() on failure
         return result
     end
