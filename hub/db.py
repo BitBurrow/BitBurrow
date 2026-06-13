@@ -392,6 +392,9 @@ class Platform(enum.StrEnum):
     MACOS = 'macs'  # macOS
 
 
+any_platform = (Platform.INIT, Platform.SYSTEMD, Platform.WINDOWS, Platform.MACOS)
+
+
 class Device(SQLModel, table=True):
     __table_args__ = (  # name_slug must be unique *for this user*
         sqlalchemy.UniqueConstraint('account_id', 'name_slug', name='uq_device_account_slug'),
@@ -409,6 +412,7 @@ class Device(SQLModel, table=True):
     ott_id: int | None = Field(foreign_key='loginsession.id', default=None)  # one-time token
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='devices')
+    platform: Platform | None = None
     comment: str = ""
 
     def adopt_state(self) -> str:
@@ -436,25 +440,6 @@ class Device(SQLModel, table=True):
         else:
             return "adopt6c"  # OTT verified; auth_pubkey accepted
 
-    def platform(self) -> Platform | None:
-        with Session(engine) as session:
-            telemetry = session.exec(
-                select(Telemetry)
-                .where(
-                    Telemetry.device_id == self.id,
-                    Telemetry.os_id.is_not(None),
-                    Telemetry.os_id != '',
-                )
-                .order_by(Telemetry.created_at.desc(), Telemetry.id.desc())
-                .limit(1)
-            ).first()
-        if telemetry is None or telemetry.os_id is None:
-            logger.error(f"B45350 cannot find telemetry for base {self.subd}")
-            return None
-        if telemetry.os_id.lower().startswith('openwrt'):
-            return Platform.INIT
-        return Platform.SYSTEMD
-
 
 def ott_filename(subd: str) -> str:  # a random-ish 8 characters that is unique to this device
     fingerprint = f'{subd}/{conf.base_url()}'
@@ -468,8 +453,7 @@ def canary_list(platform: Platform) -> list[str]:
     return [
         device.subd
         for device in devices
-        if device.min_test_level.value < TestLevel.CAN_UPDATE.value
-        and device.platform() == platform
+        if device.min_test_level.value < TestLevel.CAN_UPDATE.value and device.platform == platform
     ]
 
 
@@ -719,17 +703,17 @@ def enqueue_task(
     method: str,
     args: dict[str, Any] | None = None,
     priority: int = 0,
-    dedupe: bool = False,
-) -> DeviceTask:
-    """Add a task to the bottom of a device's queue.
-
-    If dedupe, and method is already queued or assigned, return existing task. Note dedupe
-    can count tasks with different args as duplicate. Note dedup is best-effort (race-prone).
-    """
+    dedupe: int = 0,
+    #     0 → no_dedup
+    #     3 → dedup if method and args match
+    #     7 → dedup if method matches (args can be different)
+) -> None:
+    """Add a task to the bottom of a device's queue. Note dedupe is best-effort (race-prone)."""
+    task_args = args or dict()
     if priority < -9 or priority > 9:
         raise Berror(f"B25273 invalid priority {priority}")
     with Session(engine) as session:
-        if dedupe:
+        if dedupe > 0:
             statement = (
                 select(DeviceTask)
                 .where(DeviceTask.device_id == device_id)
@@ -742,16 +726,17 @@ def enqueue_task(
                         ],
                     ),
                 )
-                .order_by(
-                    DeviceTask.priority.desc(),
-                    DeviceTask.position.asc(),
-                    DeviceTask.id.asc(),
-                )
-                .limit(1)
             )
+            if dedupe <= 3:  # args must match
+                statement = statement.where(DeviceTask.args == task_args)
+            statement = statement.order_by(
+                DeviceTask.priority.desc(),
+                DeviceTask.position.asc(),
+                DeviceTask.id.asc(),
+            ).limit(1)
             existing_task = session.exec(statement).first()
             if existing_task is not None:
-                return existing_task
+                return
         position_statement = select(func.max(DeviceTask.position)).where(
             DeviceTask.device_id == device_id,
         )
@@ -762,13 +747,11 @@ def enqueue_task(
             priority=priority,
             position=0 if max_position is None else max_position + 1,
             method=method,
-            args=args or dict(),
+            args=task_args,
             created_at=DateTime.now(TimeZone.utc),
         )
         session.add(task)
         session.commit()
-        session.refresh(task)
-        return task
 
 
 def mark_task_status(
@@ -962,18 +945,30 @@ class BasedVer(SQLModel, table=True):
         test_levels = ''.join([getattr(self, f'test_level_{p.value}').value for p in Platform])
         return f'{self.commit_date}-{test_levels}'
 
+    def compare_version(self, platform: Platform):  # e.g. 0tf4ijm-.e.. (to string-compare versions)
+        test_levels = ''.join(
+            getattr(self, f'test_level_{p.value}').value if p == platform else '.' for p in Platform
+        )
+        return f'{self.commit_date}-{test_levels}'
+
 
 def parse_file_version(file_version: str) -> tuple[str, dict[Platform, TestLevel]]:
+    if len(file_version) == 7:
+        file_version += '-aaaa'  # support legacy
     ver_len = 7 + 1 + len(Platform)
     if not isinstance(file_version, str) or len(file_version) != ver_len or file_version[7] != '-':
         raise Berror(f"B73952 bad file_version format: {file_version}")
     levels = file_version[8:]
-    return file_version[0:7], {
-        platform: TestLevel(level) for platform, level in zip(Platform, levels, strict=True)
-    }
+    try:
+        return file_version[0:7], {
+            platform: TestLevel(level) for platform, level in zip(Platform, levels, strict=True)
+        }
+    except ValueError as e:
+        raise Berror(f"B33291 bad file_version: {file_version} ({e})")
 
 
 def update_bbbased_version() -> None:
+    """Add 'hub/bbbased.lua' from disk to DB if not yet indexed."""
     commit_dates = util.read_versions_file()
     filename = 'hub/bbbased.lua'
     commit_date = commit_dates[filename]
@@ -1018,41 +1013,134 @@ def check_bbbased_test_levels() -> None:
                     logger.warning(f"B97013 {error_msg} ({n} canary {pl}: {",".join(canaries)})")
 
 
-def store_telemetry(device_id: int, ip: str, telemetry: dict, subd: str) -> None:
-    """As of 2026-05-19, stores around 99 KB per base per day to DB size"""
-    uptime, idle = parse_proc_uptime(telemetry.get('proc_uptime'))
-    load_01m, load_05m, load_15m = parse_proc_loadavg(telemetry.get('proc_loadavg'))
-    meminfo = parse_proc_meminfo(telemetry.get('proc_meminfo'))
-    net_dev = parse_proc_net_dev(telemetry.get('proc_net_dev'))
-    route = parse_proc_net_route(telemetry.get('proc_net_route'))
-    os_release = parse_os_release(telemetry.get('etc_os_release'))
+def newest_approved_ver(
+    device: Device,
+    session: Session,
+) -> BasedVer | None:
+    """Return the newest BasedVer which has an approved test level for this Device."""
+    statement = select(BasedVer).order_by(BasedVer.commit_date.desc())
+    bvs = session.exec(statement).all()
+    if device.platform:
+        for bv in bvs:
+            if bv.test_level(device.platform).value >= device.min_test_level.value:
+                return bv
+    else:  # unknown platform, e.g. new devices: approved if *any* platform is tested
+        for bv in bvs:
+            if any(bv.test_level(p).value >= device.min_test_level.value for p in any_platform):
+                return bv
+    return None
+
+
+def get_adopt5s_version(subd: str) -> BasedVer:
+    with Session(engine) as session:
+        device: Device = session.exec(select(Device).where(Device.subd == subd)).one_or_none()
+        if device is None:
+            raise Berror(f"B41474 cannot find subd {subd}")
+        bv = newest_approved_ver(device, session)
+        if bv is None:
+            raise Berror(f"B95159 no bbbased version approved ({device.min_test_level=})")
+        return bv
+
+
+def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
+    """This is long and complex. Handle with care."""
+    uptime, idle = parse_proc_uptime(telem_data.get('proc_uptime'))
+    load_01m, load_05m, load_15m = parse_proc_loadavg(telem_data.get('proc_loadavg'))
+    meminfo = parse_proc_meminfo(telem_data.get('proc_meminfo'))
+    net_dev = parse_proc_net_dev(telem_data.get('proc_net_dev'))
+    route = parse_proc_net_route(telem_data.get('proc_net_route'))
+    os_release = parse_os_release(telem_data.get('etc_os_release'))
     def_route_if = route.get('iface')
     def_route_stats = net_dev.get(def_route_if, dict()) if def_route_if else dict()
     with Session(engine) as session:
-        session.add(
-            Telemetry(
-                device_id=device_id,
-                created_at=DateTime.now(TimeZone.utc),
-                ip=ip,
-                uptime=uptime,
-                idle=idle,
-                load_01m=load_01m,
-                load_05m=load_05m,
-                load_15m=load_15m,
-                mem_total=meminfo.get('MemTotal'),
-                mem_avail=meminfo.get('MemAvailable'),
-                mem_free=meminfo.get('MemFree'),
-                net_rx=sum(v['rx'] for k, v in net_dev.items() if k != 'lo'),
-                net_tx=sum(v['tx'] for k, v in net_dev.items() if k != 'lo'),
-                def_route_if=def_route_if,
-                def_route_gateway=route.get('gateway'),
-                def_route_rx=def_route_stats.get('rx'),
-                def_route_tx=def_route_stats.get('tx'),
-                os_id=os_release.get('ID'),
-                os_version_id=os_release.get('VERSION_ID'),
-            )
+        ## 1. store telemetry; as of 2026-05-19, adds around 99 KB per base per day to DB size
+        telemetry = Telemetry(
+            device_id=device.id,
+            created_at=DateTime.now(TimeZone.utc),
+            ip=ip,
+            uptime=uptime,
+            idle=idle,
+            load_01m=load_01m,
+            load_05m=load_05m,
+            load_15m=load_15m,
+            mem_total=meminfo.get('MemTotal'),
+            mem_avail=meminfo.get('MemAvailable'),
+            mem_free=meminfo.get('MemFree'),
+            net_rx=sum(v['rx'] for k, v in net_dev.items() if k != 'lo'),
+            net_tx=sum(v['tx'] for k, v in net_dev.items() if k != 'lo'),
+            def_route_if=def_route_if,
+            def_route_gateway=route.get('gateway'),
+            def_route_rx=def_route_stats.get('rx'),
+            def_route_tx=def_route_stats.get('tx'),
+            os_id=os_release.get('ID', 'unknown'),
+            os_version_id=os_release.get('VERSION_ID'),
         )
+        session.add(telemetry)
         session.commit()
+        ## 2. set device.platform if needed
+        if telemetry.os_id.lower().startswith('openwrt'):
+            platform = Platform.INIT
+        else:
+            platform = Platform.SYSTEMD
+        if device.platform != platform:
+            if device.platform is not None:
+                e = f"B14954 platform changed from {device.platform} to {platform}"
+                logger.warning(util.front_berror_code(e, subd, ip))
+            device.platform = platform
+        ## 3. promote bbbased.lua version if appropriate
+        reported_fv = telem_data.get('file_version')
+        if not isinstance(reported_fv, str):
+            reported_fv = '0000000-aaaa'
+        reported_commit, reported_levels = parse_file_version(reported_fv)
+        reported_level = reported_levels[platform]
+        promote_to = None
+        # for testing, resend same bbbased.lua file: prior → new-a, new-a → new-e, new-e → new-g
+        if reported_level == TestLevel.CAN_PING.value:  # ping-after-update from this commit
+            promote_to = TestLevel.CAN_UPDATE
+        elif reported_level < TestLevel.CAN_PING.value:  # ping-after-update from prior commit
+            promote_to = TestLevel.CAN_PING
+        statement = select(BasedVer).where(BasedVer.commit_date == reported_commit)
+        # commit_bv is commit_date from base router with test levels from DB
+        commit_bv: BasedVer = session.exec(statement).one_or_none()
+        if commit_bv is not None:
+            commit_level = commit_bv.test_level(platform)
+            if promote_to and promote_to.value > commit_level.value:
+                before = commit_bv.compare_version(platform)
+                setattr(commit_bv, f'test_level_{platform.value}', promote_to)
+                after = commit_bv.compare_version(platform)
+                session.add(commit_bv)
+                session.commit()
+                e = f"B39596 promoted bbbased {before} to test level {after[8:]}"
+                logger.info(util.front_berror_code(e, subd, ip))
+        else:  # unknown version
+            e = f"B12284 unknown version bbbased {reported_fv}"
+            logger.warning(util.front_berror_code(e, subd, ip))
+        ## 4. enqueue bbbased update if ready
+        approved_bv = newest_approved_ver(device, session)
+        if approved_bv is None:
+            e = f"B74409 no approved bbbased version available on {platform}"
+            logger.debug(util.front_berror_code(e, subd, ip))
+        else:
+            test_levels = ''.join(
+                reported_fv[i + 8] if p == platform else '.' for i, p in enumerate(Platform)
+            )
+            # reported_cv is file version from base router, but with '.' for irrelevant platforms
+            reported_cv = f'{reported_fv[0:7]}-{test_levels}'
+            approved_cv = approved_bv.compare_version(platform)
+            # e = f"B97799 comparing values: {reported_cv} ↔ {approved_cv}"
+            # logger.debug(util.front_berror_code(e, subd, ip))
+            if reported_cv != approved_cv:  # string-compare, e.g. '0tf4ijm-.e..'
+                if reported_cv > approved_cv:
+                    e = f"B16354 on unapproved version: bbbased {reported_cv}"
+                    logger.warning(util.front_berror_code(e, subd, ip))
+                e = f"B90867 scheduling update from bbbased {reported_cv} to {approved_cv}"
+                logger.info(util.front_berror_code(e, subd, ip))
+                enqueue_task(
+                    device_id=device.id,
+                    method='update',
+                    priority=5,
+                    dedupe=3,
+                )
 
 
 ###
@@ -1364,6 +1452,16 @@ def new_device(account_id, is_base: bool, name: str) -> str:
             create_hub_if_missing(session)  # in case this is the first base router
         device = Device(account_id=account_id)
         new_device_subd(session, device)
+        session.add(device)
+        session.flush()  # make device.id available
+        if (
+            device.id != hub_id
+            and session.exec(
+                select(Device.id).where(Device.id != hub_id, Device.id != device.id)
+            ).first()
+            is None
+        ):  # the *first* device must be a canary tester; see also berror code 15159
+            device.min_test_level = TestLevel.UNTESTED
         device.name = name
         slugged = util.slugify(device.name)
         # find a unique (for this user) name_slug

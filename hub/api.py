@@ -79,22 +79,28 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
 
 
 @router.get(adopt5s_route, response_class=PlainTextResponse)
-def get_adopt5s_script(request: Request, subd: str) -> PlainTextResponse:
+def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
     subd = sanitize_subd(subd)  # unverified; 'bbbased.lua' does not contain any secrets
-    expand_braces = (
-        lambda s: s.replace('{file_version}', util.source_file_datetime['hub/bbbased.lua'])
+    ip_address = request.client.host if request.client else '(unknown)'
+    try:
+        version = db.get_adopt5s_version(subd)
+    except Berror as e:
+        logger.error(util.front_berror_code(e, subd, ip_address))
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    fv = version.file_version()
+    content = (
+        version.code.replace('{file_version}', fv)
         .replace('{api_url}', conf.base_url() + jsonrpc_route)
         .replace('{download_url}', conf.base_url() + adopt5s_route.format(subd=subd))
         .replace('{subd}', subd)
         .replace('{ott_filename}', db.ott_filename(subd))
         .replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
     )
-    return get_file(
-        request,
-        subd,
-        'hub/bbbased.lua',
-        expand_braces,
-        "B76218 base {subd} completed adopt5s from {ip_address}",
+    logger.info(f"B76218 base {subd} at {ip_address} adopt5s download bbbased {fv}")
+    return PlainTextResponse(
+        content=content,
+        media_type='text/plain; charset=utf-8',
+        headers={'Cache-Control': 'no-store'},
     )
 
 
@@ -416,25 +422,13 @@ async def ping(
             logger.info(f"B51437 base {device.subd} completed adopt6e from {ip}")
         device.last_endpoint = ip
         device.last_handshake = int(ping_now.timestamp())
+        try:
+            db.process_ping(device=device, ip=ip, telem_data=telemetry, subd=subd)
+        except Berror as e:
+            logger.warning(util.front_berror_code(e, subd, ip))
         device_id = device.id
-    db.store_telemetry(device_id=device_id, ip=ip, telemetry=telemetry, subd=subd)
     global active_long_polls
     logger.debug(f"B37237 base {subd} at {ip} connect (1 of {active_long_polls+1})")
-    file_version = telemetry.get('file_version', None)
-    if file_version is not None:  # automatic software updates
-        available_version = util.source_file_datetime['hub/bbbased.lua']
-        if file_version != available_version:
-            from_to = f"updating bbbased.lua from {file_version} to {available_version}"
-            if file_version > available_version:
-                logger.warning(f"B91300 base {subd} {from_to} (downgrading)")
-            else:
-                logger.info(f"B83121 base {subd} {from_to}")
-            db.enqueue_task(
-                device_id=device_id,
-                method='update',
-                priority=5,
-                dedupe=True,
-            )
     async with active_long_polls_lock:
         active_long_polls += 1
     try:
