@@ -1213,6 +1213,9 @@ def get_conf(intf_id) -> tuple:
         else:  # for multi-peer, loop through them
             statement = select(Intf).where(Intf.base_intf_id == intf.id)
             for peer in session.exec(statement):
+                if peer.wg_pubkey is None:
+                    logger.warning(f"B15160 no wg_pubvkey for Intf {peer.id}")
+                    continue
                 p = dict()
                 p['PublicKey'] = peer.wg_pubkey
                 p['AllowedIPs'] = f'{peer.ipv4allowed()},{peer.ipv6allowed()}'
