@@ -55,12 +55,17 @@ def set_session_cookie(response: Response, token: str, max_age: int = 0):
     response.set_cookie(**kwargs)
 
 
-def sanitize_redirect(url: str) -> str:
-    if not url or not url.startswith('/'):  # allow: /some_local_path
-        return '/home'
-    if '://' in url or '%2f' in url.lower():  # don't allow redirects to other sites
-        return '/home'
-    return url
+allowed_redirects = {
+    '/home',
+    '/login',
+}
+
+
+def sanitize_redirect(url: str, fallback: str = '/home') -> str:
+    if url in allowed_redirects:
+        return url
+    logger.warning(f"B03177 refusing redirect to {url}")
+    return fallback
 
 
 @router.post('/set_session')
@@ -69,14 +74,14 @@ def post_set_session(
     redirect: str = Body('/home', embed=True),
     max_age: int = Body(0, embed=True),
 ):
-    response = RedirectResponse(sanitize_redirect(redirect), status_code=303)
+    response = RedirectResponse(sanitize_redirect(redirect, '/home'), status_code=303)
     set_session_cookie(response, token, max_age)
     return response
 
 
 @router.post('/logout')
 def logout(request: Request, redirect: str = Body('/login', embed=True)):
-    safe_redirect = sanitize_redirect(redirect)
+    safe_redirect = sanitize_redirect(redirect, '/login')
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
         try:
