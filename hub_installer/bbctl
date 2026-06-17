@@ -164,7 +164,10 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
     shell: |-
       {{ rfbrowser_apt_sudo_cmd }}
     register: rfbrowser_apt_install
-    changed_when: "'0 upgraded' not in (rfbrowser_apt_install.stdout | default(''))"
+    changed_when: >-
+      '0 upgraded, 0 newly installed' not in (rfbrowser_apt_install.stdout | default(''))
+    when:
+      - rfbrowser_apt_sudo_cmd | length > 0
 
   - name: Define bbhub path
     set_fact:
