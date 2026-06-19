@@ -20,7 +20,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 35
+db_schema_version = 36
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -152,6 +152,17 @@ def migrate(db_path: str) -> None:
             session.exec(statement)
             session.commit()
         current_version = 33
+    if current_version < 36:  # version 35 → 36: add long-poll timeout tuning fields
+        engine = create_engine(f"sqlite:///{db_path}")
+        with Session(engine) as session:
+            statement = update(db.Device).values(
+                long_poll_safe=25,  # see tag_long_poll_min_time
+                long_poll_probe=None,
+                long_polls=0,
+            )
+            session.exec(statement)
+            session.commit()
+        current_version = 36
     # if current_version < ...
     #     ...
     #     current_version = ...

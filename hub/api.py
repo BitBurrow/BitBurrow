@@ -110,8 +110,19 @@ async def log_error(subd: str, request: Request) -> Response:
     body_unsafe = await request.body()
     body_text = body_unsafe[:900].decode('utf-8', errors='replace')
     disp = ''.join(c if c.isprintable() and c not in '\r\n\t' else repr(c)[1:-1] for c in body_text)
-    if re.match(r'^B[0-9]{5} ', disp):  # front the Berror code
-        message = f"{disp[0:7]}base {subd} {disp[7:]}"
+    if re.match(r'^B[0-9]{5} ', disp):  # begins with a Berror code
+        message = f"{disp[0:7]}base {subd} {disp[7:]}"  # front Berror code
+        timeout_markers = (
+            '504 Gateway Time-out',
+            '504 Gateway Timeout',
+            'upstream timed out',
+            'Operation timed out',
+            'Connection timed out',
+            'curl: (28)',
+        )
+        if disp[1:6] == '64445' and any(marker in message for marker in timeout_markers):
+            # Berror code 64445 in bbbased.lua is a ping failure of some sort
+            db.record_long_poll_timeout(subd)
     else:
         message = f"base {subd} {disp}"
     if message[0] == 'B' and message[1:6] == '20392':  # bypass Berror code dup detection
@@ -402,7 +413,8 @@ async def ping(
 ) -> BaseResult:
     ip = request.client.host if request.client else '(unknown)'
     ping_now = DateTime.now(TimeZone.utc)
-    wait_seconds: int = 60  # long polling max time
+    completed_full_wait = False
+    wait_seconds = 25
     with db.device_by_subd(subd) as device:
         try:
             payload = await verify_signed_request(
@@ -426,6 +438,7 @@ async def ping(
             db.process_ping(device=device, ip=ip, telem_data=telemetry, subd=subd)
         except Berror as e:
             logger.warning(util.front_berror_code(e, subd, ip))
+        wait_seconds = device.long_poll_probe or device.long_poll_safe
         device_id = device.id
     global active_long_polls
     logger.debug(f"B37237 base {subd} at {ip} connect (1 of {active_long_polls+1})")
@@ -436,7 +449,8 @@ async def ping(
         while True:
             now = DateTime.now(TimeZone.utc)
             if now > wait_until:  # long polling timeout
-                return BaseResult(subd=subd, status='ok')
+                completed_full_wait = True
+                return BaseResult(subd=subd, status='ok', timeout_seconds=wait_seconds)
             if util.shutdown_event.is_set():  # e.g. ctrl-c
                 remaining = round((wait_until - now).total_seconds())
                 logger.info(f'B64194 base {subd} long polling canceled ({remaining}s remaining)')
@@ -459,6 +473,9 @@ async def ping(
     finally:
         async with active_long_polls_lock:
             active_long_polls -= 1
+        if completed_full_wait:
+            with db.device_by_subd(subd) as device:
+                db.record_long_poll_clean(device)
 
 
 @jsonrpc_entrypoint.method(errors=[BaseError])

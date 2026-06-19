@@ -425,6 +425,9 @@ class Device(SQLModel, table=True):
     last_endpoint: str | None = None  # most recent public IP
     last_handshake: int | None = None  # seconds past Unix epoch
     min_test_level: TestLevel = TestLevel.CAN_UPDATE  # let the canary testers try updates first
+    long_poll_safe: int = 25  # known-to-work time; 25 ≤ n ≤ 90; see tag_long_poll_min_time
+    long_poll_probe: int | None = None  # probe seconds; None means not probing; 25 ≤ n ≤ 90
+    long_polls: int = 0  # count of succesful pings (safe or probe)
     ott_id: int | None = Field(foreign_key='loginsession.id', default=None)  # one-time token
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='devices')
@@ -455,6 +458,47 @@ class Device(SQLModel, table=True):
                 return "adopt5a"  # OTT has been created
         else:
             return "adopt6c"  # OTT verified; auth_pubkey accepted
+
+
+def clamp_wait_seconds(wait_seconds: int | None) -> int:
+    if wait_seconds is None or wait_seconds < 25:  # see tag_long_poll_min_time
+        return 25
+    return min(90, wait_seconds)
+
+
+def record_long_poll_clean(device: Device) -> None:
+    """Record a full long-poll response that did not time out."""
+    if device.long_poll_probe is not None:  # currently probing
+        device.long_polls += 1
+        if device.long_polls >= 5:  # when probe is successful 5 times, consider it okay
+            device.long_poll_safe = clamp_wait_seconds(device.long_poll_probe)
+            device.long_poll_probe = None  # no longer probing
+            device.long_polls = 0
+            intro = f"B04375 base {device.subd}"
+            logger.debug(f"{intro} long-poll safe timeout promoted to {device.long_poll_safe}s")
+    else:  # not currently probing
+        device.long_polls += 1
+        if device.long_poll_safe >= 90:  # don't attempt probing longer than 90 seconds
+            return
+        if device.long_polls >= 10:  # after 10 clean pings at the 'safe' timeout, begin probing
+            device.long_poll_probe = clamp_wait_seconds(device.long_poll_safe + 5)
+            device.long_polls = 0
+            logger.debug(f"B96805 base {device.subd} long-poll probing {device.long_poll_probe}s")
+
+
+def record_long_poll_timeout(subd: str) -> None:
+    """Record a client-reported long-poll timeout for one device."""
+    with device_by_subd(subd) as device:
+        if device.long_poll_probe is not None:  # currently probing
+            intro = f"B12689 base {device.subd} long-poll {device.long_poll_probe}s probe failed;"
+            logger.info(f"{intro} keeping {device.long_poll_safe}s safe timeout")
+            device.long_poll_probe = None
+            device.long_polls = 0
+        else:  # not currently probing
+            device.long_poll_safe = clamp_wait_seconds(device.long_poll_safe - 5)
+            device.long_polls = 0
+            intro = f"B36477 base {device.subd}"
+            logger.info(f"{intro} reduced long-poll safe timeout to {device.long_poll_safe}s")
 
 
 def ott_filename(subd: str) -> str:  # a random-ish 8 characters that is unique to this device

@@ -1430,7 +1430,8 @@ local function send_signed_jsonrpc(request_body)
         )
         if not signature_b64 then break end
         log_debug("sending signed ping request to " .. api_url)
-        local curl_command = 'curl -sS '
+        -- hub max timeout is 90 seconds; see clamp_wait_seconds() and others
+        local curl_command = 'curl -sS --connect-timeout 20 --max-time 100 '
             .. '-X POST '
             .. shell_quote(api_url)
             .. ' -H '
@@ -1563,6 +1564,7 @@ local function do_ping()
         )
         return status
     end
+    -- note the Berror code below is used in api.py
     log_error("B64445 ping rejected: " .. displayable(response_body, 300))
     return nil
 end
