@@ -421,6 +421,12 @@ def entry_point():
             server_app,
             host=conf.get('backend.ip'),
             port=conf.get('backend.web_port'),
+            proxy_headers=True,
+            forwarded_allow_ips=(
+                '127.0.0.0/8,::1,'  # loopback
+                '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,'  # RFC 1918
+                'fc00::/7'  # RFC 4193
+            ),
             log_level=args.log_level_uvicorn,
             ssl_keyfile=ssl_keyfile,
             ssl_certfile=ssl_certfile,
