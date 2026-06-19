@@ -123,6 +123,7 @@ async def log_error(subd: str, request: Request) -> Response:
         if disp[1:6] == '64445' and any(marker in message for marker in timeout_markers):
             # Berror code 64445 in bbbased.lua is a ping failure of some sort
             db.record_long_poll_timeout(subd)
+            return  # already logged above; don't log the "ping rejected: ..."
     else:
         message = f"base {subd} {disp}"
     if message[0] == 'B' and message[1:6] == '20392':  # bypass Berror code dup detection

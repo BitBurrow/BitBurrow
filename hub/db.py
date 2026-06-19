@@ -491,7 +491,7 @@ def record_long_poll_timeout(subd: str) -> None:
     with device_by_subd(subd) as device:
         if device.long_poll_probe is not None:  # currently probing
             intro = f"B12689 base {device.subd} long-poll {device.long_poll_probe}s probe failed;"
-            logger.info(f"{intro} keeping {device.long_poll_safe}s safe timeout")
+            logger.debug(f"{intro} keeping {device.long_poll_safe}s safe timeout")
             device.long_poll_probe = None
             device.long_polls = 0
         else:  # not currently probing
