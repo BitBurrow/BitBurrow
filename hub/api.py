@@ -96,7 +96,7 @@ def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
         .replace('{ott_filename}', db.ott_filename(subd))
         .replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
     )
-    logger.info(f"B76218 base {subd} at {ip_address} adopt5s download bbbased {fv}")
+    logger.info(f"B76218 base {subd} completed adopt5s from {ip_address} (bbbased {fv})")
     return PlainTextResponse(
         content=content,
         media_type='text/plain; charset=utf-8',
