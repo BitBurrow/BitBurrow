@@ -389,7 +389,8 @@ def entry_point():
         logger.error(f"B14242 DB error (may need to increase db_schema_version): {e}")
         sys.exit(1)
     try:
-        version_string = f"{util.app_version()}_{migrate_db.db_schema_version}_{conf.config_fv}"
+        version_details = f'{util.app_version()}:{migrate_db.db_schema_version}:{conf.config_fv}'
+        version_string = f'{util.read_versions_file()['hub/']} ({version_details})'
         address_list = net.all_local_ips(conf.get('backend.ip'), ipv6_enclosure='[]')
         logger.info(f"❚ Starting BitBurrow hub")
         logger.info(f"❚   version string: {version_string}")
