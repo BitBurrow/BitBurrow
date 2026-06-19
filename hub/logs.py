@@ -1,10 +1,8 @@
 ###
-### logging to console, file
+### logging to stderr
 ###
 
 import logging
-import textwrap
-import yaml
 import hub.login_key as lk
 
 
@@ -18,73 +16,41 @@ def redact(msg):
 class RedactingFilter(logging.Filter):
     # based on: https://relaxdiego.com/2014/07/logging-in-python.html
 
-    def __init__(self):
-        super(RedactingFilter, self).__init__()
-
     def filter(self, record: logging.LogRecord):
         record.msg = redact(record.msg)
         if isinstance(record.args, dict):
-            for k in record.args.keys():
-                record.args[k] = redact(record.args[k])
+            record.args = {key: redact(value) for key, value in record.args.items()}
         else:  # redact additional logging.debug() arguments
             record.args = tuple(redact(arg) for arg in record.args)
         return True  # keep this log entry
 
 
-# use only base logger name, e.g. 'uvicorn.error' → 'uvicorn'
-class LoggerRootnameFilter(logging.Filter):
-    def filter(self, record):
-        record.rootname = record.name.rsplit('.', 1)[0]
-        return True
-
-
-def logging_config(
-    console_log_level=logging.WARNING,
-    file_log_level=logging.INFO,
-):
+def logging_config(console_log_level=logging.WARNING):
     # docs: https://docs.python.org/3/library/logging.config.html
-    config_data = yaml.safe_load(textwrap.dedent('''
-                version: 1
-                disable_existing_loggers: false
-                formatters:
-                    console_log_format:
-                        # to see logger names, add '%(name)s ' below
-                        format: '%(asctime)s.%(msecs)03d %(levelname)-5s %(message)s'
-                        datefmt: '%H:%M:%S'
-                    file_log_format:
-                        format: '%(asctime)s %(levelname)-5s %(message)s'
-                        datefmt: '%Y-%m-%d_%H:%M:%S'
-                filters:
-                    redact_login_keys:
-                        (): hub.logs.RedactingFilter
-                    logger_rootname:
-                        (): hub.logs.LoggerRootnameFilter
-                handlers:
-                    console:
-                        class : logging.StreamHandler
-                        formatter: console_log_format
-                        level   : <set below>
-                        filters:
-                        - redact_login_keys
-                        stream  : ext://sys.stdout
-                    file:
-                        class : logging.handlers.TimedRotatingFileHandler
-                        formatter: file_log_format
-                        level: <set below>
-                        filters:
-                        - redact_login_keys
-                        - logger_rootname
-                        filename: bitburrow.log
-                        when: midnight
-                        utc: true
-                        backupCount: 31
-                loggers:
-                    root:
-                        handlers:
-                        - console
-                        - file
-            '''))
-    # set log level in config_data to current level
-    config_data['handlers']['console']['level'] = logging.getLevelName(console_log_level)
-    config_data['handlers']['file']['level'] = logging.getLevelName(file_log_level)
-    return config_data
+    return {
+        'version': 1,
+        'disable_existing_loggers': False,
+        'formatters': {
+            'stderr': {
+                'format': '%(levelname)-5s %(message)s',
+            },
+        },
+        'filters': {
+            'redact_login_keys': {
+                '()': 'hub.logs.RedactingFilter',
+            },
+        },
+        'handlers': {
+            'stderr': {
+                'class': 'logging.StreamHandler',
+                'formatter': 'stderr',
+                'level': console_log_level,
+                'filters': ['redact_login_keys'],
+                'stream': 'ext://sys.stderr',
+            },
+        },
+        'root': {
+            'level': logging.DEBUG,
+            'handlers': ['stderr'],
+        },
+    }

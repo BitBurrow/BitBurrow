@@ -1,7 +1,7 @@
 import asyncio
 import fastapi_jsonrpc as jsonrpc
 from fastapi.staticfiles import StaticFiles
-import logging
+import logging.config
 import nicegui
 import nicegui.run as nicegui_run
 import os
