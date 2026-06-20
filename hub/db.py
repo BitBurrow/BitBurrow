@@ -988,7 +988,7 @@ def parse_os_release(text: object) -> dict[str, str]:
 
 class BasedVer(SQLModel, table=True):
     id: int | None = Field(primary_key=True, default=None)
-    commit_date: str = Field(index=True, default='')  # see: cat git_hooks/pre-commit |grep perl
+    commit_date: str = Field(index=True, default='')  # 7-character date; see net.b36datetime()
     # test_level_x must match class Platform() values
     test_level_init: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.INIT
     test_level_sysd: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.SYSTEMD

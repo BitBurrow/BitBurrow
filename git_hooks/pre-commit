@@ -43,7 +43,8 @@ watch_list=(
 )
 [ -e "$versions_path" ] || touch "$versions_path"
 staged_files="$(git diff --cached --name-only --diff-filter=ACMR)"
-timestamp="$(date '+%s' |perl -lne '$a="0123456789abcdefghijklmnopqrstuvwxyz";$s="";do{$s=substr($a,$_%36,1).$s;$_=int($_/36)}while$_;printf"%07s\n",$s')"  # Unix date in base 36
+# for b36datetime, see also hub/net.py
+b36datetime="$(date '+%s' |perl -lne '$a="0123456789abcdefghijklmnopqrstuvwxyz";$s="";do{$s=substr($a,$_%36,1).$s;$_=int($_/36)}while$_;printf"%07s\n",$s')"  # Unix date in base 36
 for watched_path in "${watch_list[@]}"; do
     if [[ "$watched_path" == */ ]]; then
         matched=0
@@ -63,7 +64,7 @@ for watched_path in "${watch_list[@]}"; do
     fi
     tmp_versions="$(mktemp)"
     awk -v target="$watched_path" '$2 != target { print }' "$versions_path" > "$tmp_versions"
-    printf '%s %s\n' "$timestamp" "$watched_path" >> "$tmp_versions"
+    printf '%s %s\n' "$b36datetime" "$watched_path" >> "$tmp_versions"
     if ! cmp -s "$versions_path" "$tmp_versions"; then
         mv "$tmp_versions" "$versions_path"
         versions_changed=1

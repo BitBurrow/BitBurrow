@@ -337,6 +337,17 @@ def time_string(t):
     return DateTime.utcfromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def b36datetime() -> str:
+    """Return time as a 7-character value (1-second resolution). See also git_hooks/pre-commit"""
+    digits = '0123456789abcdefghijklmnopqrstuvwxyz'
+    now = int(DateTime.now(TimeZone.utc).timestamp())
+    result = ''
+    while now:
+        result = digits[now % 36] + result
+        now //= 36
+    return result.rjust(7, '0')
+
+
 def connected_inbound_list(local_port):
     # net_connections docs: https://psutil.readthedocs.io/en/latest/index.html#psutil.net_connections
     conn_list = psutil.net_connections(kind='tcp')
