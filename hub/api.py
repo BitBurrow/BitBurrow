@@ -11,7 +11,6 @@ import os
 import logging
 import re
 from sqlmodel import Field
-import time
 from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -368,7 +367,7 @@ async def verify_signed_request(
     if content_digest_header != expected_content_digest:
         raise Berror("B40097 Content-Digest mismatch")
     created, keyid, nonce, alg = parse_signature_input(signature_input_header)
-    now = int(time.time())
+    now = int(DateTime.now(TimeZone.utc).timestamp())
     skew = now - created
     if abs(skew) > max_skew:
         skew_str = uif.human_duration(TimeDelta(seconds=abs(skew)))
