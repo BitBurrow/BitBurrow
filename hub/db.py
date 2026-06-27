@@ -1200,6 +1200,55 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
 
 
 ###
+### DB table Blob - store certain binary data
+###
+
+
+class Blob(SQLModel, table=True):
+    __table_args__ = (sqlalchemy.UniqueConstraint('path', 'version', name='uq_file_path_version'),)
+    id: int | None = Field(primary_key=True, default=None)
+    path: str = Field(index=True, default='')
+    version: str = Field(index=True, default='')
+    content: bytes = b''
+
+
+def get_blob(path: str, version: str | None = None) -> bytes | None:
+    with Session(engine) as session:
+        statement = select(Blob).where(Blob.path == path)
+        if version is None:  # note--version must be string-sortable
+            statement = statement.order_by(Blob.version.desc()).limit(1)
+        else:
+            statement = statement.where(Blob.version == version)
+        blob = session.exec(statement).first()
+        return blob.content if blob is not None else None
+
+
+def set_blob(
+    path: str,
+    content: bytes,
+    version: str | None = None,  # 'None' will use the current time as a version number
+    clobber: bool = False,  # 'True' will overwrite an existing path/version combo if it exists
+) -> None:
+    version = version or net.b36datetime()
+    with Session(engine) as session:
+        if clobber:
+            blob = session.exec(
+                select(Blob).where(Blob.path == path, Blob.version == version)
+            ).first()
+            if blob is None:
+                blob = Blob(path=path, version=version)
+            blob.content = content
+            session.add(blob)
+        else:
+            session.add(Blob(path=path, version=version, content=content))
+        try:
+            session.commit()
+        except sqlalchemy.exc.IntegrityError as e:
+            session.rollback()
+            raise Berror(f"B75375 blob {path} version {version} already exists")
+
+
+###
 ### helper methods
 ###
 

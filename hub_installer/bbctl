@@ -59,6 +59,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       - wireguard-tools
       - sqlite3
       - bind9-dnsutils  # `dig` tool
+      - tcpdump  # capture packets to replay on base router
       # 'acl' avoids Ansible temp file permissions issue in 'Install bbhub 🦶1--git clone'
       # (note that creating /home/bitburrow/.ansible/tmp doesn't help; we need package 'acl')
       - acl
@@ -84,22 +85,26 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
   - name: Allow sudo without password for specific commands
     copy:
       content: |
-        bitburrow  ALL = NOPASSWD: /usr/bin/wg *
-        bitburrow  ALL = NOPASSWD: /usr/bin/ip *
-        bitburrow  ALL = NOPASSWD: /usr/bin/sysctl *
-        bitburrow  ALL = NOPASSWD: /usr/bin/iptables *
-        bitburrow  ALL = NOPASSWD: /usr/sbin/wg *
-        bitburrow  ALL = NOPASSWD: /usr/sbin/ip *
-        bitburrow  ALL = NOPASSWD: /usr/sbin/sysctl *
-        bitburrow  ALL = NOPASSWD: /usr/sbin/iptables *
         bitburrow  ALL = NOPASSWD: /bin/wg *
-        bitburrow  ALL = NOPASSWD: /bin/ip *
-        bitburrow  ALL = NOPASSWD: /bin/sysctl *
-        bitburrow  ALL = NOPASSWD: /bin/iptables *
         bitburrow  ALL = NOPASSWD: /sbin/wg *
+        bitburrow  ALL = NOPASSWD: /usr/bin/wg *
+        bitburrow  ALL = NOPASSWD: /usr/sbin/wg *
+        bitburrow  ALL = NOPASSWD: /bin/ip *
         bitburrow  ALL = NOPASSWD: /sbin/ip *
+        bitburrow  ALL = NOPASSWD: /usr/bin/ip *
+        bitburrow  ALL = NOPASSWD: /usr/sbin/ip *
+        bitburrow  ALL = NOPASSWD: /bin/sysctl *
         bitburrow  ALL = NOPASSWD: /sbin/sysctl *
+        bitburrow  ALL = NOPASSWD: /usr/bin/sysctl *
+        bitburrow  ALL = NOPASSWD: /usr/sbin/sysctl *
+        bitburrow  ALL = NOPASSWD: /bin/iptables *
         bitburrow  ALL = NOPASSWD: /sbin/iptables *
+        bitburrow  ALL = NOPASSWD: /usr/bin/iptables *
+        bitburrow  ALL = NOPASSWD: /usr/sbin/iptables *
+        bitburrow  ALL = NOPASSWD: /bin/tcpdump *
+        bitburrow  ALL = NOPASSWD: /sbin/tcpdump *
+        bitburrow  ALL = NOPASSWD: /usr/bin/tcpdump *
+        bitburrow  ALL = NOPASSWD: /usr/sbin/tcpdump *
       dest: /etc/sudoers.d/bitburrow
       mode: '0640'
 

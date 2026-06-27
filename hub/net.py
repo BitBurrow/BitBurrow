@@ -7,6 +7,7 @@ import os
 import psutil
 import re
 import secrets
+import signal
 import socket
 import subprocess
 import tempfile
@@ -178,6 +179,11 @@ def prepend_path_to_prog(args):  # e.g. expand 'sudo wg' to 'sudo /usr/bin/wg'
                 break
 
 
+def arg_string(args):
+    joined = '␣'.join(args)  # alternatives: ␣⋄∘•⁕⁔⁃–
+    return joined if len(joined) < 170 else joined[:168] + "…"
+
+
 def run_external(args: list[str], input: str | None = None):
     """Run an external executable, capturing output. Searches standard system directories.
 
@@ -222,9 +228,112 @@ async def run_external_async(args: list[str], input: str | None = None):
     return stdout.decode().rstrip()
 
 
-def arg_string(args):
-    joined = '␣'.join(args)  # alternatives: ␣⋄∘•⁕⁔⁃–
-    return joined if len(joined) < 170 else joined[:168] + "…"
+async def run_external_until_event(
+    args: list[str],
+    stop_event: asyncio.Event,
+    stop_delay: float | None = None,
+    sigint_grace: float = 1.0,
+    sigterm_grace: float = 2.0,
+) -> str:
+    """Run an external command until stop_event is set, then return stdout.
+
+    Shutdown sequence:
+    1. wait for stop_event or for the process to exit unexpectedly
+    2. wait stop_delay (may be None)
+    3. send SIGINT
+    4. if still running after sigint_grace, send SIGTERM
+    5. if still running after sigterm_grace, send SIGKILL
+    """
+    assert isinstance(args, list)
+    # logger.debug(f"running: {arg_string(args)}")
+    prepend_path_to_prog(args)
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    stop_task = asyncio.create_task(stop_event.wait())
+    communicate_task = asyncio.create_task(proc.communicate())
+
+    def send_signal(sig: signal.Signals) -> None:
+        """Signal the subprocess group unless it has already exited."""
+        if proc.returncode is not None or communicate_task.done():
+            return
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass  # exited between the returncode check and killpg()
+
+    async def communication_finished(timeout: float) -> bool:
+        done, _ = await asyncio.wait((communicate_task,), timeout=max(0.0, timeout))
+        return communicate_task in done
+
+    async def stop_process() -> tuple[bytes, bytes]:
+        """Stop the subprocess without cancelling its stdout/stderr readers."""
+        if communicate_task.done():
+            return await communicate_task
+        send_signal(signal.SIGINT)
+        if await communication_finished(sigint_grace):
+            return await communicate_task
+        send_signal(signal.SIGTERM)
+        if await communication_finished(sigterm_grace):
+            return await communicate_task
+        send_signal(signal.SIGKILL)
+        return await communicate_task
+
+    def debug_output(stdout: bytes, stderr: bytes) -> str:
+        stdout_text = stdout.decode(errors='replace').rstrip()
+        stderr_text = stderr.decode(errors='replace').rstrip()
+        return f"stdout={stdout_text!r}, stderr={stderr_text!r}"
+
+    try:
+        done, _ = await asyncio.wait(
+            (stop_task, communicate_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if communicate_task in done and not stop_event.is_set():
+            stdout, stderr = await communicate_task
+            if proc.returncode != 0:
+                output = debug_output(stdout, stderr)
+                raise Berror(f"B57014 {arg_string(args)} returned {proc.returncode}; {output}")
+            return stdout.decode(errors='replace').rstrip()
+        if stop_delay is not None and not communicate_task.done():
+            await communication_finished(stop_delay)
+        stdout, stderr = await stop_process()
+        expected_returncodes = {
+            0,
+            -signal.SIGINT,
+            128 + signal.SIGINT,
+            -signal.SIGTERM,
+            128 + signal.SIGTERM,
+        }
+        output = debug_output(stdout, stderr)
+        if proc.returncode in {-signal.SIGKILL, 128 + signal.SIGKILL}:
+            logger.warning(f"B57016 needed SIGKILL to kill: {arg_string(args)}; {output}")
+        elif proc.returncode not in expected_returncodes:
+            logger.error(f"B57015 returned {proc.returncode}: {arg_string(args)}; {output}")
+        elif proc.returncode in {-signal.SIGTERM, 128 + signal.SIGTERM}:
+            logger.info(f"B57017 needed SIGTERM to kill: {arg_string(args)}")
+        return stdout.decode(errors='replace').rstrip()
+    except asyncio.CancelledError:
+        await asyncio.shield(stop_process())
+        raise
+    except BaseException:
+        if not communicate_task.done():
+            try:
+                await asyncio.shield(stop_process())
+            except BaseException as cleanup_error:
+                logger.warning(
+                    "B57018 subprocess cleanup failed while handling an error: %r",
+                    cleanup_error,
+                )
+        raise
+    finally:
+        if not stop_task.done():
+            stop_task.cancel()
+        await asyncio.gather(stop_task, return_exceptions=True)
 
 
 async def check_tls_cert(external: str, internal: str = None):
@@ -271,7 +380,7 @@ async def check_tls_cert(external: str, internal: str = None):
             except urllib.request.ssl.SSLCertVerificationError:
                 logger.error(f"B25688 TLS certificate at {internal} is not valid for {e[0]}")
         return
-    except TimeoutError as e:
+    except asyncio.TimeoutError as e:
         logger.warning("B43166 connection timed out in check_tls_cert()")
     except urllib.request.ssl.SSLCertVerificationError:
         logger.error(f"B93900 TLS certificate at {external} is not valid for {e[0]}")

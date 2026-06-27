@@ -9,11 +9,7 @@ import platformdirs
 import ssl
 import sys
 import sqlalchemy.exc
-from fastapi import (
-    responses,
-    Request,
-    HTTPException,
-)
+from fastapi import responses, Request, HTTPException
 from sqlmodel import SQLModel, create_engine, sql
 import uvicorn
 import hub.logs as logs
@@ -24,6 +20,7 @@ import hub.migrate_db as migrate_db
 import hub.util as util
 import hub.pages as pages  # may appear unused, but UI won't work without this
 import hub.api as api
+import hub.door as door
 
 Berror = util.Berror
 logger = logging.getLogger(__name__)
@@ -212,9 +209,11 @@ async def async_background_tasks():
     while True:
         if day_count == 0:  # first day
             await asyncio.sleep(20)
-            await watch_tls_cert()
-            await asyncio.sleep(5)
             db.update_bbbased_version()  # check for new version of 'hub/bbbased.lua'
+            await asyncio.sleep(15)
+            await door.check_for_new_upnpc_client()
+            await asyncio.sleep(15)
+            await watch_tls_cert()
             await asyncio.sleep(15)
             await util.test_fix_lan_overlap_shell_code()
             await asyncio.sleep(5 * 60)
