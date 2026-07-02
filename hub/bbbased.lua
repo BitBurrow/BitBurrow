@@ -329,23 +329,27 @@ end
 local function read_text_file(path, empty_if_unreadable, preserve_whitespace)
     -- return file contents, or nil on failure
     local handle = io.open(path, 'r')
+    local ret_error = nil
+    if empty_if_unreadable then
+        ret_error = ''
+    end
     if not handle then
         if empty_if_unreadable then
             log_debug("file unreadable, treating as empty: " .. path)
-            return ''
+        else
+            log_error("B41834 cannot read file: " .. path)
         end
-        log_error("B41834 cannot read file: " .. path)
-        return nil
+        return ret_error
     end
     local content, read_err = handle:read('*a')
     local close_ok, close_err = handle:close()
     if content == nil then
         log_error("B21409 cannot read " .. path .. " (" .. tostring(read_err) .. ")")
-        return nil
+        return ret_error
     end
     if close_ok == nil then
         log_error("B55281 cannot close " .. path .. " (" .. tostring(close_err) .. ")")
-        return nil
+        return ret_error
     end
     if not preserve_whitespace then
         content = content:gsub('%s+$', '')  -- strip trailing whitespace
@@ -353,6 +357,10 @@ local function read_text_file(path, empty_if_unreadable, preserve_whitespace)
     log_debug("read " .. tostring(#content) .. " bytes from: " .. path)
     log_debug("--data: " .. displayable(content, 20))  -- 20 to not show entire private key
     return content
+end
+
+local function display_text_file(path)
+    return displayable(read_text_file(path, true, false))
 end
 
 local function write_text_file(path, content, mode)
@@ -492,6 +500,44 @@ local function get_uid()
     return nil
 end
 
+local function normalize_pid(pid)
+    local normalized = tostring(pid or ''):match('^0*([1-9]%d*)$')
+    if normalized == '1' then
+        return nil
+    end
+    return normalized
+end
+
+local function is_running(pid)
+    -- note: pid must be normalized, e.g. normalize_pid()
+    local stat = io.open('/proc/' .. pid .. '/stat', 'r')
+    if stat then
+        local content = stat:read('*l')
+        stat:close()
+        local state = content and content:match('^%d+ %(.+%) (%S) ')
+        if state == 'Z' then return false end
+    end
+    return run_command('kill -0 ' .. pid, true, true) ~= nil
+end
+
+local function wait_until_dead(pid, attempts)
+    -- note: pid must be normalized, e.g. normalize_pid()
+    for _ = 1, attempts do
+        if not is_running(pid) then return true end
+        run_command('sleep 0.1', true, true)
+    end
+    return not is_running(pid)
+end
+
+local function kill_process(pid)
+    -- note: pid must be normalized, e.g. normalize_pid()
+    if not is_running(pid) then return true end
+    run_command('kill -TERM ' .. pid, true, true)
+    if wait_until_dead(pid, 20) then return true end
+    run_command('kill -KILL ' .. pid, true, true)
+    return wait_until_dead(pid, 20)
+end
+
 local function cleanup_and_exit(exit_code)
     log_debug("cleaning up lock state and exiting")
     local pid = get_pid()
@@ -569,6 +615,38 @@ local function json_get_string(body, name)
             end
         end
         pos = pos + 1
+    end
+    return nil
+end
+
+local function json_get_object(body, name)
+    local name_end = body:find('"' .. name .. '"%s*:%s*{')
+    if not name_end then return nil end
+    local object_start = body:find('{', name_end)
+    if not object_start then return nil end
+    local depth = 0
+    local in_string = false
+    local escaped = false
+    for pos = object_start, #body do
+        local char = body:sub(pos, pos)
+        if in_string then
+            if escaped then
+                escaped = false
+            elseif char == '\\' then
+                escaped = true
+            elseif char == '"' then
+                in_string = false
+            end
+        elseif char == '"' then
+            in_string = true
+        elseif char == '{' then
+            depth = depth + 1
+        elseif char == '}' then
+            depth = depth - 1
+            if depth == 0 then
+                return body:sub(object_start, pos)
+            end
+        end
     end
     return nil
 end
@@ -1500,6 +1578,169 @@ local function send_task_result(task_id, task_method, ok, output)
     return nil
 end
 
+local function discover_upnp(pcap_base64)
+    -- return success flag and tcpdump stdout, or failure details without stdout
+    local encoded_path = nil
+    local pcap_base_path = nil
+    local pcap_path = nil
+    local stdout_path = nil
+    local stderr_path = nil
+    local pid_path = nil
+    local tcpreplay_stderr_path = nil
+    local tcpdump_pid = nil
+    local supervisor_pid = nil
+    local success = false
+    local result = "B04382 discover_upnp failed"
+    repeat
+        if not pcap_base64 or pcap_base64 == '' then
+            result = "B86322 missing pcap data"
+            break
+        end
+        pcap_base64 = pcap_base64:gsub('%s', '')
+        if #pcap_base64 > 20000 or #pcap_base64 < 20 or #pcap_base64 % 4 ~= 0 then
+            result = string.format("B64087 invalid pcap data size (%d bytes)", #pcap_base64)
+            break
+        end
+        local padding = pcap_base64:match('(=*)$') or ''
+        local base64_body = pcap_base64:sub(1, #pcap_base64 - #padding)
+        if #padding > 2 or base64_body:find('=', 1, true) or base64_body:find('[^A-Za-z0-9+/]') then
+            result = "B24078 invalid base64 pcap data"
+            break
+        end
+        encoded_path = make_temp_path()
+        pcap_base_path = make_temp_path()
+        stdout_path = make_temp_path()
+        stderr_path = make_temp_path()
+        pid_path = make_temp_path()
+        tcpreplay_stderr_path = make_temp_path()
+        if not encoded_path or not pcap_base_path or not stdout_path or not stderr_path
+                or not pid_path or not tcpreplay_stderr_path then
+            result = "B85375 cannot create discover_upnp temporary files"
+            break
+        end
+        pcap_path = pcap_base_path .. '.pcap'
+        local renamed, rename_err = os.rename(pcap_base_path, pcap_path)
+        if not renamed then
+            result = "B01005 cannot create .pcap temporary file (" .. tostring(rename_err) .. ")"
+            break
+        end
+        pcap_base_path = nil
+        if not write_text_file(encoded_path, pcap_base64, '0600') then
+            result = "B46150 cannot write encoded pcap data"
+            break
+        end
+        local decode_command = 'openssl base64 -d -A -in ' .. shell_quote(encoded_path)
+            .. ' -out ' .. shell_quote(pcap_path)
+        if not run_command(decode_command, true, true) then
+            result = "B24079 invalid base64 pcap data"
+            break
+        end
+        local wan_if = run_command(
+            'ip route show default |awk '
+                .. shell_quote('/^default/ {for (i = 1; i < NF; i++) '
+                    .. 'if ($i == "dev") {print $(i + 1); exit}}'),
+            true,
+            true
+        )
+        if not wan_if or wan_if == '' then
+            result = "B86262 cannot determine wan_if"
+            break
+        end
+        local tcpdump_command = '{ tcpdump -l -n -s0 -A -i '
+            .. shell_quote(wan_if)
+            .. ' ' .. shell_quote('udp and src port 1900')
+            .. ' 2>>' .. shell_quote(stderr_path)
+            .. ' & tcpdump_pid=$!; printf "%s\n" "$tcpdump_pid" >'
+            .. shell_quote(pid_path)
+            .. '; wait "$tcpdump_pid"; } |grep -ai '
+            .. shell_quote('^LOCATION:')
+            .. ' >' .. shell_quote(stdout_path)
+            .. ' 2>>' .. shell_quote(stderr_path)
+        local start_command = 'sh -c ' .. shell_quote(tcpdump_command)
+            .. ' >/dev/null 2>>' .. shell_quote(stderr_path)
+            .. ' & echo $!'
+        supervisor_pid = normalize_pid(run_command(start_command, true, true))
+        if not supervisor_pid then
+            result = "B26445 cannot start tcpdump: " .. display_text_file(stderr_path)
+            break
+        end
+        for _ = 1, 20 do
+            tcpdump_pid = normalize_pid(read_text_file(pid_path, true))
+            if tcpdump_pid then break end
+            if not is_running(supervisor_pid) then break end
+            run_command('sleep 0.1', true, true)
+        end
+        if not tcpdump_pid then
+            result = "B63924 cannot determine tcpdump pid: " .. display_text_file(stderr_path)
+            break
+        end
+        local listening = false
+        for _ = 1, 100 do
+            local grep_command = 'grep -Eq '
+                .. shell_quote('^(tcpdump: )?listening on ')
+                .. ' ' .. shell_quote(stderr_path)
+            if run_command(grep_command, true, true) then
+                listening = true
+                break
+            end
+            if not is_running(tcpdump_pid) then break end
+            run_command('sleep 0.1', true, true)
+        end
+        if not listening then
+            if is_running(tcpdump_pid) then
+                result = "B57620 tcpdump won't listen: " .. display_text_file(stderr_path)
+            else
+                result = "B45125 tcpdump refused to listen: " .. display_text_file(stderr_path)
+            end
+            break
+        end
+        run_command('sleep 0.1', true, true)
+        local tcpreplay_command = '(tcpreplay '
+            .. shell_quote('-i' .. wan_if)
+            .. ' ' .. shell_quote(pcap_path)
+            .. ' >/dev/null 2>' .. shell_quote(tcpreplay_stderr_path) .. ')'
+        if not run_command(tcpreplay_command, true, true) then
+            result = "B92999 tcpreplay failed: "
+                .. display_text_file(tcpreplay_stderr_path)
+            break
+        end
+        run_command('sleep 2', true, true)
+        if not is_running(tcpdump_pid) then
+            result = "B25280 tcpdump exited unexpectedly: " .. display_text_file(stderr_path)
+            break
+        end
+        if not kill_process(tcpdump_pid) then
+            result = "B88176 cannot stop tcpdump: " .. display_text_file(stderr_path)
+            break
+        end
+        if not wait_until_dead(supervisor_pid, 20) then
+            result = "B84671 tcpdump pipeline did not exit: " .. display_text_file(stderr_path)
+            break
+        end
+        local stdout = read_text_file(stdout_path, false, true)
+        if stdout == nil then
+            result = "B25543 cannot read tcpdump stdout: " .. display_text_file(stderr_path)
+            break
+        end
+        success = true
+        result = stdout
+    until true
+    if tcpdump_pid and not kill_process(tcpdump_pid) then
+        log_warning("B38790 cleanup could not stop tcpdump")
+    end
+    if supervisor_pid and not kill_process(supervisor_pid) then
+        log_warning("B86714 cleanup could not stop tcpdump pipeline")
+    end
+    remove_path(encoded_path)
+    remove_path(pcap_base_path)
+    remove_path(pcap_path)
+    remove_path(stdout_path)
+    remove_path(stderr_path)
+    remove_path(pid_path)
+    remove_path(tcpreplay_stderr_path)
+    return success, result
+end
+
 local function handle_task(task_id, task_method, task_args)
     -- return true iff task was handled or no task was present
     if not task_id or not task_method then return true end
@@ -1531,6 +1772,11 @@ local function handle_task(task_id, task_method, task_args)
         daemon_ctl('restart')  -- will log_error() on failure
         return result
     end
+    if task_method == 'discover_upnp' then
+        local pcap_base64 = task_args and json_get_string(task_args, 'pcap') or nil
+        local ok, output = discover_upnp(pcap_base64)
+        return send_task_result(task_id, task_method, ok, output)
+    end
     if task_method == 'df' then
         if task_args ~= '-hT' then
             return send_task_result(task_id, task_method, false, 'unsupported df args')
@@ -1557,10 +1803,14 @@ local function do_ping()
     local status = json_get_string(response_body, 'status')
     if has_jsonrpc and not has_error and status then
         log_info("ping succeeded with status " .. displayable(status, 60))
+        local task_args = json_get_string(response_body, 'task_args')
+        if task_args == nil then
+            task_args = json_get_object(response_body, 'task_args')
+        end
         handle_task(
             json_get_string(response_body, 'task_id'),
             json_get_string(response_body, 'task_method'),
-            json_get_string(response_body, 'task_args')
+            task_args
         )
         return status
     end
@@ -1605,7 +1855,10 @@ end
 log_warning("B20392 BitBurrow base daemon, log level " .. logging_level
     .. ", version " .. file_version)
 install_one_of('curl', 'curl')
+install_one_of('iproute2 iproute ip-tiny ip-full', 'ip')
 install_one_of('openssl openssl-util', 'openssl')
+install_one_of('tcpdump', 'tcpdump')
+install_one_of('tcpreplay', 'tcpreplay')
 install_one_of('wireguard-tools wg-installer-server', 'wg')
 
 --
