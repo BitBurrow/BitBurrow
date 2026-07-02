@@ -127,10 +127,32 @@ local function http_quoted_string_escape(value)
     return value
 end
 
+local pipefail_intro = '{ '
+
+local function check_pipefail_support()
+    local pipe = io.popen(
+        "sh -c 'set -o pipefail >/dev/null 2>&1 && ! (false | true)'"
+            .. " >/dev/null 2>&1; printf '%s' \"$?\"",
+        'r'
+    )
+    if not pipe then
+        log_error("B40287 cannot check whether shell supports pipefail")
+        return nil
+    end
+    local exit_code = pipe:read('*a') or ''
+    pipe:close()
+    if exit_code ~= '0' then
+        log_error("B91526 shell does not support pipefail; continuing without")
+        return nil
+    end
+    pipefail_intro = '{ set -o pipefail; '  -- globally enable safer error checking in pipelines
+    return true
+end
+
 local function run_command(command, merge_stderr, failure_ok)
     -- return the captured output after stripping trailing whitespace, or nil on failure
     log_debug("running command: " .. command)
-    local wrapped = '{ '
+    local wrapped = pipefail_intro
         .. command
         .. (merge_stderr and ' 2>&1' or ' 2>/dev/null')
         .. '; rc=$?; printf "\\n__EXIT__=%d\\n" "$rc"; }'
@@ -383,7 +405,7 @@ local function write_text_file(path, content, mode)
         return nil
     end
     if mode then
-        chmod(path, mode)
+        chmod(path, mode)  -- ignore errors, but they do get logged
         log_debug("set permissions on " .. path .. " to " .. mode)
     end
     return true
@@ -1174,7 +1196,7 @@ local function ensure_auth_keys()
         remove_path(auth_pubkey_path)
         return nil
     end
-    chmod(auth_privkey_path, '0600')
+    chmod(auth_privkey_path, '0600')  -- ignore errors, but they do get logged
     output = run_command(
         'openssl pkey -in '
             .. shell_quote(auth_privkey_path)
@@ -1209,7 +1231,7 @@ local function ensure_wg_keys()
         remove_path(wg_pubkey_path)
         return nil
     end
-    chmod(wg_privkey_path, '0600')
+    chmod(wg_privkey_path, '0600')  -- ignore errors, but they do get logged
     return true
 end
 
@@ -1755,6 +1777,9 @@ local function handle_task(task_id, task_method, task_args)
                 .. tostring(running_path))
         end
         local temp_path = make_temp_path(dirname(running_path))
+        if not temp_path then
+            return send_task_result(task_id, task_method, false, "B19042 cannot create temp file")
+        end
         local command = 'curl -f --max-time 120 -o '
             .. shell_quote(temp_path) .. ' '
             .. shell_quote(download_url)
@@ -1762,7 +1787,7 @@ local function handle_task(task_id, task_method, task_args)
             remove_path(temp_path)
             return send_task_result(task_id, task_method, false, "B18136 download failed")
         end
-        chmod(temp_path, get_mode(running_path))
+        chmod(temp_path, get_mode(running_path))  -- ignore errors, but they do get logged
         if not run_command('mv ' .. shell_quote(temp_path) .. ' ' .. shell_quote(running_path)) then
             remove_path(temp_path)
             return send_task_result(task_id, task_method, false, "B57225 mv failed")
@@ -1828,6 +1853,7 @@ if get_uid() ~= 0 then
     close_log()
     os.exit(2)
 end
+check_pipefail_support()
 if run_context == '/tmp' then
     install_one_of('flock util-linux', 'flock')  -- the only 'install' prerequisite, but probably already installed
     local install_path = find_install_dir() .. bbsubd .. '.lua'
