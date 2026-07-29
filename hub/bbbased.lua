@@ -71,20 +71,28 @@ end
 
 local function log(message, level)
     if level >= 30 then  -- send errors and warnings to server
-        local tmpname = os.tmpname()
-        local f = io.open(tmpname, 'w')
+        -- run_command() and make_temp_path() are not defined yet
+        local tmp_template = shell_quote('/tmp/' .. bbsubd .. '.log.XXXXXX')
+        local tmp_pipe = io.popen('umask 077; mktemp ' .. tmp_template .. ' 2>/dev/null', 'r')
+        if not tmp_pipe then return nil end
+        local tmp_path = tmp_pipe:read('*l')
+        tmp_pipe:close()
+        if tmp_path == '' then tmp_path = nil end
+        local f = tmp_path and io.open(tmp_path, 'w') or nil
         if f then
-            f:write(message)
-            f:close()
-            os.execute(
-                'curl -f --max-time 10 -X POST'
-                .. ' -H "Content-Type: text/plain"'
-                .. ' --data-binary @' .. shell_quote(tmpname)
-                .. ' ' .. shell_quote(log_err_route)
-                .. ' >/dev/null 2>&1 || true'
-            )
-            os.remove(tmpname)
+            local write_ok = f:write(message)
+            local close_ok = f:close()
+            if write_ok and close_ok ~= nil then
+                os.execute(
+                    'curl -f --max-time 10 -X POST'
+                    .. ' -H "Content-Type: text/plain"'
+                    .. ' --data-binary @' .. shell_quote(tmp_path)
+                    .. ' ' .. shell_quote(log_err_route)
+                    .. ' >/dev/null 2>&1 || true'
+                )
+            end
         end
+        if tmp_path then os.remove(tmp_path) end
     end
     if level >= logging_level then
         if not log_path or logging_level < 30 then  -- when using logread or -v
@@ -469,8 +477,17 @@ local function file_copy(src_path, dst_path, mode)
         return nil
     end
     while true do
-        local chunk = src:read(8192)
-        if not chunk then break end
+        local chunk, read_err = src:read(8192)
+        if not chunk then
+            if read_err then
+                log_error("B27035 reading " .. src_path .. " failed (" .. tostring(read_err) .. ")")
+                src:close()
+                dst:close()
+                remove_path(tmp_path)
+                return nil
+            end
+            break
+        end
         local ok, werr = dst:write(chunk)
         if not ok then
             log_error("B79472 write to " .. tmp_path .. " failed (" .. tostring(werr) .. ")")
@@ -480,9 +497,19 @@ local function file_copy(src_path, dst_path, mode)
             return nil
         end
     end
-    src:close()
-    dst:close()
-    if not run_command('chmod ' .. mode .. ' ' .. shell_quote(tmp_path)) then
+    local src_close_ok, src_close_err = src:close()
+    local dst_close_ok, dst_close_err = dst:close()
+    if src_close_ok == nil then
+        log_error("B90352 cannot close " .. src_path .. " (" .. tostring(src_close_err) .. ")")
+        remove_path(tmp_path)
+        return nil
+    end
+    if dst_close_ok == nil then
+        log_error("B08324 cannot close " .. tmp_path .. " (" .. tostring(dst_close_err) .. ")")
+        remove_path(tmp_path)
+        return nil
+    end
+    if not chmod(tmp_path, mode) then
         remove_path(tmp_path)
         return nil
     end
@@ -594,26 +621,59 @@ local function json_escape(value)
     return value
 end
 
+local json_simple_escapes = {
+    ['"'] = '"',
+    ['\\'] = '\\',
+    ['/'] = '/',
+    b = '\b',
+    f = '\f',
+    n = '\n',
+    r = '\r',
+    t = '\t',
+}
+
 local function json_unescape(value)
-    -- minimal fixes, e.g. Unicode becomes '?'
-    value = value:gsub('\\u(%x%x%x%x)', function(hex)
-        local num = tonumber(hex, 16)
-        if num and num < 128 then
-            return string.char(num)
+    -- minimal JSON decoding, preserving the prior policy that non-ASCII \u escapes become '?'
+    -- decode once from left to right so an escaped backslash cannot introduce a second escape
+    local result = {}
+    local pos = 1
+    while pos <= #value do
+        local slash = value:find('\\', pos, true)
+        if not slash then
+            result[#result + 1] = value:sub(pos)
+            break
         end
-        return '?'
-    end)
-    local placeholder = '\255'
-    value = value:gsub('\\\\', placeholder)
-    value = value:gsub('\\"', '"')
-    value = value:gsub('\\/', '/')
-    value = value:gsub('\\b', '\b')
-    value = value:gsub('\\f', '\f')
-    value = value:gsub('\\n', '\n')
-    value = value:gsub('\\r', '\r')
-    value = value:gsub('\\t', '\t')
-    value = value:gsub(placeholder, '\\')  -- avoid '\\n' becoming a newline
-    return value
+        if slash > pos then
+            result[#result + 1] = value:sub(pos, slash - 1)
+        end
+        local escaped = value:sub(slash + 1, slash + 1)
+        if escaped == 'u' then
+            local hex = value:sub(slash + 2, slash + 5)
+            if #hex == 4 and hex:match('^%x%x%x%x$') then
+                local num = tonumber(hex, 16)
+                if num and num < 128 then
+                    result[#result + 1] = string.char(num)
+                else
+                    result[#result + 1] = '?'
+                end
+                pos = slash + 6
+            else
+                result[#result + 1] = '\\'
+                pos = slash + 1
+            end
+        else
+            local decoded = json_simple_escapes[escaped]
+            if decoded then
+                result[#result + 1] = decoded
+                pos = slash + 2
+            else
+                -- Preserve malformed or incomplete escapes for the caller to reject or display.
+                result[#result + 1] = '\\'
+                pos = slash + 1
+            end
+        end
+    end
+    return table.concat(result)
 end
 
 local function json_get_string(body, name)
@@ -767,7 +827,7 @@ local function find_install_dir()
         end
     end
     log_error("B95830 cannot find_install_dir(); home is " .. home)
-    return ''
+    return nil
 end
 
 local function install_init_service(lua_path)
@@ -775,6 +835,7 @@ local function install_init_service(lua_path)
     -- return true after successful install or reinstall (running under /tmp)
     local init_path = '/etc/init.d/' .. bbsubd
     local tmp_path = make_temp_path('/tmp/')  -- not in bbsubd_tmp_dir because it doesn't exist
+    if not tmp_path then return nil end
     local locked_runner = table.concat({
         'mkdir -p ' .. shell_quote(bbsubd_tmp_dir) .. ' || exit 1',
         'chmod 0700 ' .. shell_quote(bbsubd_tmp_dir) .. ' 2>/dev/null',
@@ -863,6 +924,12 @@ local function install_systemd_service(lua_path)
     local tmp_service_path = make_temp_path('/tmp/')  -- not in bbsubd_tmp_dir because it doesn't exist
     local tmp_start_path = make_temp_path('/tmp/')
     local tmp_stop_path = make_temp_path('/tmp/')
+    if not tmp_service_path or not tmp_start_path or not tmp_stop_path then
+        remove_path(tmp_service_path)
+        remove_path(tmp_start_path)
+        remove_path(tmp_stop_path)
+        return nil
+    end
     local start_text = table.concat({
         '#!/bin/sh',
         'mkdir -p ' .. shell_quote(bbsubd_tmp_dir) .. ' || exit 1',
@@ -1471,7 +1538,7 @@ local function send_signed_jsonrpc(request_body)
         )
         if not content_digest_value then break end
         local content_digest_header = 'sha-256=:' .. content_digest_value .. ':'
-        local timestamp_pair = run_command("date -u '+%s|%a, %d %b %Y %H:%M:%S GMT'")
+        local timestamp_pair = run_command("LC_ALL=C date -u '+%s|%a, %d %b %Y %H:%M:%S GMT'")
         if not timestamp_pair then break end
         local created_value, date_header = timestamp_pair:match('^(%d+)|(.+)$')
         if not created_value or not date_header then
@@ -1856,7 +1923,8 @@ end
 check_pipefail_support()
 if run_context == '/tmp' then
     install_one_of('flock util-linux', 'flock')  -- the only 'install' prerequisite, but probably already installed
-    local install_path = find_install_dir() .. bbsubd .. '.lua'
+    local install_dir = find_install_dir()
+    local install_path = install_dir and (install_dir .. bbsubd .. '.lua') or nil
     local exit_code = 99
     if install_daemon_service(install_path) then
         log_info("B32020 successfully installed; exiting")
