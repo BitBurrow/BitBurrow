@@ -1244,6 +1244,7 @@ local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
 local wg_privkey_path = config_dir .. 'wgbb1_private.key'
 local wg_pubkey_path = config_dir .. 'wgbb1_public.key'
 local pubkeys_uploaded_path = config_dir .. 'pubkeys_uploaded'
+local deploy_result_path = config_dir .. 'deploy_result'
 
 local function ensure_auth_keys()
     if is_readable(auth_privkey_path) and is_readable(auth_pubkey_path) then
@@ -1312,15 +1313,15 @@ local function do_adopt6c()
     local uploaded_mtime = file_mtime(pubkeys_uploaded_path)
     if uploaded_mtime >= auth_mtime and uploaded_mtime >= wg_mtime then
         -- above, use '>=' and not '>' to avoid race condition and disabled client
-        log_info("public keys already marked as uploaded")
+        log_info("public key already marked as uploaded")
         return false  -- these public keys were previously uploaded
     end
     local token = read_text_file(token_path, true):gsub("%s+", "")
-    -- strip '\n' from middle if 2-line 'echo ... >>$T' is used in get_adopt5c_code()
+    -- strip '\n' from middle if 2 'echo ... >>$T' lines in get_adopt5c_code()
     local token_mtime = file_mtime(token_path)
-    if token_mtime == 0 then
-        log_error("B16500 cannot read " .. token_path)
-        return nil
+    if token == '' or token_mtime == 0 then
+        log_warning("B16500 cannot read " .. token_path .. "; trying ping")
+        return false  -- just in case pubkey was uploaded but updating pubkeys_uploaded_path failed
     end
     local retry_wait = 7
     local retries_left = 2
@@ -1385,10 +1386,12 @@ local function do_adopt6c()
             local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
             local has_result = response_body:match('"result"%s*:') ~= nil
             local has_error = response_body:match('"error"%s*:') ~= nil
-            if has_jsonrpc and has_result and not has_error then
+            local status = json_get_string(response_body, 'status')
+            local response_subd = json_get_string(response_body, 'subd')
+            local mostly_okay = has_jsonrpc and has_result and not has_error
+            if mostly_okay and status == 'ok' and response_subd == subd then
                 log_info("public key upload succeeded")
-                local touch_output = run_command('touch ' .. shell_quote(pubkeys_uploaded_path))
-                if not touch_output then
+                if not write_text_file(pubkeys_uploaded_path, 'uploaded\n', '0600') then
                     log_error("B04717 adopt6c succeeded but could not touch pubkeys_uploaded")
                 else
                     log_debug("updated upload marker: " .. pubkeys_uploaded_path)
@@ -1635,6 +1638,7 @@ end
 
 local function send_task_result(task_id, task_method, ok, output)
     -- return true iff task_result was accepted by server
+    output = tostring(output or '')
     if #output > 18000 then
         output = output:sub(1, 18000) .. '\n...truncated...'
     end
@@ -1664,6 +1668,22 @@ local function send_task_result(task_id, task_method, ok, output)
         return true
     end
     log_error("B83275 task_result rejected: " .. displayable(response_body, 300))
+    return nil
+end
+
+local function send_deploy_result()
+    local task_data = read_text_file(deploy_result_path, true, true)
+    if not task_data or task_data == '' then return true end
+    local task_id, task_method = task_data:match('^([^\r\n]+)[\r\n]+([^\r\n]+)')
+    if not task_id or task_method ~= 'update' then
+        log_warning("B49873 invalid deploy result marker; removing it")
+        remove_path(deploy_result_path)
+        return nil
+    end
+    if send_task_result(task_id, task_method, true, 'ok') then
+        remove_path(deploy_result_path)
+        return true
+    end
     return nil
 end
 
@@ -1843,26 +1863,46 @@ local function handle_task(task_id, task_method, task_args)
             return send_task_result(task_id, task_method, false, "B09761 invalid arg[0]:"
                 .. tostring(running_path))
         end
-        local temp_path = make_temp_path(dirname(running_path))
-        if not temp_path then
+        local staged_path = make_temp_path(dirname(running_path))
+        if not staged_path then
             return send_task_result(task_id, task_method, false, "B19042 cannot create temp file")
         end
         local command = 'curl -f --max-time 120 -o '
-            .. shell_quote(temp_path) .. ' '
+            .. shell_quote(staged_path) .. ' '
             .. shell_quote(download_url)
         if not run_command(command) then
-            remove_path(temp_path)
+            remove_path(staged_path)
             return send_task_result(task_id, task_method, false, "B18136 download failed")
         end
-        chmod(temp_path, get_mode(running_path))  -- ignore errors, but they do get logged
-        if not run_command('mv ' .. shell_quote(temp_path) .. ' ' .. shell_quote(running_path)) then
-            remove_path(temp_path)
+        local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' /usr/bin/lua -e '
+            .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
+        local staged_code = read_text_file(staged_path, false, true)
+        local invalid_reason =
+            not staged_code and 'unreadable'
+            or #staged_code < 1000 and 'too short'
+            or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
+            or not staged_code:find("local subd = '" .. subd .. "'", 1, true) and 'wrong subd'
+            or staged_code:find("local file_version = '{file_version}'", 1, true) and 'same file_version'
+            or not run_command(parse_attempt, true, true) and 'parse failed'
+        -- maybe add above:
+            -- or not staged_code:find("local api_url = '" .. api_url .. "'", 1, true) and 'wrong api_url'
+        if invalid_reason then
+            remove_path(staged_path)
+            return send_task_result(task_id, task_method, false, "B77812 bad download (" .. invalid_reason .. ")")
+        end
+        local task_data = task_id .. '\n' .. task_method .. '\n'
+        if not write_text_file(deploy_result_path, task_data, '0600') then
+            remove_path(staged_path)
+            return send_task_result(task_id, task_method, false, "B33348 cannot save update state")
+        end
+        chmod(staged_path, get_mode(running_path))  -- ignore errors, but they do get logged
+        if not run_command('mv ' .. shell_quote(staged_path) .. ' ' .. shell_quote(running_path)) then
+            remove_path(staged_path)
+            remove_path(deploy_result_path)
             return send_task_result(task_id, task_method, false, "B57225 mv failed")
         end
-        local result = send_task_result(task_id, task_method, true, 'ok')  -- reply, then restart
-        -- FIXME: don't report success until a successful restart (maybe on server)
-        daemon_ctl('restart')  -- will log_error() on failure
-        return result
+        log_info("update installed; exiting so the service supervisor can restart the daemon")
+        cleanup_and_exit(0)
     end
     if task_method == 'discover_upnp' then
         local pcap_base64 = task_args and json_get_string(task_args, 'pcap') or nil
@@ -1870,10 +1910,14 @@ local function handle_task(task_id, task_method, task_args)
         return send_task_result(task_id, task_method, ok, output)
     end
     if task_method == 'df' then
-        if task_args ~= '-hT' then
+        local df_args = task_args
+        if task_args and task_args:sub(1, 1) == '{' then
+            df_args = json_get_string(task_args, 'args')
+        end
+        if df_args ~= '-hT' then
             return send_task_result(task_id, task_method, false, 'unsupported df args')
         end
-        local output = run_command('df ' .. task_args, true, true)
+        local output = run_command('df ' .. df_args, true, true)
         if not output then
             return send_task_result(task_id, task_method, false, 'df command failed')
         end
@@ -1893,17 +1937,19 @@ local function do_ping()
     local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
     local has_error = response_body:match('"error"%s*:') ~= nil
     local status = json_get_string(response_body, 'status')
-    if has_jsonrpc and not has_error and status then
+    if has_jsonrpc and not has_error and status == 'ok' then
         log_info("ping succeeded with status " .. displayable(status, 60))
         local task_args = json_get_string(response_body, 'task_args')
         if task_args == nil then
             task_args = json_get_object(response_body, 'task_args')
         end
-        handle_task(
+        if not handle_task(
             json_get_string(response_body, 'task_id'),
             json_get_string(response_body, 'task_method'),
             task_args
-        )
+        ) then
+            return nil
+        end
         return status
     end
     -- note the Berror code below is used in api.py
@@ -1926,7 +1972,7 @@ if run_context == '/tmp' then
     local install_dir = find_install_dir()
     local install_path = install_dir and (install_dir .. bbsubd .. '.lua') or nil
     local exit_code = 99
-    if install_daemon_service(install_path) then
+    if install_path and install_daemon_service(install_path) then
         log_info("B32020 successfully installed; exiting")
         exit_code = 0
     else
@@ -1987,7 +2033,10 @@ local retry_wait = 7
 local retries_left = 2
 log_info("entering main ping loop")
 while true do
-    local ok = do_ping()
+    local ok = send_deploy_result()
+    if ok then
+        ok = do_ping()
+    end
     if ok then
         retry_wait = 7
         retries_left = 2
