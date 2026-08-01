@@ -509,6 +509,9 @@ async def task_result(
                 db.mark_task_status(int(task_id), status, device_id=device.id)
             except ValueError:
                 raise Berror(f"B72809 invalid task_id: {task_id}")
+            status = 'succeeded' if ok else 'failed'
+            message = f"B35214 finished task {task_id} {task_method} {status}: {output}"
+            (logger.debug if ok else logger.info)(util.front_berror_code(message, subd, ip))
         except (Berror, db.CredentialsError) as e:
             logger.warning(f"{e} (base {subd} at {ip})")
             raise BaseError("B34089 invalid task_result request")

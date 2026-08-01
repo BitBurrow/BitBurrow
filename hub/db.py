@@ -409,6 +409,7 @@ class Platform(enum.StrEnum):
 
 any_platform = (Platform.INIT, Platform.SYSTEMD, Platform.WINDOWS, Platform.MACOS)
 default_fv = '0000000-aaaa'
+bbbased_path = 'hub/bbbased.lua'
 
 
 class Device(SQLModel, table=True):
@@ -719,11 +720,14 @@ def next_task(device_id: int) -> DeviceTask | None:
                     status=DeviceTaskStatus.QUEUED,
                     assigned_at=None,
                 )
+                .returning(DeviceTask.id)
             )
-            result = session.exec(statement)
-            if result.rowcount:
-                logger.warning(f"B14627 requeued {result.rowcount} stale task(s), {device_id=}")
+            task_ids = session.execute(statement).scalars().all()
             session.commit()
+            if len(task_ids) == 1:
+                logger.warning(f"B14627 requeued stale task {task_ids[0]}, {device_id=}")
+            elif task_ids:
+                logger.warning(f"B14628 requeued {len(task_ids)} stale tasks, {device_id=}")
 
         requeue_stale_assigned_tasks()
         for retry in range(20):
@@ -767,7 +771,7 @@ def enqueue_task(
     #     0 → no_dedup
     #     3 → dedup if method and args match
     #     7 → dedup if method matches (args can be different)
-) -> None:
+) -> int:
     """Add a task to the bottom of a device's queue. Note dedupe is best-effort (race-prone)."""
     task_args = args or dict()
     if priority < -9 or priority > 9:
@@ -796,7 +800,7 @@ def enqueue_task(
             ).limit(1)
             existing_task = session.exec(statement).first()
             if existing_task is not None:
-                return
+                return existing_task.id
         position_statement = select(func.max(DeviceTask.position)).where(
             DeviceTask.device_id == device_id,
         )
@@ -812,6 +816,7 @@ def enqueue_task(
         )
         session.add(task)
         session.commit()
+        return task.id
 
 
 def mark_task_status(
@@ -819,10 +824,18 @@ def mark_task_status(
     status: DeviceTaskStatus,
     device_id: int | None = None,
 ) -> None:
-    """Mark an assigned task as done or failed. Raise Berror on failure."""
+    """Mark an assigned task as done or failed. Accept identical retries."""
     if status not in (DeviceTaskStatus.DONE, DeviceTaskStatus.FAILED):
         raise Berror(f"B14766 invalid task status {status}")
     with Session(engine) as session:
+        task = session.get(DeviceTask, task_id)
+        if (
+            task is not None
+            and task.status == status
+            and (device_id is None or task.device_id == device_id)
+        ):
+            logger.warning(f"B30309 accepting identical retry task {task_id}")
+            return  # accept an identical retry without counting it again
         statement = (
             sqlalchemy.update(DeviceTask)
             .where(DeviceTask.id == task_id)
@@ -835,9 +848,27 @@ def mark_task_status(
         if device_id is not None:
             statement = statement.where(DeviceTask.device_id == device_id)
         result = session.exec(statement)
-        session.commit()
         if result.rowcount != 1:
+            session.rollback()
             raise Berror(f"B92552 task {task_id} was not assigned")
+        if task.method == 'update':
+            version = task.args.get('version')
+            if task.args.get('path') == bbbased_path:
+                statement = select(BasedVer).where(BasedVer.commit_date == version)
+                ver: BasedVer | None = session.exec(statement).one_or_none()
+                if ver is None:
+                    session.rollback()
+                    raise Berror(f"B51429 bbbased {version} for update task {task_id} not found")
+                ver.used_total += 1
+                if status == DeviceTaskStatus.FAILED:
+                    ver.used_fails += 1
+                    if ver.used_fails >= 7 and ver.used_fails * 2 >= ver.used_total:
+                        ratio = f"{ver.used_fails} of {ver.used_total} attempts"
+                        logger.error(f"B21382 bbbased {version} failed {ratio}; won't use")
+                        for p in Platform:
+                            setattr(ver, f'test_level_{p.value}', TestLevel.FAILED)
+                session.add(ver)
+        session.commit()
 
 
 ###
@@ -994,6 +1025,8 @@ class BasedVer(SQLModel, table=True):
     test_level_sysd: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.SYSTEMD
     test_level_wind: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.WINDOWS
     test_level_macs: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.MACOS
+    used_total: int = 0
+    used_fails: int = 0
     code: str = ''  # actual Lua
 
     def test_level(self, platform: Platform) -> TestLevel:
@@ -1013,22 +1046,21 @@ class BasedVer(SQLModel, table=True):
 
 
 def update_bbbased_version() -> None:
-    """Add 'hub/bbbased.lua' from disk to DB if not yet indexed."""
+    """Add bbbased_path from disk to DB if not yet indexed."""
     commit_dates = util.read_versions_file()
-    filename = 'hub/bbbased.lua'
-    commit_date = commit_dates[filename]
+    commit_date = commit_dates[bbbased_path]
     with Session(engine) as session:
         statement = select(BasedVer).where(BasedVer.commit_date == commit_date)
         if session.exec(statement).one_or_none() is not None:  # version already exists in DB
             return
-        file_path = os.path.join(util.project_root_path, filename)
+        file_path = os.path.join(util.project_root_path, bbbased_path)
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 code = f.read()
         except FileNotFoundError as e:
             logger.error(f"B57645 cannot open {file_path}")
             return
-        logger.info(f"B96927 indexing new {filename} version {commit_date}")
+        logger.info(f"B96927 indexing new {bbbased_path} version {commit_date}")
         session.add(BasedVer(commit_date=commit_date, code=code))
         session.commit()
 
@@ -1160,14 +1192,18 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
         commit_bv: BasedVer = session.exec(statement).one_or_none()
         if commit_bv is not None:
             commit_level = commit_bv.test_level(platform)
-            if promote_to and promote_to.value > commit_level.value:
+            if promote_to:
                 before = commit_bv.compare_version(platform)
-                setattr(commit_bv, f'test_level_{platform.value}', promote_to)
-                after = commit_bv.compare_version(platform)
-                session.add(commit_bv)
-                session.commit()
-                e = f"B39596 promoted bbbased {before} to test level {after[8:]}"
-                logger.info(util.front_berror_code(e, subd, ip))
+                if commit_level == TestLevel.FAILED:
+                    e = f"B98413 bbbased {before} is marked as failed; not promoting"
+                    logger.warning(util.front_berror_code(e, subd, ip))
+                elif promote_to.value > commit_level.value:
+                    setattr(commit_bv, f'test_level_{platform.value}', promote_to)
+                    after = commit_bv.compare_version(platform)
+                    session.add(commit_bv)
+                    session.commit()
+                    e = f"B39596 promoted bbbased {before} to test level {after[8:]}"
+                    logger.info(util.front_berror_code(e, subd, ip))
         else:  # unknown version
             e = f"B12284 unknown version bbbased {reported_fv}"
             logger.warning(util.front_berror_code(e, subd, ip))
@@ -1189,14 +1225,15 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
                 if reported_cv > approved_cv:
                     e = f"B16354 on unapproved version: bbbased {reported_cv}"
                     logger.warning(util.front_berror_code(e, subd, ip))
-                e = f"B90867 scheduling update from bbbased {reported_cv} to {approved_cv}"
-                logger.info(util.front_berror_code(e, subd, ip))
-                enqueue_task(
+                task_id = enqueue_task(
                     device_id=device.id,
                     method='update',
+                    args={'path': bbbased_path, 'version': approved_bv.commit_date},
                     priority=5,
                     dedupe=3,
                 )
+                e = f"B90867 launched task {task_id} update from bbbased {reported_cv} to {approved_cv}"
+                logger.debug(util.front_berror_code(e, subd, ip))
 
 
 ###
