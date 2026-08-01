@@ -777,7 +777,7 @@ end
 
 local platform = nil
 if run_command('command -v systemctl', true, true) then
-    platform = 'systemd'
+    platform = 'sysd'  -- must match class Platform() in db.py
 else
     platform = 'init'
 end
@@ -1047,7 +1047,7 @@ local function install_systemd_service(lua_path)
 end
 
 local function install_daemon_service(lua_path)
-    if platform == 'systemd' then
+    if platform == 'sysd' then
         return install_systemd_service(lua_path)
     else  -- 'init'
         return install_init_service(lua_path)
@@ -1055,7 +1055,7 @@ local function install_daemon_service(lua_path)
 end
 
 local function daemon_ctl(action)  -- action is 'start', 'stop', or 'restart'
-    if platform == 'systemd' then
+    if platform == 'sysd' then
         return run_command('systemctl ' .. action .. ' ' .. shell_quote(bbsubd .. '.service'))
     else
         local daemon_path = '/etc/init.d/' .. bbsubd
@@ -1098,10 +1098,21 @@ local function packager(action, arg)
     return run_command(table.concat(parts, ' '), true, true)
 end
 
+local install_one_of_cache = {}  -- subsequent calls to install_one_of() return immediately
+
 local function install_one_of(package_list, command)
+    local package_cache = install_one_of_cache[package_list]
+    if package_cache and package_cache[command] ~= nil then
+        return package_cache[command] or nil
+    end
+    package_cache = package_cache or {}
+    install_one_of_cache[package_list] = package_cache
     local retry = 0
     while retry < 4 do
-        if run_command('command -v ' .. command, true, true) then return true end
+        if run_command('command -v ' .. command, true, true) then
+            package_cache[command] = true
+            return true
+        end
         if retry >= 2 then  -- wait before retries 2, 3
             run_command("sleep 75")
         end
@@ -1112,12 +1123,14 @@ local function install_one_of(package_list, command)
             packager('install', pkg)
             if run_command('command -v ' .. command, true, true) then
                 log_info("installed package " .. pkg .. " for " .. command)
+                package_cache[command] = true
                 return true
             end
         end
         retry = retry + 1
     end
     log_error("B80574 cannot install package for " .. command)
+    package_cache[command] = false
     return nil
 end
 
@@ -1281,6 +1294,7 @@ local function ensure_auth_keys()
 end
 
 local function ensure_wg_keys()
+    if not install_one_of('wireguard-tools wg-installer-server', 'wg') then return nil end
     if is_readable(wg_privkey_path) and is_readable(wg_pubkey_path) then
         log_debug("wg_privkey and wg_pubkey both already exist")
         return true
@@ -1427,6 +1441,7 @@ local function collect_telemetry()
         -- maybe add: ip addr, /proc/net/fib_trie
         -- maybe add: wg
         .. '"etc_os_release":"' .. json_escape(read_text_file('/etc/os-release', true, false)) .. '",'
+        .. '"platform":"' .. platform .. '",'
         -- don't need file_version every time, but it's low-cost and needed if hub or we restart
         .. '"file_version":"' .. json_escape(file_version) .. '",'
         .. '"telemetry_version": 1'
@@ -1689,6 +1704,11 @@ end
 
 local function discover_upnp(pcap_base64)
     -- return success flag and tcpdump stdout, or failure details without stdout
+    if not install_one_of('iproute2 iproute ip-tiny ip-full', 'ip')
+            or not install_one_of('tcpdump', 'tcpdump')
+            or not install_one_of('tcpreplay', 'tcpreplay') then
+        return false, "B91912 cannot install discover_upnp dependencies"
+    end
     local encoded_path = nil
     local pcap_base_path = nil
     local pcap_path = nil
@@ -1995,11 +2015,7 @@ end
 log_warning("B20392 BitBurrow base daemon, log level " .. logging_level
     .. ", version " .. file_version)
 install_one_of('curl', 'curl')
-install_one_of('iproute2 iproute ip-tiny ip-full', 'ip')
 install_one_of('openssl openssl-util', 'openssl')
-install_one_of('tcpdump', 'tcpdump')
-install_one_of('tcpreplay', 'tcpreplay')
-install_one_of('wireguard-tools wg-installer-server', 'wg')
 
 --
 -- collect authentication details
@@ -2033,10 +2049,10 @@ local retry_wait = 7
 local retries_left = 2
 log_info("entering main ping loop")
 while true do
-    local ok = send_deploy_result()
-    if ok then
-        ok = do_ping()
+    if not send_deploy_result() then 
+        log_error("B35355 cannot send deploy results")
     end
+    local ok = do_ping()
     if ok then
         retry_wait = 7
         retries_left = 2

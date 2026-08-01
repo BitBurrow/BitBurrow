@@ -1102,6 +1102,7 @@ def newest_approved_ver(
             if bv.test_level(device.platform).value >= device.min_test_level.value:
                 return bv
     else:  # unknown platform, e.g. new devices: approved if *any* platform is tested
+        # ChatGPT thinks should require INIT and SYSTEMD approval, but not all hubs have these
         for bv in bvs:
             if any(bv.test_level(p).value >= device.min_test_level.value for p in any_platform):
                 return bv
@@ -1155,10 +1156,19 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
         session.add(telemetry)
         session.commit()
         ## 2. set device.platform if needed
-        if telemetry.os_id.lower().startswith('openwrt'):
-            platform = Platform.INIT
-        else:
-            platform = Platform.SYSTEMD
+        # if telemetry.os_id.lower().startswith('openwrt'):
+        #     platform = Platform.INIT
+        # else:
+        #     platform = Platform.SYSTEMD
+        try:
+            platform = Platform(telem_data.get('platform'))
+        except (TypeError, ValueError):
+            if telemetry.os_id.lower().startswith('openwrt'):
+                platform = Platform.INIT
+            else:
+                platform = Platform.SYSTEMD
+            e = f"B42419 cannot read platform; using '{platform}' from os_id"  # bug in bbbased.lua
+            logger.warning(util.front_berror_code(e, subd, ip))
         if device.platform != platform:
             if device.platform is not None:
                 e = f"B14954 platform changed from {device.platform} to {platform}"
