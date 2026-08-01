@@ -1074,6 +1074,8 @@ def check_bbbased_test_levels() -> None:
             logger.error(f"B53565 cannot find a bbbased version")  # should never happen
             return
         for p in Platform:
+            if session.exec(select(Device.id).where(Device.platform == p).limit(1)).first() is None:
+                continue  # don't warn about platforms for which there are no base routers
             if bv.test_level(p).value < TestLevel.CAN_UPDATE.value:
                 canaries = canary_list(p)
                 error_msg = f"bbbased.lua {bv.commit_date} testing on {p.value} failed"
