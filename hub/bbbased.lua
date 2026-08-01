@@ -866,8 +866,8 @@ local function install_init_service(lua_path)
         'start_service() {',
         '    procd_open_instance',
         '    procd_set_param command /bin/sh -c ' .. shell_quote(locked_runner),
-        '    procd_set_param respawn',
-        '    procd_set_param stdout 1', -- 1 means make output viewable via `logread`
+        '    procd_set_param respawn 60 10 7',  -- up for 60 seconds clears the crash count
+        '    procd_set_param stdout 1',  -- 1 means make output viewable via `logread`
         '    procd_set_param stderr 1',
         '    procd_close_instance',
         '}',
