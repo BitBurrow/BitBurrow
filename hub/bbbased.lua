@@ -1264,6 +1264,7 @@ local function ensure_auth_keys()
         log_debug("auth_privkey and auth_pubkey both already exist")
         return true
     end
+    -- could recover if privkey still exists, but we're not going to such extremes to cover user error
     log_info("authentication keys are missing; generating new keypair")
     remove_path(auth_pubkey_path)
     -- note: OpenSSL 1.1.1 found on test routers can't sign with Ed25519 keys
@@ -1878,6 +1879,16 @@ local function handle_task(task_id, task_method, task_args)
         return send_task_result(task_id, task_method, true, 'ok')
     end
     if task_method == 'update' then
+        local staged_path = task_args and json_get_string(task_args, 'path') or nil
+        if staged_path ~= 'hub/bbbased.lua' then
+            return send_task_result(task_id, task_method, false,
+                "B63317 invalid update path: " .. tostring(staged_path))
+        end
+        local next_ver = task_args and json_get_string(task_args, 'version') or nil
+        if not next_ver or #next_ver ~= 7 or not next_ver:match('^[0-9a-z]+$') then
+            return send_task_result(task_id, task_method, false,
+                "B42164 invalid next version: " .. tostring(next_ver))
+        end
         local running_path = arg and arg[0]
         if not running_path or not running_path:match('^/') then
             return send_task_result(task_id, task_method, false, "B09761 invalid arg[0]:"
@@ -1897,12 +1908,15 @@ local function handle_task(task_id, task_method, task_args)
         local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' /usr/bin/lua -e '
             .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
         local staged_code = read_text_file(staged_path, false, true)
+        local staged_ver = staged_code and staged_code:match("\nlocal file_version = '([^'\r\n]+)'")
         local invalid_reason =
             not staged_code and 'unreadable'
             or #staged_code < 1000 and 'too short'
             or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
             or not staged_code:find("local subd = '" .. subd .. "'", 1, true) and 'wrong subd'
             or staged_code:find("local file_version = '{file_version}'", 1, true) and 'same file_version'
+            or not staged_ver and 'missing file_version'
+            or staged_ver:sub(1, 8) ~= next_ver .. '-' and 'wrong version'
             or not run_command(parse_attempt, true, true) and 'parse failed'
         -- maybe add above:
             -- or not staged_code:find("local api_url = '" .. api_url .. "'", 1, true) and 'wrong api_url'
@@ -1988,7 +2002,8 @@ if get_uid() ~= 0 then
 end
 check_pipefail_support()
 if run_context == '/tmp' then
-    install_one_of('flock util-linux', 'flock')  -- the only 'install' prerequisite, but probably already installed
+    -- flock is the only 'install' prerequisite, but it's probably already installed
+    install_one_of('flock util-linux', 'flock')  -- ignore errors and hope it works anyhow
     local install_dir = find_install_dir()
     local install_path = install_dir and (install_dir .. bbsubd .. '.lua') or nil
     local exit_code = 99
