@@ -1063,6 +1063,38 @@ local function daemon_ctl(action)  -- action is 'start', 'stop', or 'restart'
     end
 end
 
+local function restart_after_update()
+    if platform == 'init' then  -- restart in a way that bypasses the procd crash count mechanism
+        -- fixes `procd: Instance bbabcd::instance1 s in a crash loop 6 crashes` in logread
+        local init_path = '/etc/init.d/' .. bbsubd
+        local delete_json = '{"name":"' .. json_escape(bbsubd) .. '"}'
+        local helper = table.concat({
+            'exec 9>&-',  -- do not retain the daemon's flock
+            'sleep 1',
+            'if ! ubus call service delete ' .. shell_quote(delete_json)
+                .. ' >/dev/null 2>&1; then',
+            '    logger -t ' .. shell_quote(bbsubd)
+                .. ' "B96420 update restart: service delete failed"',
+            '    exit 1',
+            'fi',
+            'sleep 3',
+            'exec ' .. shell_quote(init_path) .. ' start',
+        }, '\n')
+        local launch = 'sh -c ' .. shell_quote(helper)
+            .. ' </dev/null >/dev/null 2>&1 & :'
+        if run_command(launch, true, true) == nil then
+            log_error("B70489 update restart helper could not be launched")
+            cleanup_and_exit(0)
+        end
+        sleep(30)  -- remain alive until procd intentionally stops us
+        -- fallback: load the update even if the intentional restart failed
+        log_error("B91527 update restart helper did not stop the daemon")
+        cleanup_and_exit(0)
+    else  -- exit normally and let the service supervisor restart the daemon
+        cleanup_and_exit(0)
+    end
+end
+
 local packager_cmds = nil
 local spec = {
     {'apt-get', {update = {'apt-get', 'update'}, install = {'apt-get', 'install', '-y'}}},
@@ -1935,8 +1967,8 @@ local function handle_task(task_id, task_method, task_args)
             remove_path(deploy_result_path)
             return send_task_result(task_id, task_method, false, "B57225 mv failed")
         end
-        log_info("update installed; exiting so the service supervisor can restart the daemon")
-        cleanup_and_exit(0)
+        log_info("update installed; restarting")
+        restart_after_update()
     end
     if task_method == 'discover_upnp' then
         local pcap_base64 = task_args and json_get_string(task_args, 'pcap') or nil
