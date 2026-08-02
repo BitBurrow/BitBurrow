@@ -704,11 +704,11 @@ class DeviceTask(SQLModel, table=True):
     )
 
 
-def next_task(device_id: int) -> DeviceTask | None:
+def next_task(device_id: int, unstale: bool = True) -> DeviceTask | None:
     """Assign and return the next (top) queued task for a device."""
     with Session(engine) as session:
 
-        def requeue_stale_assigned_tasks(stale_after_seconds: int = 600) -> None:
+        def stale_tasks_check(stale_after_seconds: int = 600) -> None:
             stale_before = DateTime.now(TimeZone.utc) - TimeDelta(seconds=stale_after_seconds)
             statement = (
                 sqlalchemy.update(DeviceTask)
@@ -729,7 +729,8 @@ def next_task(device_id: int) -> DeviceTask | None:
             elif task_ids:
                 logger.warning(f"B14628 requeued {len(task_ids)} stale tasks, {device_id=}")
 
-        requeue_stale_assigned_tasks()
+        if unstale:
+            stale_tasks_check()
         for retry in range(20):
             statement = (
                 select(DeviceTask.id)
@@ -865,7 +866,7 @@ def mark_task_status(
                     if ver.used_fails >= 7 and ver.used_fails * 2 >= ver.used_total:
                         ratio = f"{ver.used_fails} of {ver.used_total} attempts"
                         logger.error(f"B21382 bbbased {version} failed {ratio}; won't use")
-                        for p in Platform:
+                        for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
                             setattr(ver, f'test_level_{p.value}', TestLevel.FAILED)
                 session.add(ver)
         session.commit()

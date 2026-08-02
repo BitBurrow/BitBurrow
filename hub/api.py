@@ -446,6 +446,7 @@ async def ping(
         active_long_polls += 1
     try:
         wait_until = ping_now + TimeDelta(seconds=wait_seconds)
+        stale_tasks_check = True
         while True:
             now = DateTime.now(TimeZone.utc)
             if now > wait_until:  # long polling timeout
@@ -459,7 +460,8 @@ async def ping(
                 remaining = round((wait_until - now).total_seconds())
                 logger.info(f'B88349 base {subd} connection disconnected ({remaining}s remaining)')
                 return BaseResult(subd=subd, status='ok')
-            task = db.next_task(device_id)
+            task = db.next_task(device_id, unstale=stale_tasks_check)
+            stale_tasks_check = False  # avoid unnecessary DB activity
             if task:
                 return BaseResult(
                     subd=subd,
