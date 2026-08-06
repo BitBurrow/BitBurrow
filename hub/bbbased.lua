@@ -135,32 +135,12 @@ local function http_quoted_string_escape(value)
     return value
 end
 
-local pipefail_intro = '{ '
-
-local function check_pipefail_support()
-    local pipe = io.popen(
-        "sh -c 'set -o pipefail >/dev/null 2>&1 && ! (false | true)'"
-            .. " >/dev/null 2>&1; printf '%s' \"$?\"",
-        'r'
-    )
-    if not pipe then
-        log_error("B40287 cannot check whether shell supports pipefail")
-        return nil
-    end
-    local exit_code = pipe:read('*a') or ''
-    pipe:close()
-    if exit_code ~= '0' then
-        log_error("B91526 shell does not support pipefail; continuing without")
-        return nil
-    end
-    pipefail_intro = '{ set -o pipefail; '  -- globally enable safer error checking in pipelines
-    return true
-end
-
 local function run_command(command, merge_stderr, failure_ok)
     -- return the captured output after stripping trailing whitespace, or nil on failure
+    -- do not use shell pipelines here (`set -o pipefail` not universally supported)
+    -- instead, use a command with file redirection and `&&` within { ... }
     log_debug("running command: " .. command)
-    local wrapped = pipefail_intro
+    local wrapped = '{ '
         .. command
         .. (merge_stderr and ' 2>&1' or ' 2>/dev/null')
         .. '; rc=$?; printf "\\n__EXIT__=%d\\n" "$rc"; }'
@@ -1335,10 +1315,10 @@ local function ensure_wg_keys()
     log_info("WireGuard keys are missing; generating new keypair")
     remove_path(wg_pubkey_path)
     local output = run_command(
-        'wg genkey |tee '
-            .. shell_quote(wg_privkey_path)
-            .. ' |wg pubkey >'
-            .. shell_quote(wg_pubkey_path),
+        '{ '
+            .. 'wg genkey >' .. shell_quote(wg_privkey_path) .. ' && '
+            .. 'wg pubkey <' .. shell_quote(wg_privkey_path) .. ' >' .. shell_quote(wg_pubkey_path)
+            .. '; }',
         true
     )
     if not output then
@@ -1582,9 +1562,12 @@ local function send_signed_jsonrpc(request_body)
         local write_ok = write_text_file(body_path, request_body, '0600')
         if not write_ok then break end
         local content_digest_value = run_command(
-            'openssl dgst -sha256 -binary '
+            '{ '
+                .. 'openssl dgst -sha256 -binary -out ' .. shell_quote(sig_bin_path) .. ' '
                 .. shell_quote(body_path)
-                .. ' | openssl base64 -A',
+                .. ' && '
+                .. 'openssl base64 -A -in ' .. shell_quote(sig_bin_path)
+                .. '; }',
             true
         )
         if not content_digest_value then break end
@@ -2032,7 +2015,6 @@ if get_uid() ~= 0 then
     close_log()
     os.exit(2)
 end
-check_pipefail_support()
 if run_context == '/tmp' then
     -- flock is the only 'install' prerequisite, but it's probably already installed
     install_one_of('flock util-linux', 'flock')  -- ignore errors and hope it works anyhow
