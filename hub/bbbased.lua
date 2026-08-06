@@ -1730,10 +1730,8 @@ local function discover_upnp(pcap_base64)
     local pcap_path = nil
     local stdout_path = nil
     local stderr_path = nil
-    local pid_path = nil
     local tcpreplay_stderr_path = nil
     local tcpdump_pid = nil
-    local supervisor_pid = nil
     local success = false
     local result = "B04382 discover_upnp failed"
     repeat
@@ -1756,10 +1754,9 @@ local function discover_upnp(pcap_base64)
         pcap_base_path = make_temp_path()
         stdout_path = make_temp_path()
         stderr_path = make_temp_path()
-        pid_path = make_temp_path()
         tcpreplay_stderr_path = make_temp_path()
         if not encoded_path or not pcap_base_path or not stdout_path or not stderr_path
-                or not pid_path or not tcpreplay_stderr_path then
+                or not tcpreplay_stderr_path then
             result = "B85375 cannot create discover_upnp temporary files"
             break
         end
@@ -1780,43 +1777,21 @@ local function discover_upnp(pcap_base64)
             result = "B24079 invalid base64 pcap data"
             break
         end
-        local wan_if = run_command(
-            'ip route show default |awk '
-                .. shell_quote('/^default/ {for (i = 1; i < NF; i++) '
-                    .. 'if ($i == "dev") {print $(i + 1); exit}}'),
-            true,
-            true
-        )
+        local wan_route = run_command('ip route show default', true, true)
+        local wan_if = wan_route and ('\n' .. wan_route):match('\ndefault[^\r\n]*%sdev%s+(%S+)')
         if not wan_if or wan_if == '' then
             result = "B86262 cannot determine wan_if"
             break
         end
-        local tcpdump_command = '{ tcpdump -l -n -s0 -A -i '
+        local tcpdump_command = 'tcpdump -l -n -s0 -A -i '
             .. shell_quote(wan_if)
             .. ' ' .. shell_quote('udp and src port 1900')
+            .. ' </dev/null >' .. shell_quote(stdout_path)
             .. ' 2>>' .. shell_quote(stderr_path)
-            .. ' & tcpdump_pid=$!; printf "%s\n" "$tcpdump_pid" >'
-            .. shell_quote(pid_path)
-            .. '; wait "$tcpdump_pid"; } |grep -ai '
-            .. shell_quote('^LOCATION:')
-            .. ' >' .. shell_quote(stdout_path)
-            .. ' 2>>' .. shell_quote(stderr_path)
-        local start_command = 'sh -c ' .. shell_quote(tcpdump_command)
-            .. ' >/dev/null 2>>' .. shell_quote(stderr_path)
-            .. ' & echo $!'
-        supervisor_pid = normalize_pid(run_command(start_command, true, true))
-        if not supervisor_pid then
-            result = "B26445 cannot start tcpdump: " .. display_text_file(stderr_path)
-            break
-        end
-        for _ = 1, 20 do
-            tcpdump_pid = normalize_pid(read_text_file(pid_path, true))
-            if tcpdump_pid then break end
-            if not is_running(supervisor_pid) then break end
-            run_command('sleep 0.1', true, true)
-        end
+        local start_command = tcpdump_command .. ' & echo $!'
+        tcpdump_pid = normalize_pid(run_command(start_command, true, true))
         if not tcpdump_pid then
-            result = "B63924 cannot determine tcpdump pid: " .. display_text_file(stderr_path)
+            result = "B26445 cannot start tcpdump: " .. display_text_file(stderr_path)
             break
         end
         local listening = false
@@ -1858,11 +1833,13 @@ local function discover_upnp(pcap_base64)
             result = "B88176 cannot stop tcpdump: " .. display_text_file(stderr_path)
             break
         end
-        if not wait_until_dead(supervisor_pid, 20) then
-            result = "B84671 tcpdump pipeline did not exit: " .. display_text_file(stderr_path)
-            break
-        end
-        local stdout = read_text_file(stdout_path, false, true)
+        local stdout = run_command(
+            '{ grep -ai ' .. shell_quote('^LOCATION:')
+                .. ' ' .. shell_quote(stdout_path)
+                .. ' || [ "$?" -eq 1 ]; }',
+            true,
+            true
+        )
         if stdout == nil then
             result = "B25543 cannot read tcpdump stdout: " .. display_text_file(stderr_path)
             break
@@ -1873,15 +1850,11 @@ local function discover_upnp(pcap_base64)
     if tcpdump_pid and not kill_process(tcpdump_pid) then
         log_warning("B38790 cleanup could not stop tcpdump")
     end
-    if supervisor_pid and not kill_process(supervisor_pid) then
-        log_warning("B86714 cleanup could not stop tcpdump pipeline")
-    end
     remove_path(encoded_path)
     remove_path(pcap_base_path)
     remove_path(pcap_path)
     remove_path(stdout_path)
     remove_path(stderr_path)
-    remove_path(pid_path)
     remove_path(tcpreplay_stderr_path)
     return success, result
 end
