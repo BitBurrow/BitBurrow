@@ -1110,25 +1110,25 @@ local function packager(action, arg)
     return run_command(table.concat(parts, ' '), true, true)
 end
 
-local install_one_of_cache = {}  -- subsequent calls to install_one_of() return immediately
+local install_one_of_cache = {}  --cache results of successful calls to install_one_of()
 
 local function install_one_of(package_list, command)
     local package_cache = install_one_of_cache[package_list]
-    if package_cache and package_cache[command] ~= nil then
-        return package_cache[command] or nil
+    if package_cache and package_cache[command] then
+        return true
     end
     package_cache = package_cache or {}
     install_one_of_cache[package_list] = package_cache
     local retry = 0
-    while retry < 4 do
+    while retry < 3 do
         if run_command('command -v ' .. command, true, true) then
             package_cache[command] = true
             return true
         end
-        if retry >= 2 then  -- wait before retries 2, 3
+        if retry >= 2 then  -- before the last iteration, wait
             run_command("sleep 75")
         end
-        if retry >= 1 then  -- update before retries 1, 2, 3
+        if retry >= 1 then  -- before the last 2 iternations, run an update
             packager('update')
         end
         for pkg in package_list:gmatch("%S+") do
@@ -1142,7 +1142,7 @@ local function install_one_of(package_list, command)
         retry = retry + 1
     end
     log_error("B80574 cannot install package for " .. command)
-    package_cache[command] = false
+    -- don't update package_cache[command] so that next call will retry
     return nil
 end
 
@@ -1718,20 +1718,544 @@ local function send_deploy_result()
     return nil
 end
 
-local function discover_upnp(pcap_base64)
-    -- return success flag and tcpdump stdout, or failure details without stdout
-    if not install_one_of('iproute2 iproute ip-tiny ip-full', 'ip')
-            or not install_one_of('tcpdump', 'tcpdump')
-            or not install_one_of('tcpreplay', 'tcpreplay') then
-        return false, "B91912 cannot install discover_upnp dependencies"
+local function xml_unescape(value)
+    if not value then return nil end
+    value = value:gsub('&#x([0-9A-Fa-f]+);', function(n)
+        n = tonumber(n, 16)
+        return n and n < 256 and string.char(n) or ''
+    end)
+    value = value:gsub('&#([0-9]+);', function(n)
+        n = tonumber(n, 10)
+        return n and n < 256 and string.char(n) or ''
+    end)
+    return (value:gsub('&lt;', '<')
+        :gsub('&gt;', '>')
+        :gsub('&quot;', '"')
+        :gsub('&apos;', "'")
+        :gsub('&amp;', '&'))
+end
+
+local function resolve_http_url(base_url, reference)
+    reference = xml_unescape(reference)
+    if not reference then return nil end
+    reference = reference:match('^%s*(.-)%s*$')
+    if reference:match('^https?://') then return reference end
+    local scheme, authority, path = base_url:match('^(https?)://([^/]+)(/[^?#]*)')
+    if not scheme then
+        scheme, authority = base_url:match('^(https?)://([^/?#]+)')
+        path = '/'
     end
+    if not scheme or not authority then return nil end
+    if reference:sub(1, 2) == '//' then
+        return scheme .. ':' .. reference
+    end
+    if reference:sub(1, 1) == '/' then
+        return scheme .. '://' .. authority .. reference
+    end
+    local directory = path:gsub('[^/]*$', '')
+    return scheme .. '://' .. authority .. directory .. reference
+end
+
+local function http_url_host(url)
+    local authority = url and url:match('^https?://([^/%?#]+)')
+    if not authority then return nil end
+    if authority:sub(1, 1) == '[' then
+        return authority:match('^%[([^%]]+)%]')
+    end
+    return authority:match('^([^:]+)')
+end
+
+local function upnp_control_url(xml, location)
+    local url_base = xml:match('<URLBase[^>]*>%s*(.-)%s*</URLBase%s*>')
+    local base_url = xml_unescape(url_base) or location
+    local service_names = {'WANIPConnection', 'WANPPPConnection'}
+    for _, service_name in ipairs(service_names) do
+        for service in xml:gmatch('<service[^>]*>(.-)</service%s*>') do
+            local service_type = service:match(
+                '<serviceType[^>]*>%s*(.-)%s*</serviceType%s*>'
+            )
+            if service_type and service_type:find(
+                    'urn:schemas%-upnp%-org:service:' .. service_name .. ':%d+',
+                    1
+                ) then
+                local control_url = service:match(
+                    '<controlURL[^>]*>%s*(.-)%s*</controlURL%s*>'
+                )
+                return resolve_http_url(base_url, control_url)
+            end
+        end
+    end
+    return nil
+end
+
+local function uint16_be(value)
+    value = math.floor(value) % 65536
+    return string.char(math.floor(value / 256), value % 256)
+end
+
+local function uint16_le(value)
+    value = math.floor(value) % 65536
+    return string.char(value % 256, math.floor(value / 256))
+end
+
+local function uint32_le(value)
+    value = math.floor(value) % 4294967296
+    local b1 = value % 256
+    value = math.floor(value / 256)
+    local b2 = value % 256
+    value = math.floor(value / 256)
+    local b3 = value % 256
+    value = math.floor(value / 256)
+    return string.char(b1, b2, b3, value % 256)
+end
+
+local function internet_checksum(data)
+    local sum = 0
+    for i = 1, #data, 2 do
+        sum = sum + data:byte(i) * 256 + (data:byte(i + 1) or 0)
+        while sum > 65535 do
+            sum = (sum % 65536) + math.floor(sum / 65536)
+        end
+    end
+    return 65535 - sum
+end
+
+local function ipv4_bytes(address)
+    if not address then return nil end
+    local a, b, c, d = address:match(
+        '^(%d+)%.(%d+)%.(%d+)%.(%d+)$'
+    )
+    local octets = {tonumber(a), tonumber(b), tonumber(c), tonumber(d)}
+    for i = 1, 4 do
+        if not octets[i] or octets[i] > 255 then return nil end
+    end
+    return string.char(octets[1], octets[2], octets[3], octets[4])
+end
+
+local function ipv4_number(address)
+    local bytes = ipv4_bytes(address)
+    if not bytes then return nil end
+    local a, b, c, d = bytes:byte(1, 4)
+    return ((a * 256 + b) * 256 + c) * 256 + d
+end
+
+local function ipv4_in_subnet(address, subnet_address, prefix_length)
+    local address_number = ipv4_number(address)
+    local subnet_number = ipv4_number(subnet_address)
+    prefix_length = tonumber(prefix_length)
+    if not address_number or not subnet_number or not prefix_length
+            or prefix_length < 0 or prefix_length > 32 then
+        return false
+    end
+    local subnet_size = 2 ^ (32 - prefix_length)
+    return math.floor(address_number / subnet_size)
+        == math.floor(subnet_number / subnet_size)
+end
+
+local function mac_bytes(address)
+    if not address or not address:match(
+            '^[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]$'
+        ) then
+        return nil
+    end
+    local octets = {}
+    for octet in address:gmatch('[%x][%x]') do
+        octets[#octets + 1] = tonumber(octet, 16)
+    end
+    if #octets ~= 6 then return nil end
+    return string.char(
+        octets[1], octets[2], octets[3],
+        octets[4], octets[5], octets[6]
+    )
+end
+
+local min_upnp_probe_packets = 2
+local max_upnp_probe_packets = 11
+local max_upnp_replay_span_us = 15000000
+local max_upnp_capture_packets = 128
+local max_upnp_capture_seconds = 30
+local max_upnp_locations = 8
+local max_upnp_igds = 8
+local max_upnp_description_seconds = 12
+local max_upnp_result_bytes = 18000
+
+local function uint32_at(data, offset, little_endian)
+    local b1, b2, b3, b4 = data:byte(offset, offset + 3)
+    if not b4 then return nil end
+    if little_endian then
+        return b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
+    end
+    return b4 + b3 * 256 + b2 * 65536 + b1 * 16777216
+end
+
+local function pcap_header_info(data)
+    if not data or #data < 24 then return nil, 'short header' end
+    local magic = {data:byte(1, 4)}
+    local little_endian =
+        (magic[1] == 212 and magic[2] == 195 and magic[3] == 178 and magic[4] == 161)
+        or (magic[1] == 77 and magic[2] == 60 and magic[3] == 178 and magic[4] == 161)
+    local big_endian =
+        (magic[1] == 161 and magic[2] == 178 and magic[3] == 195 and magic[4] == 212)
+        or (magic[1] == 161 and magic[2] == 178 and magic[3] == 60 and magic[4] == 77)
+    if not little_endian and not big_endian then
+        return nil, string.format(
+            'unrecognized magic %02x%02x%02x%02x',
+            magic[1], magic[2], magic[3], magic[4]
+        )
+    end
+    local nanosecond =
+        (magic[1] == 77 and magic[2] == 60)
+        or (magic[3] == 60 and magic[4] == 77)
+    local network = uint32_at(data, 21, little_endian)
+    if not network then return nil, 'short network field' end
+    return {
+        little_endian = little_endian,
+        nanosecond = nanosecond,
+        linktype = network % 65536,
+    }
+end
+
+local function extract_upnp_msearch_payload(packet_data)
+    local marker = 'M-SEARCH * HTTP/1.1'
+    local search_from = 1
+    local last_problem = 'M-SEARCH request not found'
+    while true do
+        local payload_start = packet_data:find(marker, search_from, true)
+        if not payload_start then return nil, last_problem end
+        local crlf_end = packet_data:find('\r\n\r\n', payload_start, true)
+        local lf_end = packet_data:find('\n\n', payload_start, true)
+        local payload_end = nil
+        if crlf_end and (not lf_end or crlf_end < lf_end) then
+            payload_end = crlf_end + 3
+        elseif lf_end then
+            payload_end = lf_end + 1
+        end
+        if not payload_end or payload_end - payload_start + 1 > 1472 then
+            last_problem = 'M-SEARCH headers are missing, truncated, or too large'
+        else
+            local payload = packet_data:sub(payload_start, payload_end)
+            local upper = payload:upper()
+            local expected_host = upper:find(
+                '[\r\n]HOST:%s*239%.255%.255%.250:1900'
+            )
+            local expected_man = upper:find(
+                '[\r\n]MAN:%s*"SSDP:DISCOVER"'
+            )
+            local st = upper:match('[\r\n]ST:%s*([^\r\n]+)')
+            if expected_host and expected_man and st and #st <= 256 then
+                st = st:gsub('%s+$', '')
+                local mx = tonumber(upper:match('[\r\n]MX:%s*(%d+)')) or 3
+                mx = math.max(1, math.min(mx, 5))
+                return payload, nil, mx, st
+            end
+            last_problem = 'M-SEARCH request has unexpected HOST, MAN, or ST headers'
+        end
+        search_from = payload_start + #marker
+    end
+end
+
+local function extract_upnp_msearches(pcap_data)
+    -- Link-layer headers vary when tcpdump captures on "any".  Parse the PCAP
+    -- record boundaries and timestamps, then extract every stable SSDP payload.
+    local header, header_problem = pcap_header_info(pcap_data)
+    if not header then return nil, header_problem end
+    local probes = {}
+    local record_offset = 25
+    local record_count = 0
+    local first_sec = nil
+    local first_fraction_us = nil
+    local max_mx = 1
+    while record_offset <= #pcap_data do
+        if #pcap_data - record_offset + 1 < 16 then
+            return nil, 'truncated PCAP record header'
+        end
+        record_count = record_count + 1
+        local timestamp_sec = uint32_at(
+            pcap_data, record_offset, header.little_endian
+        )
+        local timestamp_fraction = uint32_at(
+            pcap_data, record_offset + 4, header.little_endian
+        )
+        local included_length = uint32_at(
+            pcap_data, record_offset + 8, header.little_endian
+        )
+        if not timestamp_sec or not timestamp_fraction or not included_length then
+            return nil, 'truncated PCAP record fields'
+        end
+        local fraction_limit = header.nanosecond and 1000000000 or 1000000
+        if timestamp_fraction >= fraction_limit then
+            return nil, 'invalid PCAP packet timestamp'
+        end
+        local packet_start = record_offset + 16
+        local packet_end = packet_start + included_length - 1
+        if included_length > #pcap_data or packet_end > #pcap_data then
+            return nil, 'truncated PCAP packet data'
+        end
+        local packet_data = pcap_data:sub(packet_start, packet_end)
+        if packet_data:find('M-SEARCH * HTTP/1.1', 1, true) then
+            local payload, problem, mx, st =
+                extract_upnp_msearch_payload(packet_data)
+            if not payload then
+                return nil, 'record ' .. tostring(record_count) .. ': '
+                    .. tostring(problem)
+            end
+            local fraction_us = header.nanosecond
+                and math.floor(timestamp_fraction / 1000)
+                or timestamp_fraction
+            if not first_sec then
+                first_sec = timestamp_sec
+                first_fraction_us = fraction_us
+            end
+            local delay_us = (timestamp_sec - first_sec) * 1000000
+                + fraction_us - first_fraction_us
+            if delay_us < 0 then
+                return nil, 'M-SEARCH packet timestamps are not monotonic'
+            end
+            if delay_us > max_upnp_replay_span_us then
+                return nil, 'M-SEARCH replay span exceeds 15 seconds'
+            end
+            probes[#probes + 1] = {
+                payload = payload,
+                delay_us = delay_us,
+                mx = mx,
+                st = st,
+                record_number = record_count,
+            }
+            if mx > max_mx then max_mx = mx end
+        end
+        record_offset = packet_end + 1
+    end
+    if #probes == 0 then return nil, 'M-SEARCH request not found' end
+    return probes, nil, max_mx, record_count
+end
+
+local function write_upnp_replay_pcap(
+        path, probes, source_ip, source_mac, source_port
+    )
+    local source_ip_bytes = ipv4_bytes(source_ip)
+    local source_mac_bytes = mac_bytes(source_mac)
+    if not source_ip_bytes then return nil, 'invalid source IP' end
+    if not source_mac_bytes then return nil, 'invalid source MAC' end
+    if not probes or #probes == 0 then return nil, 'no M-SEARCH packets' end
+
+    local destination_ip_bytes = string.char(239, 255, 255, 250)
+    local destination_mac_bytes = string.char(1, 0, 94, 127, 255, 250)
+    local pcap_parts = {string.char(212, 195, 178, 161)
+        .. uint16_le(2)
+        .. uint16_le(4)
+        .. uint32_le(0)
+        .. uint32_le(0)
+        .. uint32_le(65535)
+        .. uint32_le(1)}  -- LINKTYPE_ETHERNET
+    local replay_start_sec = os.time()
+    for packet_number, probe in ipairs(probes) do
+        local payload = probe.payload
+        if not payload or #payload > 1472 then
+            return nil, 'M-SEARCH payload is too large'
+        end
+        local udp_length = 8 + #payload
+        local udp_without_checksum = uint16_be(source_port)
+            .. uint16_be(1900)
+            .. uint16_be(udp_length)
+            .. uint16_be(0)
+        local pseudo_header = source_ip_bytes
+            .. destination_ip_bytes
+            .. string.char(0, 17)
+            .. uint16_be(udp_length)
+        local udp_checksum = internet_checksum(
+            pseudo_header .. udp_without_checksum .. payload
+        )
+        if udp_checksum == 0 then udp_checksum = 65535 end
+        local udp_header = uint16_be(source_port)
+            .. uint16_be(1900)
+            .. uint16_be(udp_length)
+            .. uint16_be(udp_checksum)
+
+        local ip_total_length = 20 + udp_length
+        local ip_id_offset = probe.ip_id_offset or packet_number
+        local ip_prefix = string.char(69, 0)
+            .. uint16_be(ip_total_length)
+            .. uint16_be((replay_start_sec + ip_id_offset - 1) % 65536)
+            .. uint16_be(16384)
+            .. string.char(2, 17)
+            .. uint16_be(0)
+            .. source_ip_bytes
+            .. destination_ip_bytes
+        local ip_checksum = internet_checksum(ip_prefix)
+        local ip_header = ip_prefix:sub(1, 10)
+            .. uint16_be(ip_checksum)
+            .. ip_prefix:sub(13)
+        local ethernet_frame = destination_mac_bytes
+            .. source_mac_bytes
+            .. uint16_be(2048)
+            .. ip_header
+            .. udp_header
+            .. payload
+        local delay_us = math.floor(probe.delay_us or 0)
+        local timestamp_sec = replay_start_sec + math.floor(delay_us / 1000000)
+        local timestamp_us = delay_us % 1000000
+        pcap_parts[#pcap_parts + 1] = uint32_le(timestamp_sec)
+            .. uint32_le(timestamp_us)
+            .. uint32_le(#ethernet_frame)
+            .. uint32_le(#ethernet_frame)
+            .. ethernet_frame
+    end
+    if not write_text_file(path, table.concat(pcap_parts), '0600') then
+        return nil, 'cannot write replay PCAP'
+    end
+    return true
+end
+
+local function log_upnp_diagnostic(label, value, max_lines)
+    value = tostring(value or '')
+    max_lines = max_lines or 40
+    if value == '' then
+        log_info('UPnP diagnostic ' .. label .. ': (empty)')
+        return
+    end
+    local line_number = 0
+    for line in (value .. '\n'):gmatch('(.-)\n') do
+        line_number = line_number + 1
+        log_info(
+            'UPnP diagnostic ' .. label .. '[' .. line_number .. ']: '
+                .. displayable(line, 700)
+        )
+        if line_number >= max_lines then
+            log_info('UPnP diagnostic ' .. label .. ': (remaining lines omitted)')
+            break
+        end
+    end
+end
+
+local function start_upnp_capture(interface, capture_path, status_path, filter)
+    local command = 'tcpdump -nn -U -s4096 -c ' .. tostring(max_upnp_capture_packets)
+        .. ' -i ' .. shell_quote(interface)
+        .. ' -w -'
+        .. ' ' .. shell_quote(filter)
+        .. ' </dev/null >' .. shell_quote(capture_path)
+        .. ' 2>>' .. shell_quote(status_path)
+        .. ' & echo $!'
+    local pid = normalize_pid(run_command(command, true, true))
+    if not pid then
+        return nil, 'cannot start tcpdump: ' .. display_text_file(status_path)
+    end
+    -- Use only POSIX shell built-ins plus sleep/kill so this also works on small
+    -- router distributions without a separate timeout utility.  Rechecking the
+    -- process start time prevents the watchdog from signaling a reused PID.
+    local watchdog_command = '(IFS= read -r upnp_original_stat < /proc/'
+        .. pid .. '/stat || exit 0; set -- $upnp_original_stat; shift 21; '
+        .. 'upnp_original_start=$1; sleep ' .. tostring(max_upnp_capture_seconds) .. '; '
+        .. 'IFS= read -r upnp_current_stat < /proc/' .. pid
+        .. '/stat || exit 0; set -- $upnp_current_stat; shift 21; '
+        .. 'if [ "$1" = "$upnp_original_start" ]; then printf "%s\\n" '
+        .. shell_quote('bbbased: UPnP capture time limit reached')
+        .. ' >>' .. shell_quote(status_path) .. '; kill -TERM ' .. pid
+        .. ' 2>/dev/null; fi) </dev/null >/dev/null 2>&1 & echo $!'
+    local watchdog_pid = normalize_pid(run_command(
+        watchdog_command,
+        true,
+        true
+    ))
+    if not watchdog_pid then
+        kill_process(pid)
+        return nil, 'cannot start tcpdump time-limit watchdog'
+    end
+    for _ = 1, 100 do
+        local grep_command = 'grep -Eq '
+            .. shell_quote('^(tcpdump: )?listening on ')
+            .. ' ' .. shell_quote(status_path)
+        if run_command(grep_command, true, true) then return pid end
+        if not is_running(pid) then break end
+        run_command('sleep 0.1', true, true)
+    end
+    local problem
+    if is_running(pid) then
+        problem = "tcpdump won't listen: " .. display_text_file(status_path)
+        kill_process(pid)
+    else
+        problem = 'tcpdump refused to listen: ' .. display_text_file(status_path)
+    end
+    return nil, problem
+end
+
+local function decode_upnp_capture(path)
+    return run_command(
+        'tcpdump -nn -e -vv -s0 -A -r ' .. shell_quote(path),
+        true,
+        true
+    )
+end
+
+local function capture_interface_drops(status)
+    return tonumber(tostring(status or ''):match(
+        '(%d+)%s+packet[s]* dropped by interface'
+    )) or 0
+end
+
+local function capture_packet_count(status)
+    return tonumber(tostring(status or ''):match(
+        '(%d+)%s+packet[s]* captured'
+    ))
+end
+
+local function capture_time_limit_reached(status)
+    return tostring(status or ''):find(
+        'bbbased: UPnP capture time limit reached',
+        1,
+        true
+    ) ~= nil
+end
+
+local function upnp_probe_summary(probes, record_count)
+    local gaps = {}
+    local targets = {}
+    for index, probe in ipairs(probes or {}) do
+        if index > 1 then
+            gaps[#gaps + 1] = tostring(
+                probe.delay_us - probes[index - 1].delay_us
+            )
+        end
+        targets[#targets + 1] = probe.st
+    end
+    local span_us = probes and #probes > 0
+        and probes[#probes].delay_us or 0
+    return tostring(#(probes or {})) .. ' M-SEARCH packets from '
+        .. tostring(record_count or 0) .. ' PCAP records over '
+        .. string.format('%.6f', span_us / 1000000) .. ' seconds; gaps(us)='
+        .. (#gaps > 0 and table.concat(gaps, ',') or '(none)')
+        .. '; ST=' .. table.concat(targets, ' | ')
+end
+
+local function discover_upnp(pcap_base64)
+    -- return success flag and JSON discovery results, or failure details
     local encoded_path = nil
-    local pcap_base_path = nil
     local pcap_path = nil
-    local stdout_path = nil
-    local stderr_path = nil
-    local tcpreplay_stderr_path = nil
+    local replay_packet_paths = {}
+    local capture_path = nil
+    local capture_status_path = nil
+    local tcpreplay_output_path = nil
     local tcpdump_pid = nil
+    local capture_started = false
+    local wan_route = nil
+    local wan_if = nil
+    local gateway = ''
+    local source_route = nil
+    local source_ip = nil
+    local source_prefix = nil
+    local source_mac = nil
+    local source_port = nil
+    local probe_packets = nil
+    local probe_record_count = nil
+    local probe_mx = nil
+    local wait_seconds = nil
+    local response_wait_seconds = nil
+    local capture_deadline = nil
+    local tcpreplay_output = nil
+    local captured_packets = nil
+    local replay_capture_summary = nil
+    local replay_timing_problem = nil
+    local capture_status = nil
+    local diagnostic_reason = nil
     local success = false
     local result = "B04382 discover_upnp failed"
     repeat
@@ -1751,22 +2275,15 @@ local function discover_upnp(pcap_base64)
             break
         end
         encoded_path = make_temp_path()
-        pcap_base_path = make_temp_path()
-        stdout_path = make_temp_path()
-        stderr_path = make_temp_path()
-        tcpreplay_stderr_path = make_temp_path()
-        if not encoded_path or not pcap_base_path or not stdout_path or not stderr_path
-                or not tcpreplay_stderr_path then
+        pcap_path = make_temp_path()
+        capture_path = make_temp_path()
+        capture_status_path = make_temp_path()
+        tcpreplay_output_path = make_temp_path()
+        if not encoded_path or not pcap_path or not capture_path
+                or not capture_status_path or not tcpreplay_output_path then
             result = "B85375 cannot create discover_upnp temporary files"
             break
         end
-        pcap_path = pcap_base_path .. '.pcap'
-        local renamed, rename_err = os.rename(pcap_base_path, pcap_path)
-        if not renamed then
-            result = "B01005 cannot create .pcap temporary file (" .. tostring(rename_err) .. ")"
-            break
-        end
-        pcap_base_path = nil
         if not write_text_file(encoded_path, pcap_base64, '0600') then
             result = "B46150 cannot write encoded pcap data"
             break
@@ -1777,85 +2294,591 @@ local function discover_upnp(pcap_base64)
             result = "B24079 invalid base64 pcap data"
             break
         end
-        local wan_route = run_command('ip route show default', true, true)
-        local wan_if = wan_route and ('\n' .. wan_route):match('\ndefault[^\r\n]*%sdev%s+(%S+)')
+        local pcap_data = read_text_file(pcap_path, false, true)
+        if not pcap_data then
+            result = "B60578 cannot read decoded UPnP probe PCAP"
+            break
+        end
+        local extract_problem
+        probe_packets, extract_problem, probe_mx, probe_record_count =
+            extract_upnp_msearches(pcap_data)
+        if not probe_packets then
+            result = "B60573 invalid UPnP probe PCAP: " .. tostring(extract_problem)
+            break
+        end
+        if #probe_packets < min_upnp_probe_packets
+                or #probe_packets > max_upnp_probe_packets then
+            result = "B16473 invalid UPnP probe PCAP: expected 2 through 11 "
+                .. 'M-SEARCH packets, found '
+                .. tostring(#probe_packets)
+            break
+        end
+        if not install_one_of('iproute2 iproute ip-tiny ip-full', 'ip')
+                or not install_one_of('tcpdump', 'tcpdump')
+                or not install_one_of('tcpreplay', 'tcpreplay') then
+            result = "B91912 cannot install discover_upnp dependencies"
+            break
+        end
+        wan_route = run_command('ip route show default', true, true)
+        local default_route = wan_route and ('\n' .. wan_route):match('\n(default[^\r\n]*)')
+        wan_if = default_route and default_route:match('%sdev%s+(%S+)')
+        gateway = default_route and default_route:match('%svia%s+(%S+)') or ''
         if not wan_if or wan_if == '' then
             result = "B86262 cannot determine wan_if"
             break
         end
-        local tcpdump_command = 'tcpdump -l -n -s0 -A -i '
-            .. shell_quote(wan_if)
-            .. ' ' .. shell_quote('udp and src port 1900')
-            .. ' </dev/null >' .. shell_quote(stdout_path)
-            .. ' 2>>' .. shell_quote(stderr_path)
-        local start_command = tcpdump_command .. ' & echo $!'
-        tcpdump_pid = normalize_pid(run_command(start_command, true, true))
-        if not tcpdump_pid then
-            result = "B26445 cannot start tcpdump: " .. display_text_file(stderr_path)
-            break
-        end
-        local listening = false
-        for _ = 1, 100 do
-            local grep_command = 'grep -Eq '
-                .. shell_quote('^(tcpdump: )?listening on ')
-                .. ' ' .. shell_quote(stderr_path)
-            if run_command(grep_command, true, true) then
-                listening = true
-                break
-            end
-            if not is_running(tcpdump_pid) then break end
-            run_command('sleep 0.1', true, true)
-        end
-        if not listening then
-            if is_running(tcpdump_pid) then
-                result = "B57620 tcpdump won't listen: " .. display_text_file(stderr_path)
-            else
-                result = "B45125 tcpdump refused to listen: " .. display_text_file(stderr_path)
-            end
-            break
-        end
-        run_command('sleep 0.1', true, true)
-        local tcpreplay_command = '(tcpreplay '
-            .. shell_quote('-i' .. wan_if)
-            .. ' ' .. shell_quote(pcap_path)
-            .. ' >/dev/null 2>' .. shell_quote(tcpreplay_stderr_path) .. ')'
-        if not run_command(tcpreplay_command, true, true) then
-            result = "B92999 tcpreplay failed: "
-                .. display_text_file(tcpreplay_stderr_path)
-            break
-        end
-        run_command('sleep 2', true, true)
-        if not is_running(tcpdump_pid) then
-            result = "B25280 tcpdump exited unexpectedly: " .. display_text_file(stderr_path)
-            break
-        end
-        if not kill_process(tcpdump_pid) then
-            result = "B88176 cannot stop tcpdump: " .. display_text_file(stderr_path)
-            break
-        end
-        local stdout = run_command(
-            '{ grep -ai ' .. shell_quote('^LOCATION:')
-                .. ' ' .. shell_quote(stdout_path)
-                .. ' || [ "$?" -eq 1 ]; }',
+        local source_route_target = gateway ~= '' and gateway or '239.255.255.250'
+        source_route = run_command(
+            'ip -4 route get ' .. shell_quote(source_route_target),
             true,
             true
         )
-        if stdout == nil then
-            result = "B25543 cannot read tcpdump stdout: " .. display_text_file(stderr_path)
+        source_ip = source_route and source_route:match(
+            '%ssrc%s+(%d+%.%d+%.%d+%.%d+)'
+        )
+        local source_if = source_route and source_route:match('%sdev%s+(%S+)')
+        if source_if and source_if ~= wan_if then
+            result = "B60570 UPnP route interface differs from default route interface"
             break
         end
+        local address_output = run_command(
+            'ip -4 address show dev ' .. shell_quote(wan_if),
+            true,
+            true
+        )
+        for address, prefix in tostring(address_output or ''):gmatch(
+                '%sinet%s+(%d+%.%d+%.%d+%.%d+)/(%d+)'
+            ) do
+            if not source_ip then source_ip = address end
+            if address == source_ip then
+                source_prefix = tonumber(prefix)
+                break
+            end
+        end
+        if not source_ip then
+            result = "B60571 cannot determine UPnP discovery source IP"
+            break
+        end
+        if not source_prefix then
+            result = "B35288 cannot determine UPnP discovery source subnet"
+            break
+        end
+        local link_output = run_command(
+            'ip link show dev ' .. shell_quote(wan_if),
+            true,
+            true
+        )
+        source_mac = link_output and link_output:match(
+            'link/ether%s+([%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x])'
+        )
+        if not source_mac then
+            result = "B60572 UPnP discovery requires an Ethernet source MAC"
+            break
+        end
+
+        -- A capture made on Linux "any" uses SLL/SLL2 rather than Ethernet,
+        -- which some tcpreplay builds misinterpret.  Rebuild every captured
+        -- M-SEARCH as Ethernet, preserving the original inter-packet delays and
+        -- addressing all packets as this base.  SSDP replies are unicast to the
+        -- probe's source IP and UDP port.
+        source_port = 49152 + (os.time() % 16384)
+        local packet_pcap_problem = nil
+        for index, probe in ipairs(probe_packets) do
+            local packet_path = make_temp_path()
+            if not packet_path then
+                packet_pcap_problem = 'cannot create packet '
+                    .. tostring(index) .. ' replay PCAP'
+                break
+            end
+            replay_packet_paths[#replay_packet_paths + 1] = packet_path
+            local packet_written, packet_problem = write_upnp_replay_pcap(
+                packet_path,
+                {{
+                    payload = probe.payload,
+                    delay_us = 0,
+                    ip_id_offset = index,
+                }},
+                source_ip,
+                source_mac,
+                source_port
+            )
+            if not packet_written then
+                packet_pcap_problem = 'packet ' .. tostring(index) .. ': '
+                    .. tostring(packet_problem)
+                break
+            end
+        end
+        if packet_pcap_problem then
+            result = "B27416 cannot build UPnP packet replay PCAPs: "
+                .. packet_pcap_problem
+            break
+        end
+        wait_seconds = probe_mx + 1
+        log_debug(
+            "UPnP discovery probe source: " .. source_ip
+                .. ":" .. source_port .. " on " .. wan_if
+        )
+
+        -- Match replies by destination, not by an assumed responder source port.
+        local capture_filter = 'udp and ((src host ' .. source_ip .. ' and src port '
+            .. tostring(source_port)
+            .. ' and dst host 239.255.255.250 and dst port 1900)'
+            .. ' or (dst host ' .. source_ip .. ' and dst port '
+            .. tostring(source_port) .. '))'
+        local capture_problem
+        capture_deadline = os.time() + max_upnp_capture_seconds
+        tcpdump_pid, capture_problem = start_upnp_capture(
+            wan_if,
+            capture_path,
+            capture_status_path,
+            capture_filter
+        )
+        if not tcpdump_pid then
+            result = "B26445 " .. tostring(capture_problem)
+            break
+        end
+        capture_started = true
+        run_command('sleep 0.1', true, true)
+
+        -- Some older tcpreplay builds ignore the first inter-packet delay in a
+        -- multi-packet PCAP.  Send one-packet PCAPs and reproduce every captured
+        -- gap explicitly so all M-SEARCH requests retain their ordering and
+        -- approximate original timing on those builds as well.
+        local replay_outputs = {}
+        local replay_failure = nil
+        for index, packet_path in ipairs(replay_packet_paths) do
+            if index > 1 then
+                local gap_us = probe_packets[index].delay_us
+                    - probe_packets[index - 1].delay_us
+                local gap_seconds = gap_us / 1000000
+                if capture_deadline
+                        and os.time() + math.ceil(gap_seconds) > capture_deadline then
+                    replay_failure = "B53263 UPnP replay would exceed capture time limit"
+                    break
+                end
+                local sleep_ok = run_command(
+                    'sleep ' .. string.format('%.6f', gap_seconds),
+                    true,
+                    true
+                ) ~= nil
+                if not sleep_ok then
+                    replay_failure = "B83461 cannot wait before replay packet "
+                        .. tostring(index)
+                    break
+                end
+            end
+
+            local tcpreplay_command = '(tcpreplay '
+                .. shell_quote('-i' .. wan_if)
+                .. ' ' .. shell_quote(packet_path)
+                .. ' >' .. shell_quote(tcpreplay_output_path) .. ' 2>&1)'
+            local tcpreplay_ok = run_command(
+                tcpreplay_command,
+                true,
+                true
+            ) ~= nil
+            local packet_output = read_text_file(
+                tcpreplay_output_path,
+                true,
+                true
+            ) or ''
+            replay_outputs[#replay_outputs + 1] = 'packet '
+                .. tostring(index) .. ':\n' .. packet_output
+            if not tcpreplay_ok then
+                replay_failure = "B92999 tcpreplay packet "
+                    .. tostring(index) .. " failed: "
+                    .. displayable(packet_output, 300)
+                break
+            end
+
+            local replay_output_lower = packet_output:lower()
+            local failed_packets = tonumber(
+                replay_output_lower:match('failed packets:%s*(%d+)')
+            ) or 0
+            local truncated_packets = tonumber(
+                replay_output_lower:match('truncated packets:%s*(%d+)')
+            ) or 0
+            local actual_packets = tonumber(
+                replay_output_lower:match('actual:%s*(%d+)%s+packets')
+            )
+            local successful_packets = tonumber(
+                replay_output_lower:match('successful packets:%s*(%d+)')
+            )
+            if replay_output_lower:find('warning:', 1, true)
+                    or failed_packets > 0 or truncated_packets > 0
+                    or (actual_packets and actual_packets ~= 1)
+                    or (successful_packets and successful_packets ~= 1) then
+                replay_failure = "B60575 tcpreplay packet "
+                    .. tostring(index) .. " was unsafe: "
+                    .. displayable(packet_output, 300)
+                break
+            end
+        end
+        tcpreplay_output = table.concat(replay_outputs, '\n')
+        write_text_file(tcpreplay_output_path, tcpreplay_output, '0600')
+        if replay_failure then
+            result = replay_failure
+            break
+        end
+
+        -- A device may delay a unicast response for any time from zero through
+        -- the requested MX value.  The payload parser clamps MX to UPnP's 1..5.
+        response_wait_seconds = math.max(
+            0,
+            math.min(wait_seconds, capture_deadline - os.time())
+        )
+        if response_wait_seconds < wait_seconds then
+            log_warning(
+                "B05332 UPnP response wait limited to "
+                    .. tostring(response_wait_seconds) .. " seconds"
+            )
+        end
+        if response_wait_seconds > 0 and not run_command(
+                'sleep ' .. tostring(response_wait_seconds),
+                true,
+                true
+            ) then
+            result = "B08078 cannot wait for UPnP discovery responses"
+            break
+        end
+        if not is_running(tcpdump_pid) then
+            capture_status = read_text_file(capture_status_path, true, true)
+            if (capture_packet_count(capture_status) or 0)
+                    >= max_upnp_capture_packets then
+                log_warning(
+                    "B70017 UPnP capture stopped at its "
+                        .. tostring(max_upnp_capture_packets) .. " packet limit"
+                )
+            elseif capture_time_limit_reached(capture_status) then
+                log_warning(
+                    "B24410 UPnP capture stopped at its "
+                        .. tostring(max_upnp_capture_seconds) .. " second time limit"
+                )
+            else
+                result = "B25280 tcpdump exited unexpectedly: "
+                    .. display_text_file(capture_status_path)
+                break
+            end
+        elseif not kill_process(tcpdump_pid) then
+            result = "B88176 cannot stop tcpdump: "
+                .. display_text_file(capture_status_path)
+            break
+        end
+        tcpdump_pid = nil
+        capture_status = capture_status
+            or read_text_file(capture_status_path, true, true)
+        captured_packets = decode_upnp_capture(capture_path)
+        if captured_packets == nil then
+            result = "B25543 cannot decode tcpdump capture: "
+                .. display_text_file(capture_status_path)
+            break
+        end
+        -- Verify every transmitted payload and the timing produced by the
+        -- one-packet tcpreplay calls.
+        local capture_data = read_text_file(capture_path, true, true)
+        local observed_probes, observed_problem, _, observed_record_count =
+            extract_upnp_msearches(capture_data)
+        if not observed_probes then
+            result = "B21948 cannot inspect captured UPnP replay: "
+                .. tostring(observed_problem)
+            break
+        end
+        replay_capture_summary = upnp_probe_summary(
+            observed_probes,
+            observed_record_count
+        )
+        if #observed_probes ~= #probe_packets then
+            result = "B71304 captured replay contains "
+                .. tostring(#observed_probes) .. ' probe packets; expected '
+                .. tostring(#probe_packets)
+            break
+        end
+        local timing_differences = {}
+        local replay_payload_problem = nil
+        for index, observed in ipairs(observed_probes) do
+            if observed.payload ~= probe_packets[index].payload then
+                replay_payload_problem = tostring(index)
+                break
+            end
+            if index > 1 then
+                local expected_gap = probe_packets[index].delay_us
+                    - probe_packets[index - 1].delay_us
+                local observed_gap = observed.delay_us
+                    - observed_probes[index - 1].delay_us
+                if math.abs(observed_gap - expected_gap) > 500000 then
+                    timing_differences[#timing_differences + 1] = 'packet '
+                        .. tostring(index) .. ' gap was '
+                        .. string.format('%.6f', observed_gap / 1000000)
+                        .. ' seconds; expected '
+                        .. string.format('%.6f', expected_gap / 1000000)
+                        .. ' seconds'
+                end
+            end
+        end
+        if replay_payload_problem then
+            result = "B40681 captured replay payload differs at packet "
+                .. replay_payload_problem
+            break
+        end
+        if #timing_differences > 0 then
+            replay_timing_problem = 'captured replay timing differed: '
+                .. table.concat(timing_differences, '; ')
+        end
+        local locations = {}
+        local fallback_locations = {}
+        local seen_locations = {}
+        local upnp_response_count = 0
+        local rejected_location_count = 0
+        local location_limit_warned = false
+        for line in captured_packets:gmatch('[^\r\n]+') do
+            local location = line:match(
+                '^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]:%s*(%S+)'
+            )
+            if location and #location <= 2048 and location:match('^https?://') then
+                upnp_response_count = upnp_response_count + 1
+            end
+            if location and #location <= 2048 and location:match('^https?://')
+                    and not seen_locations[location] then
+                seen_locations[location] = true
+                local location_host = http_url_host(location)
+                local location_number = ipv4_number(location_host)
+                local gateway_number = ipv4_number(gateway)
+                local matches_gateway = location_number and gateway_number
+                    and location_number == gateway_number
+                local matches_subnet = ipv4_in_subnet(
+                    location_host,
+                    source_ip,
+                    source_prefix
+                )
+                if not matches_gateway and not matches_subnet then
+                    rejected_location_count = rejected_location_count + 1
+                    if rejected_location_count <= 8 then
+                        log_info(
+                            "B14803 dropping UPnP LOCATION outside gateway/LAN subnet; "
+                                .. "host=" .. displayable(
+                                    json_escape(location_host or '(invalid)'),
+                                    100
+                                )
+                        )
+                    elseif rejected_location_count == 9 then
+                        log_warning(
+                            "B92150 additional rejected UPnP LOCATION warnings omitted"
+                        )
+                    end
+                else
+                    local accepted_count = #locations + #fallback_locations
+                    if accepted_count >= max_upnp_locations
+                            and not location_limit_warned then
+                        log_warning(
+                            "B06812 UPnP LOCATION limit reached; ignoring additional URLs"
+                        )
+                        location_limit_warned = true
+                    end
+                    if matches_gateway and accepted_count >= max_upnp_locations
+                            and #fallback_locations > 0 then
+                        table.remove(fallback_locations)
+                        accepted_count = accepted_count - 1
+                    end
+                    if accepted_count < max_upnp_locations then
+                        local destination = matches_gateway
+                            and locations or fallback_locations
+                        destination[#destination + 1] = location
+                    end
+                end
+            end
+        end
+        for _, location in ipairs(fallback_locations) do
+            locations[#locations + 1] = location
+        end
+        local igds = {}
+        local seen_control_urls = {}
+        local descriptions_read = 0
+        local description_deadline = os.time() + max_upnp_description_seconds
+        local igd_limit_warned = false
+        for _, location in ipairs(locations) do
+            if #igds >= max_upnp_igds then
+                if not igd_limit_warned then
+                    log_warning(
+                        "B90866 UPnP IGD limit reached; ignoring additional descriptions"
+                    )
+                    igd_limit_warned = true
+                end
+                break
+            end
+            local description_seconds_left = description_deadline - os.time()
+            if description_seconds_left <= 0 then
+                log_warning(
+                    "B39908 UPnP device-description time limit reached"
+                )
+                break
+            end
+            local found_gateway_igd = false
+            local xml_path = make_temp_path()
+            if xml_path then
+                local request_timeout = math.max(
+                    1,
+                    math.min(3, description_seconds_left)
+                )
+                local connect_timeout = math.min(2, request_timeout)
+                local curl_command = 'curl -fsS --connect-timeout '
+                    .. tostring(connect_timeout) .. ' --max-time '
+                    .. tostring(request_timeout) .. ' '
+                    .. '--max-filesize 1048576 -o '
+                    .. shell_quote(xml_path) .. ' ' .. shell_quote(location)
+                if run_command(curl_command, true, true) then
+                    local xml = read_text_file(xml_path, false, true)
+                    if xml and #xml <= 1048576 then
+                        descriptions_read = descriptions_read + 1
+                        local control_url = upnp_control_url(xml, location)
+                        if control_url and #control_url <= 2048
+                                and not seen_control_urls[control_url] then
+                            seen_control_urls[control_url] = true
+                            igds[#igds + 1] = {
+                                location = location,
+                                control_url = control_url,
+                            }
+                            local location_number = ipv4_number(http_url_host(location))
+                            local gateway_number = ipv4_number(gateway)
+                            found_gateway_igd = location_number and gateway_number
+                                and location_number == gateway_number
+                        end
+                    end
+                end
+                remove_path(xml_path)
+            end
+            if found_gateway_igd then break end
+        end
+        if #locations > 0 and descriptions_read == 0 then
+            result = "B60567 cannot read any UPnP device description"
+            break
+        end
+        if #locations == 0 then
+            local wan_capture_drops = capture_interface_drops(capture_status)
+            if wan_capture_drops > 0 then
+                diagnostic_reason = 'no SSDP LOCATION response; WAN capture reported '
+                    .. tostring(wan_capture_drops) .. ' interface drops'
+                result = 'B74816 ' .. diagnostic_reason
+                break
+            end
+            if upnp_response_count > 0 then
+                diagnostic_reason = 'no UPnP LOCATION response matched the gateway/LAN subnet'
+            else
+                diagnostic_reason = 'no SSDP LOCATION response was captured after '
+                    .. tostring(#probe_packets) .. ' timed M-SEARCH packets'
+            end
+        elseif #igds == 0 then
+            diagnostic_reason =
+                'SSDP responses exposed no supported WANIPConnection/WANPPPConnection service'
+        end
+        if replay_timing_problem then
+            diagnostic_reason = diagnostic_reason
+                and (diagnostic_reason .. '; ' .. replay_timing_problem)
+                or replay_timing_problem
+        end
+        local result_prefix = '{'
+            .. '"gateway":"' .. json_escape(gateway) .. '",'
+            .. '"response_count":' .. tostring(upnp_response_count) .. ','
+            .. '"igds":['
+        local igd_json = {}
+        local result_bytes = #result_prefix + 2  -- closing ]}
+        for _, igd in ipairs(igds) do
+            local entry = '{'
+                .. '"location":"' .. json_escape(igd.location) .. '",'
+                .. '"control_url":"' .. json_escape(igd.control_url) .. '"'
+                .. '}'
+            local separator_bytes = #igd_json > 0 and 1 or 0
+            if result_bytes + separator_bytes + #entry > max_upnp_result_bytes then
+                log_warning(
+                    "B75089 UPnP discovery result size limit reached; "
+                        .. "ignoring additional IGDs"
+                )
+                break
+            end
+            igd_json[#igd_json + 1] = entry
+            result_bytes = result_bytes + separator_bytes + #entry
+        end
         success = true
-        result = stdout
+        result = result_prefix .. table.concat(igd_json, ',') .. ']}'
     until true
     if tcpdump_pid and not kill_process(tcpdump_pid) then
         log_warning("B38790 cleanup could not stop tcpdump")
     end
+    tcpdump_pid = nil
+    if capture_started and capture_status == nil and capture_status_path then
+        capture_status = read_text_file(capture_status_path, true, true)
+    end
+    if capture_started and captured_packets == nil and capture_path then
+        captured_packets = decode_upnp_capture(capture_path)
+    end
+
+    -- Keep normal discovery quiet.  On a failure or an empty discovery, retain
+    -- the evidence that distinguishes bad task data, replay trouble, routing,
+    -- and a LAN that simply did not answer.
+    if not success or diagnostic_reason then
+        log_info(
+            'UPnP diagnostic triggered: '
+                .. displayable(diagnostic_reason or result, 700)
+        )
+        if probe_packets then
+            log_info(
+                'UPnP diagnostic received probe packets: '
+                    .. upnp_probe_summary(probe_packets, probe_record_count)
+            )
+        end
+        log_upnp_diagnostic('default route', wan_route)
+        log_upnp_diagnostic('source route', source_route)
+        if source_ip or source_mac or source_port then
+            log_info(
+                'UPnP diagnostic selected source: '
+                    .. tostring(source_mac or '(unknown MAC)') .. ' '
+                    .. tostring(source_ip or '(unknown IP)') .. ':'
+                    .. tostring(source_port or '(unknown port)')
+                    .. ' on ' .. tostring(wan_if or '(unknown interface)')
+            )
+        end
+        if wait_seconds then
+            log_info(
+                'UPnP diagnostic response wait: ' .. tostring(wait_seconds)
+                    .. ' seconds (captured MX=' .. tostring(probe_mx) .. ')'
+            )
+        end
+        if replay_capture_summary then
+            log_info(
+                'UPnP diagnostic observed replay packets: '
+                    .. replay_capture_summary
+            )
+        end
+        if tcpreplay_output ~= nil then
+            log_upnp_diagnostic(
+                'tcpreplay output',
+                tcpreplay_output
+                    or read_text_file(tcpreplay_output_path, true, true),
+                80
+            )
+        end
+        if capture_started and capture_path then
+            log_upnp_diagnostic(
+                'WAN tcpdump packets',
+                captured_packets or decode_upnp_capture(capture_path),
+                120
+            )
+        end
+        if capture_started and capture_status_path then
+            log_upnp_diagnostic(
+                'WAN tcpdump status',
+                capture_status
+                    or read_text_file(capture_status_path, true, true)
+            )
+        end
+    end
     remove_path(encoded_path)
-    remove_path(pcap_base_path)
     remove_path(pcap_path)
-    remove_path(stdout_path)
-    remove_path(stderr_path)
-    remove_path(tcpreplay_stderr_path)
+    for _, packet_path in ipairs(replay_packet_paths) do
+        remove_path(packet_path)
+    end
+    remove_path(capture_path)
+    remove_path(capture_status_path)
+    remove_path(tcpreplay_output_path)
     return success, result
 end
 
@@ -2059,7 +3082,7 @@ while true do
         retry_wait = 7
         retries_left = 2
         log_debug("ping loop reset retry state after success")
-        sleep_with_jitter(60, 0.2)
+        sleep_with_jitter(2, 0.2)
     else
         log_info(
             "ping failed; sleeping before retry with retry_wait="

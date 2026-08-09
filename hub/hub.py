@@ -216,6 +216,8 @@ async def async_background_tasks():
             await watch_tls_cert()
             await asyncio.sleep(15)
             await util.test_fix_lan_overlap_shell_code()
+            await asyncio.sleep(15)
+            api.test_parse_upnp_discovery_result()
             await asyncio.sleep(5 * 60)
             db.check_bbbased_test_levels()
         else:  # every other day

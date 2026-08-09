@@ -6,10 +6,12 @@ from fastapi.responses import Response, PlainTextResponse
 from pydantic import BaseModel
 import fastapi_jsonrpc as jsonrpc
 import hashlib
+import ipaddress
 import json
 import os
 import logging
 import re
+import urllib.parse
 from sqlmodel import Field
 from typing import Any
 from cryptography.exceptions import InvalidSignature
@@ -133,10 +135,127 @@ async def log_error(subd: str, request: Request) -> Response:
 
 
 ###
+### UPnP discovery task results
+###
+
+
+def parse_upnp_discovery_result(output: str) -> tuple[str, list[dict[str, str]], int]:
+    """Return the selected control URL, valid IGDs, and discovery response count."""
+
+    def canonical_ip(value: str) -> str:
+        # '192%2e168%2E1%2e42%eth0.2' → '192.168.1.42'
+        # '2001:0DB8:0000:0000:0000:FF00:0018:1234' → '2001:db8::ff00:18:1234'
+        value = urllib.parse.unquote(value).split('%', 1)[0]
+        return str(ipaddress.ip_address(value))
+
+    result = json.loads(output)
+    if not isinstance(result, dict) or not isinstance(result.get('igds'), list):
+        raise Berror(f"B04436 invalid result {result}")
+    response_count = result.get('response_count', len(result['igds']))
+    if type(response_count) is not int or not 0 <= response_count <= 10_000:
+        raise Berror(f"B80519 invalid response count {response_count}")
+    if gateway := result.get('gateway'):
+        gateway = canonical_ip(gateway)
+    igds: list[dict[str, str]] = list()
+    seen_control_urls: set[str] = set()
+    for item in result['igds'][:32]:
+        if not isinstance(item, dict):
+            continue
+        location = item.get('location')
+        control_url = item.get('control_url')
+        if not isinstance(location, str) or not isinstance(control_url, str):
+            continue
+        if len(location) > 2048 or len(control_url) > 2048:
+            continue
+        location_parts = urllib.parse.urlsplit(location)
+        control_parts = urllib.parse.urlsplit(control_url)
+        if (
+            location_parts.scheme not in ('http', 'https')
+            or control_parts.scheme not in ('http', 'https')
+            or not location_parts.hostname
+            or not control_parts.hostname
+            or control_parts.username is not None
+            or control_parts.password is not None
+            or any(ord(c) < 32 for c in location + control_url)
+        ):
+            continue
+        try:
+            controller_ip = canonical_ip(control_parts.hostname)
+        except ValueError:
+            continue
+        if control_url in seen_control_urls:
+            continue
+        seen_control_urls.add(control_url)
+        igds.append(
+            {
+                'location': location,
+                'control_url': control_url,
+                'controller_ip': controller_ip,
+            }
+        )
+    if not igds:
+        return 'unavailable', igds, response_count
+    selected = next(
+        (igd for igd in igds if gateway and igd['controller_ip'] == gateway),
+        igds[0],
+    )
+    return selected['control_url'], igds, response_count
+
+
+def test_parse_upnp_discovery_result() -> None:
+    first = {
+        'location': 'http://192.168.1.2/root.xml',
+        'control_url': 'http://192.168.1.2/upnp/control',
+    }
+    gateway = {
+        'location': 'http://192.168.1.1/root.xml',
+        'control_url': 'http://192.168.1.1:5000/ctl/IPConn',
+    }
+    output = json.dumps({'gateway': '192.168.1.1', 'response_count': 3, 'igds': [first, gateway]})
+    selected, igds, response_count = parse_upnp_discovery_result(output)
+    assert selected == gateway['control_url']
+    assert len(igds) == 2
+    assert response_count == 3
+    output = json.dumps({'gateway': '192.168.1.254', 'igds': [first, gateway]})
+    selected, igds, response_count = parse_upnp_discovery_result(output)
+    assert selected == first['control_url']
+    assert len(igds) == 2
+    assert response_count == 2  # compatibility with clients that omit the count
+    output = json.dumps({'gateway': '192.168.1.1', 'igds': []})
+    assert parse_upnp_discovery_result(output) == ('unavailable', [], 0)
+
+
+class UpnpDiscoveryTaskResult:
+    def __init__(self, output: str, ok: bool, subd: str, ip: str) -> None:
+        self.output = output
+        self.ok = ok
+        self.upnp_igd_url = 'failed'
+        if not ok:
+            return
+        try:
+            self.upnp_igd_url, upnp_igds, responses = parse_upnp_discovery_result(output)
+        except (ValueError, TypeError, json.JSONDecodeError) as e:
+            self.ok = False
+            self.output = f"B60565 invalid UPnP discovery result: {e}"
+            return
+        e = f"B98223 got {responses} UPnP discovery response{'s' if responses != 1 else ''}"
+        logger.info(util.front_berror_code(e, subd, ip))
+        for igd in upnp_igds:
+            selected = ' (selected)' if igd['control_url'] == self.upnp_igd_url else ''
+            e = f"B60566 UPnP IGD control URL: {igd['control_url']}{selected}"
+            logger.info(util.front_berror_code(e, subd, ip))
+
+    def finish(self, device) -> None:
+        device.upnp_igd_url = self.upnp_igd_url
+        device.upnp_igd_date = DateTime.now(TimeZone.utc)
+
+
+###
 ### JSON-RPC set-up
 ###
 
 jsonrpc_entrypoint = jsonrpc.Entrypoint(jsonrpc_route)
+task_result_processors = {'discover_upnp': UpnpDiscoveryTaskResult}
 
 
 class BaseResult(BaseModel):
@@ -506,14 +625,23 @@ async def task_result(
                 raise Berror("B68410 task_method mismatch")
             if len(output) > 20000:
                 raise Berror("B32614 task output too large")
+            processor_class = task_result_processors.get(task_method)
+            processor = processor_class(output, ok, subd, ip) if processor_class else None
+            if processor:
+                ok = processor.ok
+                output = processor.output
             status = db.DeviceTaskStatus.DONE if ok else db.DeviceTaskStatus.FAILED
             try:
-                db.mark_task_status(int(task_id), status, device_id=device.id)
+                newly_finished = db.finish_task_result(
+                    int(task_id), status, device_id=device.id, method=task_method
+                )
             except ValueError:
                 raise Berror(f"B72809 invalid task_id: {task_id}")
+            if processor and newly_finished:
+                processor.finish(device)
             status = 'succeeded' if ok else 'failed'
-            message = f"B35214 finished task {task_id} {task_method} {status}: {output}"
-            (logger.debug if ok else logger.info)(util.front_berror_code(message, subd, ip))
+            e = f"B35214 finished task {task_id} {task_method} {status}: {output}"
+            (logger.debug if ok else logger.info)(util.front_berror_code(e, subd, ip))
         except (Berror, db.CredentialsError) as e:
             logger.warning(f"{e} (base {subd} at {ip})")
             raise BaseError("B34089 invalid task_result request")

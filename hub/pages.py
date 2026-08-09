@@ -1,6 +1,8 @@
 import asyncio
+import base64
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import logging
+import urllib.parse
 from nicegui import ui, Client
 import hub.api as api
 import hub.uif as uif
@@ -292,6 +294,97 @@ def setup(client: Client, device_slug: str):
         idelem = uif.render_content(sections)
         return
     stage_state = 'adopt'
+    upnp_running = False
+    upnp_status_label = None
+
+    def show_upnp_status(message: str) -> None:
+        if upnp_status_label is not None:
+            upnp_status_label.set_text(message)
+
+    def upnp_result_text(current_device: db.Device) -> str:
+        result = current_device.upnp_igd_url
+        if result == 'disabled':
+            return "UPnP discovery is disabled for this base router."
+        if result == 'unavailable':
+            return "UPnP is not available."
+        if result == 'failed':
+            return "Could not determine whether UPnP is available."
+        if not result or result == 'untried':
+            return "UPnP discovery has not produced a result."
+        controller_ip = urllib.parse.urlsplit(result).hostname
+        if not controller_ip:
+            return "Could not determine whether UPnP is available."
+        controller_ip = urllib.parse.unquote(controller_ip).split('%', 1)[0]
+        return f"UPnP is available. Controller IP address: {controller_ip}"
+
+    def upnp_result_is_recent(current_device: db.Device) -> bool:
+        attempted = current_device.upnp_igd_date
+        if attempted is None:
+            return False
+        if attempted.tzinfo is None or attempted.tzinfo.utcoffset(attempted) is None:
+            attempted = attempted.replace(tzinfo=TimeZone.utc)
+        age = DateTime.now(TimeZone.utc) - attempted
+        return TimeDelta(0) <= age < TimeDelta(minutes=3)
+
+    async def discover_upnp() -> None:
+        nonlocal upnp_running
+        if upnp_running:
+            return
+        upnp_running = True
+        try:
+            current_device = db.get_device_by_slug(device_slug, aid)
+            if current_device is None:
+                show_upnp_status("The base router could not be found.")
+                return
+            if current_device.upnp_igd_url == 'disabled':
+                show_upnp_status(upnp_result_text(current_device))
+                return
+            if upnp_result_is_recent(current_device):
+                show_upnp_status(upnp_result_text(current_device))
+                return
+            show_upnp_status("Checking whether UPnP is available…")
+            try:  # enqueue UPnP discovery task
+                """Queue UPnP discovery using the newest captured miniupnpc probe packets."""
+                pcap = db.get_blob('upnp_discovery_pcap')
+                if not pcap:
+                    raise Berror("B60561 UPnP discovery packet capture is unavailable")
+                task_id = db.enqueue_task(
+                    device_id=current_device.id,
+                    method='discover_upnp',
+                    args={'pcap': base64.b64encode(pcap).decode('ascii')},
+                    priority=8,
+                    dedupe=7,
+                )
+            except Berror as e:
+                logger.warning(str(e))
+                db.set_upnp_igd_result(current_device.id, 'failed')
+                show_upnp_status("Could not determine whether UPnP is available.")
+                return
+            deadline = asyncio.get_running_loop().time() + 30
+            while asyncio.get_running_loop().time() < deadline:
+                task_status = db.get_device_task_status(task_id, current_device.id)
+                if task_status in (db.DeviceTaskStatus.DONE, db.DeviceTaskStatus.FAILED):
+                    current_device = db.get_device_by_slug(device_slug, aid)
+                    if current_device is None:
+                        show_upnp_status("The base router could not be found.")
+                    else:
+                        show_upnp_status(upnp_result_text(current_device))
+                    return
+                if task_status is None:
+                    db.set_upnp_igd_result(current_device.id, 'failed')
+                    show_upnp_status("Could not determine whether UPnP is available.")
+                    return
+                await asyncio.sleep(0.25)
+            if db.timeout_upnp_discovery(task_id, current_device.id):
+                message = f"UPnP discovery task {task_id} timed out"
+                logger.info(f"B60568 base {current_device.subd} {message}")
+            current_device = db.get_device_by_slug(device_slug, aid)
+            if current_device is None:
+                show_upnp_status("The base router could not be found.")
+            else:
+                show_upnp_status(upnp_result_text(current_device))
+        finally:
+            upnp_running = False
 
     def stage_chip(title: str, stage: str, n: int) -> None:
         active = stage_state == stage
@@ -299,7 +392,11 @@ def setup(client: Client, device_slug: str):
         classes = 'stage-pill px-3 py-2 rounded-full whitespace-nowrap min-w-0 ' + (
             ' stage-pill--active' if active else ' stage-pill--inactive'
         )
-        with ui.button(on_click=lambda s=stage: set_stage(s)).props(props).classes(classes):
+
+        async def on_stage_click() -> None:
+            await set_stage(stage)
+
+        with ui.button(on_click=on_stage_click).props(props).classes(classes):
             ui.label(str(n)).classes('stage-pill__num')
             ui.label(title).classes('stage-pill__label')
 
@@ -312,11 +409,13 @@ def setup(client: Client, device_slug: str):
             ui.element('div').classes('stage-connector')
             stage_chip('Add device', 'add', 3)
 
-    def set_stage(stage: str) -> None:
+    async def set_stage(stage: str) -> None:
         nonlocal stage_state
         stage_state = stage
         render_tab_buttons.refresh()
         panels.set_value(stage)
+        if stage == 'enable':
+            await discover_upnp()
 
     def render_add_devices():
         ui.label('Add a device name below:').classes('text-lg font-medium')
@@ -390,6 +489,11 @@ def setup(client: Client, device_slug: str):
         with ui.tab_panel('adopt'):
             uif.render_stepper('adopt', idelem_lambdas)
         with ui.tab_panel('enable'):
+            with ui.card().classes('w-full max-w-5xl mb-4'):
+                ui.label('UPnP discovery').classes('text-lg font-medium')
+                upnp_status_label = ui.label('Checking whether UPnP is available…').classes(
+                    'text-base'
+                )
             uif.render_stepper('enable')
         with ui.tab_panel('add'):
             render_add_devices()

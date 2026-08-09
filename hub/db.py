@@ -433,6 +433,11 @@ class Device(SQLModel, table=True):
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='devices')
     platform: Platform | None = None
+    upnp_igd_url: str = 'untried'  # UPnP control URL or r'^(untried|disabled|unavailable|failed)$'
+    upnp_igd_date: DateTime = Field(  # date of last UPnP discovery attempt
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default=DateTime(1970, 1, 1, tzinfo=TimeZone.utc),  # Unix epoch
+    )
     comment: str = ""
 
     def adopt_state(self) -> str:
@@ -820,6 +825,60 @@ def enqueue_task(
         return task.id
 
 
+def get_device_task_status(task_id: int, device_id: int) -> DeviceTaskStatus | None:
+    with Session(engine) as session:
+        task = session.get(DeviceTask, task_id)
+        if task is None or task.device_id != device_id:
+            return None
+        return task.status
+
+
+def finish_task(
+    session: Session,
+    task: DeviceTask,
+    status: DeviceTaskStatus,
+    prior_statuses: tuple[DeviceTaskStatus, ...],
+) -> bool:
+    """Apply one validated task completion using the caller's session."""
+    if task.status == status:
+        logger.info(f"B30309 accepting already-recorded result for task {task.id}")
+        return False
+    statement = (
+        sqlalchemy.update(DeviceTask)
+        .where(DeviceTask.id == task.id)
+        .where(DeviceTask.device_id == task.device_id)
+        .where(DeviceTask.method == task.method)
+        .where(DeviceTask.status.in_(prior_statuses))
+        .values(
+            status=status,
+            finished_at=DateTime.now(TimeZone.utc),
+        )
+    )
+    result = session.exec(statement)
+    if result.rowcount != 1:
+        session.rollback()
+        raise Berror(f"B92551 task {task.id} was not assigned")
+    if task.method == 'update':
+        version = task.args.get('version')
+        if task.args.get('path') == bbbased_path:
+            statement = select(BasedVer).where(BasedVer.commit_date == version)
+            ver: BasedVer | None = session.exec(statement).one_or_none()
+            if ver is None:
+                session.rollback()
+                raise Berror(f"B51429 bbbased {version} for update task {task.id} not found")
+            ver.used_total += 1
+            if status == DeviceTaskStatus.FAILED:
+                ver.used_fails += 1
+                if ver.used_fails >= 7 and ver.used_fails * 2 >= ver.used_total:
+                    ratio = f"{ver.used_fails} of {ver.used_total} attempts"
+                    logger.error(f"B21382 bbbased {version} failed {ratio}; won't use")
+                    for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
+                        setattr(ver, f'test_level_{p.value}', TestLevel.FAILED)
+            session.add(ver)
+    session.commit()
+    return True
+
+
 def mark_task_status(
     task_id: int,
     status: DeviceTaskStatus,
@@ -830,46 +889,79 @@ def mark_task_status(
         raise Berror(f"B14766 invalid task status {status}")
     with Session(engine) as session:
         task = session.get(DeviceTask, task_id)
-        if (
-            task is not None
-            and task.status == status
-            and (device_id is None or task.device_id == device_id)
-        ):
-            logger.warning(f"B30309 accepting identical retry task {task_id}")
-            return  # accept an identical retry without counting it again
+        if task is None or (device_id is not None and task.device_id != device_id):
+            raise Berror(f"B92552 task {task_id} was not assigned")
+        finish_task(session, task, status, (DeviceTaskStatus.ASSIGNED,))
+
+
+def finish_task_result(
+    task_id: int,
+    status: DeviceTaskStatus,
+    *,
+    device_id: int,
+    method: str,
+) -> bool:
+    """Validate and finish a reported task result; return true iff newly finished."""
+    if status not in (DeviceTaskStatus.DONE, DeviceTaskStatus.FAILED):
+        raise Berror(f"B14767 invalid task status {status}")
+    with Session(engine) as session:
+        task = session.get(DeviceTask, task_id)
+        if task is None or task.device_id != device_id or task.method != method:
+            raise Berror(f"B92553 task {task_id} was not assigned")
+        prior_statuses = (DeviceTaskStatus.ASSIGNED,)
+        if method == 'discover_upnp' and status == DeviceTaskStatus.DONE:
+            prior_statuses += (DeviceTaskStatus.FAILED,)
+        return finish_task(session, task, status, prior_statuses)
+
+
+###
+### UPnP
+###
+
+
+def set_upnp_igd_result(device_id: int, upnp_igd_url: str) -> None:
+    """Store a completed UPnP discovery result and its completion time."""
+    with Session(engine) as session:
+        device = session.get(Device, device_id)
+        if device is None:
+            raise Berror(f"B60562 device {device_id} not found")
+        device.upnp_igd_url = upnp_igd_url
+        device.upnp_igd_date = DateTime.now(TimeZone.utc)
+        session.add(device)
+        session.commit()
+
+
+def timeout_upnp_discovery(task_id: int, device_id: int) -> bool:
+    """Fail an unfinished UPnP discovery task. Return true iff it was unfinished."""
+    now = DateTime.now(TimeZone.utc)
+    with Session(engine) as session:
+        task = session.get(DeviceTask, task_id)
+        if task is None or task.device_id != device_id or task.method != 'discover_upnp':
+            raise Berror(f"B60563 invalid UPnP discovery task {task_id}")
         statement = (
             sqlalchemy.update(DeviceTask)
             .where(DeviceTask.id == task_id)
-            .where(DeviceTask.status == DeviceTaskStatus.ASSIGNED)
-            .values(
-                status=status,
-                finished_at=DateTime.now(TimeZone.utc),
+            .where(DeviceTask.device_id == device_id)
+            .where(
+                DeviceTask.status.in_(
+                    [DeviceTaskStatus.QUEUED, DeviceTaskStatus.ASSIGNED],
+                ),
             )
+            .values(status=DeviceTaskStatus.FAILED, finished_at=now)
         )
-        if device_id is not None:
-            statement = statement.where(DeviceTask.device_id == device_id)
         result = session.exec(statement)
         if result.rowcount != 1:
             session.rollback()
-            raise Berror(f"B92552 task {task_id} was not assigned")
-        if task.method == 'update':
-            version = task.args.get('version')
-            if task.args.get('path') == bbbased_path:
-                statement = select(BasedVer).where(BasedVer.commit_date == version)
-                ver: BasedVer | None = session.exec(statement).one_or_none()
-                if ver is None:
-                    session.rollback()
-                    raise Berror(f"B51429 bbbased {version} for update task {task_id} not found")
-                ver.used_total += 1
-                if status == DeviceTaskStatus.FAILED:
-                    ver.used_fails += 1
-                    if ver.used_fails >= 7 and ver.used_fails * 2 >= ver.used_total:
-                        ratio = f"{ver.used_fails} of {ver.used_total} attempts"
-                        logger.error(f"B21382 bbbased {version} failed {ratio}; won't use")
-                        for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
-                            setattr(ver, f'test_level_{p.value}', TestLevel.FAILED)
-                session.add(ver)
+            return False
+        device = session.get(Device, device_id)
+        if device is None:
+            session.rollback()
+            raise Berror(f"B60564 device {device_id} not found")
+        device.upnp_igd_url = 'failed'
+        device.upnp_igd_date = now
+        session.add(device)
         session.commit()
+        return True
 
 
 ###
@@ -1159,10 +1251,6 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
         session.add(telemetry)
         session.commit()
         ## 2. set device.platform if needed
-        # if telemetry.os_id.lower().startswith('openwrt'):
-        #     platform = Platform.INIT
-        # else:
-        #     platform = Platform.SYSTEMD
         try:
             platform = Platform(telem_data.get('platform'))
         except (TypeError, ValueError):
