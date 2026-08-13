@@ -929,39 +929,90 @@ end
 -- CLI
 --
 
-local run_context = nil
+local cli_verb = nil
 local running_path = arg and arg[0] or ''
 if running_path == '' then fail_early('B72200 cannot find running_path') end
-if running_path:sub(1, 5) == '/tmp/' then
-    run_context = '/tmp'
+
+local function print_help()
+    local program = arg and arg[0] or 'bbbased.lua'
+    io.stdout:write(table.concat({
+        "Usage: " .. program .. " [options] <verb>",
+        "",
+        "Manage or run the BitBurrow base daemon.",
+        "",
+        "Verbs:",
+        "  install      Install or reinstall the daemon as a system service.",
+        "               This verb is implied when run under /tmp/.",
+        "  daemonize    Run the daemon in the foreground. This internal verb is",
+        "               normally invoked by a service wrapper holding the lock.",
+        "  run-tests    Run the self-tests and exit.",
+        "  version      Show the version and exit.",
+        "  help         Show this help message and exit.",
+        "",
+        "Options:",
+        "  -v, -vv, ... Increase logging verbosity.",
+        "  --verbose    Increase logging verbosity by one level.",
+        "",
+    }, "\n"), "\n")
 end
-for _, value in ipairs(arg) do
-    local value_ok = nil
-    if value == '--run-tests' then
-        value_ok = true
-        if run_tests() then
-            os.exit(0)
-        else
-            log_error("B85580 not all tests passed; see above")
-            os.exit(1)
-        end
-    end
-    if value == '--flock-locked' then
-        value_ok = true
-        run_context = 'flock_locked'
-    end
-    local v = value:match("^%-(v+)$")
-    if v then
-        value_ok = true
-        logging_level = logging_level - #v * 10
-    elseif value == "--verbose" then
-        value_ok = true
-        logging_level = logging_level - 10
-    end
-    if not value_ok then
-        io.stderr:write("invalid argument: ", value, "\n")
+
+local function set_cli_verb(value)
+    if cli_verb ~= nil then
+        log_error("cannot use two verbs (" .. cli_verb .. ", " .. value .. ")")
+        print_help()
         os.exit(1)
     end
+    cli_verb = value
+end
+
+for _, value in ipairs(arg) do
+    local v = value:match("^%-(v+)$")
+    if v then
+        logging_level = logging_level - #v * 10
+    elseif value == "--verbose" then
+        logging_level = logging_level - 10
+    elseif value == '-h' or value == '--help' then
+        set_cli_verb('help')
+    elseif value == '--version' then
+        set_cli_verb('version')
+    elseif value == '--flock-locked' then  -- for compatibility with installs before 2026-08-13
+        set_cli_verb('daemonize')
+    elseif value:sub(1, 1) == '-' then
+        log_error("invalid argument: " .. value)
+        print_help()
+        os.exit(1)
+    else
+        set_cli_verb(value)
+    end
+end
+if cli_verb == nil and running_path:sub(1, 5) == '/tmp/' then
+    cli_verb = 'install'
+end
+if cli_verb == nil then
+    log_error("a verb is required")
+    print_help()
+    os.exit(1)
+elseif cli_verb == 'help' then
+    print_help()
+    os.exit(0)
+elseif cli_verb == 'version' then
+    print("BitBurrow base daemon, version " .. file_version)
+    os.exit(0)
+elseif cli_verb == 'install' then
+    -- handled below
+elseif cli_verb == 'run-tests' then
+    if run_tests() then
+        os.exit(0)
+    else
+        log_error("not all tests passed (use '-v' to see details)")
+        os.exit(1)
+    end
+elseif cli_verb == 'daemonize' then
+    -- handled below
+else
+    log_error("invalid verb: " .. cli_verb)
+    print_help()
+    os.exit(1)
 end
 
 --
@@ -1016,7 +1067,7 @@ local function install_init_service(lua_path)
         '    if flock -n 9; then',
         '        rm -f ' .. shell_quote(lock_dir_stop_request_path),
         '        echo $$ > ' .. shell_quote(lock_dir_pid_path),
-        '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' --flock-locked',
+        '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' daemonize',
         '    fi',
         '    # too noisy: logger -t ' .. shell_quote(bbsubd) .. ' "B53125 waiting for another instance to quit"',
         '    sleep 1',
@@ -1078,8 +1129,10 @@ local function install_init_service(lua_path)
         log_debug("successfully reinstalled; exiting")
     end
     -- new service should run now; don't use this here: dofile(lua_path)
-    remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
-    remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
+    if running_path:sub(1, 5) == '/tmp/' then  -- remove installer, but only if in /tmp/
+        remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
+        remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
+    end
     return true
 end
 
@@ -1111,7 +1164,7 @@ local function install_systemd_service(lua_path)
         '    if flock -n 9; then',
         '        rm -f ' .. shell_quote(lock_dir_stop_request_path),
         '        echo $$ > ' .. shell_quote(lock_dir_pid_path),
-        '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' --flock-locked',
+        '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' daemonize',
         '    fi',
         '    # too noisy: logger -t ' .. shell_quote(bbsubd) .. ' "B22393 waiting for another instance to quit"',
         '    sleep 1',
@@ -1210,8 +1263,10 @@ local function install_systemd_service(lua_path)
         log_debug("successfully reinstalled; exiting")
     end
     -- new service should run now; don't use this here: dofile(lua_path)
-    remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
-    remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
+    if running_path:sub(1, 5) == '/tmp/' then  -- remove installer, but only if in /tmp/
+        remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
+        remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
+    end
     return true
 end
 
@@ -3181,7 +3236,7 @@ if get_uid() ~= 0 then
     close_log()
     os.exit(2)
 end
-if run_context == '/tmp' then
+if cli_verb == 'install' then
     if not set_sleep_method() then close_log() os.exit(13) end
     -- flock is the only 'install' prerequisite, but it's probably already installed
     install_one_of('flock util-linux', 'flock')  -- ignore errors and hope it works anyhow
@@ -3198,11 +3253,7 @@ if run_context == '/tmp' then
     close_log()
     os.exit(exit_code)
 end
-if run_context ~= 'flock_locked' then
-    log_error("B16646 to install the BitBurrow daemon, run from '/tmp'")
-    close_log()
-    os.exit(12)
-end
+if cli_verb ~= 'daemonize' then log_error("B38333 cli_verb == " .. cli_verb) os.exit(1) end
 
 --
 -- make sure prerequisites are installed
