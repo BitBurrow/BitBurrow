@@ -21,6 +21,7 @@ local lock_dir = bbsubd_tmp_dir .. 'lock/'
 local lock_dir_pid_path = lock_dir .. 'pid'
 local lock_file_path = lock_dir .. 'flock'
 local lock_dir_stop_request_path = lock_dir .. 'stop_request'
+local sleep_method = nil
 
 --
 -- logging
@@ -503,6 +504,177 @@ local function file_copy(src_path, dst_path, mode)
 end
 
 --
+-- fractional sleep
+--
+
+local sleep_methods = {
+    'nixio.nanosleep',  -- method 1
+    'socket.sleep',
+    'sleep [float]',
+    'ucode sleep',
+    'busybox usleep',
+    '/proc/uptime loop',
+    'sleep [int]',  -- method 7
+}
+local sleep_modules = {}
+
+local function uptime_seconds()
+    -- avoid read_text_file() here; the '/proc/uptime loop' method reads this in a tight loop
+    local handle = io.open('/proc/uptime', 'r')
+    if not handle then return nil end
+    local line = handle:read('*l')
+    handle:close()
+    return tonumber(tostring(line or ''):match('^(%S+)'))
+end
+
+local function sleep_module(name)
+    if sleep_modules[name] == nil then
+        local ok, module_or_error = pcall(require, name)
+        if ok then
+            sleep_modules[name] = module_or_error
+        else
+            sleep_modules[name] = false
+        end
+    end
+    return sleep_modules[name] or nil
+end
+
+local function sleep_using_method(method, seconds)
+    if method == 1 then  -- nixio.nanosleep
+        local nixio = sleep_module('nixio')
+        if not nixio or type(nixio.nanosleep) ~= 'function' then
+            return nil, 'nixio.nanosleep is unavailable'
+        end
+        local deadline = uptime_seconds()
+        deadline = deadline and (deadline + seconds) or nil
+        while true do  -- retry remaining duration after an EINTR interrupt
+            local whole_seconds = math.floor(seconds)
+            local nanoseconds = math.floor(
+                (seconds - whole_seconds) * 1000000000 + 0.5
+            )
+            if nanoseconds >= 1000000000 then
+                whole_seconds = whole_seconds + 1
+                nanoseconds = 0
+            end
+            local call_ok, result, error_number, error_text = pcall(
+                nixio.nanosleep,
+                whole_seconds,
+                nanoseconds
+            )
+            if not call_ok then return nil, tostring(result) end
+            if result == true then return true end
+            if not nixio.const or error_number ~= nixio.const.EINTR then
+                return nil, tostring(error_text or 'nixio.nanosleep returned failure')
+            end
+            local now = deadline and uptime_seconds() or nil
+            if not now then
+                return nil, tostring(error_text or 'nixio.nanosleep was interrupted')
+            end
+            seconds = deadline - now
+            if seconds <= 0 then return true end
+        end
+    elseif method == 2 then  -- socket.sleep
+        local socket = sleep_module('socket')
+        if not socket or type(socket.sleep) ~= 'function' then
+            return nil, 'socket.sleep is unavailable'
+        end
+        local ok, call_problem = pcall(socket.sleep, seconds)
+        if not ok then return nil, tostring(call_problem) end
+        return true
+    elseif method == 3 then  -- sleep [float]
+        if run_command('sleep ' .. string.format('%.6f', seconds), true, true) == nil then
+            return nil, 'sleep [float] failed'
+        end
+        return true
+    elseif method == 4 then  -- ucode sleep
+        local milliseconds = math.max(1, math.floor(seconds * 1000 + 0.5))
+        local ucode = 'if (!sleep(' .. tostring(milliseconds) .. ')) { exit(1); }'
+        local command = 'ucode -e ' .. shell_quote(ucode)
+        if run_command(command, true, true) == nil then
+            return nil, 'ucode sleep failed'
+        end
+        return true
+    elseif method == 5 then  -- busybox usleep
+        local microseconds = math.max(1, math.floor(seconds * 1000000 + 0.5))
+        if run_command('busybox usleep ' .. tostring(microseconds), true, true) == nil then
+            return nil, 'busybox usleep failed'
+        end
+        return true
+    elseif method == 6 then  -- /proc/uptime loop
+        local now = uptime_seconds()
+        if not now then return nil, 'cannot read /proc/uptime' end
+        local deadline = now + seconds
+        -- sleep the integer portion; it's more efficient than looping (okay if it fails)
+        run_command('sleep ' .. tostring(math.floor(seconds)), true, true)
+        repeat
+            now = uptime_seconds()
+            if not now then return nil, 'cannot read /proc/uptime' end
+        until now >= deadline
+        return true
+    elseif method == 7 then  -- sleep [int]
+        local round_up = math.floor(seconds + 0.9)  -- 3.09 → 3 but 3.1 → 4
+        if run_command('sleep ' .. tostring(round_up), true, true) == nil then
+            return nil, 'sleep [int] failed'
+        end
+        return true
+    end
+    return nil, 'unknown sleep method ' .. tostring(method)
+end
+
+local function set_sleep_method(test_all_methods)
+    local test_seconds = 0.3
+    local minimum_elapsed = 0.25
+    sleep_method = nil
+    for method = 1, #sleep_methods do
+        local saved_logging_level = logging_level
+        logging_level = 20  -- disable run_command() logging
+        local started = uptime_seconds()
+        local ok, problem = sleep_using_method(method, test_seconds)
+        local finished = uptime_seconds()
+        logging_level = saved_logging_level
+        local elapsed = started and finished and (finished - started) or nil
+        local m_text = 'sleep method ' .. tostring(method) .. ' (' .. sleep_methods[method] .. ')'
+        if ok and elapsed and elapsed >= minimum_elapsed then
+            log_debug(m_text .. ' succeeded: ' .. string.format('%.2f', elapsed) .. ' seconds')
+            sleep_method = sleep_method or method  -- use first method that works on this device
+            if not test_all_methods then
+                return true
+            end
+        else
+            log_debug(m_text .. ' failed: ' .. tostring(problem))
+        end
+    end
+    if sleep_method == nil then
+        log_error('B68347 no usable sleep method')
+        return nil
+    else
+        return true
+    end
+end
+
+local function sleep(seconds)
+    if type(seconds) ~= 'number' or seconds ~= seconds
+            or seconds < 0 or seconds == math.huge then
+        -- the odd 'seconds ~= seconds' checks for NaN (not a number)
+        log_error('B15064 invalid sleep duration ' .. tostring(seconds))
+        return nil
+    end
+    if seconds == 0 then return true end
+    if not sleep_method then
+        return nil
+    end
+    local ok, problem = sleep_using_method(sleep_method, seconds)
+    if not ok then
+        log_error(
+            'B47295 ' .. sleep_methods[sleep_method] .. ' failed to sleep for '
+                .. tostring(seconds) .. ' seconds: ' .. tostring(problem)
+        )
+        return nil
+    end
+    return true
+end
+
+--
 -- process management
 --
 
@@ -553,7 +725,7 @@ local function wait_until_dead(pid, attempts)
     -- note: pid must be normalized, e.g. normalize_pid()
     for _ = 1, attempts do
         if not is_running(pid) then return true end
-        run_command('sleep 0.1', true, true)
+        sleep(0.1)
     end
     return not is_running(pid)
 end
@@ -738,46 +910,63 @@ local function sleep_with_jitter(base_seconds, jitter_fraction)
             cleanup_and_exit(0)
         end
         if secs >= 2 then
-            run_command('sleep 2')
+            sleep(2)
             secs = secs - 2
         else
-            run_command('sleep 1')
+            sleep(1)
             secs = secs - 1
         end
     end
 end
 
-local function sleep(seconds)
-    sleep_with_jitter(seconds, 0)
+local function run_tests()
+    -- returns true only if all tests pass
+    local t1 = set_sleep_method(true)
+    return t1
 end
 
 --
--- installation
+-- CLI
 --
 
-local platform = nil
-if run_command('command -v systemctl', true, true) then
-    platform = 'sysd'  -- must match class Platform() in db.py
-else
-    platform = 'init'
-end
 local run_context = nil
 local running_path = arg and arg[0] or ''
 if running_path == '' then fail_early('B72200 cannot find running_path') end
 if running_path:sub(1, 5) == '/tmp/' then
     run_context = '/tmp'
 end
-for i = 1, #arg do
-    if arg[i] == '--flock-locked' then
+for _, value in ipairs(arg) do
+    local value_ok = nil
+    if value == '--run-tests' then
+        value_ok = true
+        if run_tests() then
+            os.exit(0)
+        else
+            log_error("B85580 not all tests passed; see above")
+            os.exit(1)
+        end
+    end
+    if value == '--flock-locked' then
+        value_ok = true
         run_context = 'flock_locked'
     end
-    local v = arg[i]:match("^%-(v+)$")
+    local v = value:match("^%-(v+)$")
     if v then
+        value_ok = true
         logging_level = logging_level - #v * 10
-    elseif arg[i] == "--verbose" then
+    elseif value == "--verbose" then
+        value_ok = true
         logging_level = logging_level - 10
     end
+    if not value_ok then
+        io.stderr:write("invalid argument: ", value, "\n")
+        os.exit(1)
+    end
 end
+
+--
+-- installation
+--
 
 local function find_install_dir()
     local home = os.getenv('HOME') or ''
@@ -1026,6 +1215,13 @@ local function install_systemd_service(lua_path)
     return true
 end
 
+local platform = nil
+if run_command('command -v systemctl', true, true) then
+    platform = 'sysd'  -- must match class Platform() in db.py
+else
+    platform = 'init'
+end
+
 local function install_daemon_service(lua_path)
     if platform == 'sysd' then
         return install_systemd_service(lua_path)
@@ -1126,7 +1322,7 @@ local function install_one_of(package_list, command)
             return true
         end
         if retry >= 2 then  -- before the last iteration, wait
-            run_command("sleep 75")
+            sleep(75)
         end
         if retry >= 1 then  -- before the last 2 iternations, run an update
             packager('update')
@@ -2166,7 +2362,7 @@ local function start_upnp_capture(interface, capture_path, status_path, filter)
             .. ' ' .. shell_quote(status_path)
         if run_command(grep_command, true, true) then return pid end
         if not is_running(pid) then break end
-        run_command('sleep 0.1', true, true)
+        sleep(0.1)
     end
     local problem
     if is_running(pid) then
@@ -2179,11 +2375,7 @@ local function start_upnp_capture(interface, capture_path, status_path, filter)
 end
 
 local function decode_upnp_capture(path)
-    return run_command(
-        'tcpdump -nn -e -vv -s0 -A -r ' .. shell_quote(path),
-        true,
-        true
-    )
+    return run_command('tcpdump -nn -e -vv -s0 -A -r ' .. shell_quote(path), true, true)
 end
 
 local function capture_interface_drops(status)
@@ -2328,11 +2520,7 @@ local function discover_upnp(pcap_base64)
             break
         end
         local source_route_target = gateway ~= '' and gateway or '239.255.255.250'
-        source_route = run_command(
-            'ip -4 route get ' .. shell_quote(source_route_target),
-            true,
-            true
-        )
+        source_route = run_command('ip -4 route get ' .. shell_quote(source_route_target), true, true)
         source_ip = source_route and source_route:match(
             '%ssrc%s+(%d+%.%d+%.%d+%.%d+)'
         )
@@ -2341,11 +2529,7 @@ local function discover_upnp(pcap_base64)
             result = "B60570 UPnP route interface differs from default route interface"
             break
         end
-        local address_output = run_command(
-            'ip -4 address show dev ' .. shell_quote(wan_if),
-            true,
-            true
-        )
+        local address_output = run_command('ip -4 address show dev ' .. shell_quote(wan_if), true, true)
         for address, prefix in tostring(address_output or ''):gmatch(
                 '%sinet%s+(%d+%.%d+%.%d+%.%d+)/(%d+)'
             ) do
@@ -2363,11 +2547,7 @@ local function discover_upnp(pcap_base64)
             result = "B35288 cannot determine UPnP discovery source subnet"
             break
         end
-        local link_output = run_command(
-            'ip link show dev ' .. shell_quote(wan_if),
-            true,
-            true
-        )
+        local link_output = run_command('ip link show dev ' .. shell_quote(wan_if), true, true)
         source_mac = link_output and link_output:match(
             'link/ether%s+([%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x])'
         )
@@ -2438,7 +2618,7 @@ local function discover_upnp(pcap_base64)
             break
         end
         capture_started = true
-        run_command('sleep 0.1', true, true)
+        sleep(0.1)
 
         -- Some older tcpreplay builds ignore the first inter-packet delay in a
         -- multi-packet PCAP.  Send one-packet PCAPs and reproduce every captured
@@ -2450,20 +2630,14 @@ local function discover_upnp(pcap_base64)
             if index > 1 then
                 local gap_us = probe_packets[index].delay_us
                     - probe_packets[index - 1].delay_us
-                local gap_seconds = gap_us / 1000000
+                local gap = gap_us / 1000000  -- in seconds
                 if capture_deadline
-                        and os.time() + math.ceil(gap_seconds) > capture_deadline then
+                        and os.time() + math.ceil(gap) > capture_deadline then
                     replay_failure = "B53263 UPnP replay would exceed capture time limit"
                     break
                 end
-                local sleep_ok = run_command(
-                    'sleep ' .. string.format('%.6f', gap_seconds),
-                    true,
-                    true
-                ) ~= nil
-                if not sleep_ok then
-                    replay_failure = "B83461 cannot wait before replay packet "
-                        .. tostring(index)
+                if not sleep(gap) then
+                    replay_failure = "B83461 sleep failed before packet " .. tostring(index)
                     break
                 end
             end
@@ -2533,11 +2707,7 @@ local function discover_upnp(pcap_base64)
                     .. tostring(response_wait_seconds) .. " seconds"
             )
         end
-        if response_wait_seconds > 0 and not run_command(
-                'sleep ' .. tostring(response_wait_seconds),
-                true,
-                true
-            ) then
+        if response_wait_seconds > 0 and not sleep(response_wait_seconds) then
             result = "B08078 cannot wait for UPnP discovery responses"
             break
         end
@@ -3012,6 +3182,7 @@ if get_uid() ~= 0 then
     os.exit(2)
 end
 if run_context == '/tmp' then
+    if not set_sleep_method() then close_log() os.exit(13) end
     -- flock is the only 'install' prerequisite, but it's probably already installed
     install_one_of('flock util-linux', 'flock')  -- ignore errors and hope it works anyhow
     local install_dir = find_install_dir()
@@ -3039,6 +3210,7 @@ end
 
 log_warning("B20392 BitBurrow base daemon, log level " .. logging_level
     .. ", version " .. file_version)
+if not set_sleep_method() then cleanup_and_exit(13) end
 install_one_of('curl', 'curl')
 install_one_of('openssl openssl-util', 'openssl')
 
