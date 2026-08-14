@@ -2288,7 +2288,6 @@ local function write_upnp_replay_pcap(
     if not source_ip_bytes then return nil, 'invalid source IP' end
     if not source_mac_bytes then return nil, 'invalid source MAC' end
     if not probes or #probes == 0 then return nil, 'no M-SEARCH packets' end
-
     local destination_ip_bytes = string.char(239, 255, 255, 250)
     local destination_mac_bytes = string.char(1, 0, 94, 127, 255, 250)
     local pcap_parts = {string.char(212, 195, 178, 161)
@@ -2321,7 +2320,6 @@ local function write_upnp_replay_pcap(
             .. uint16_be(1900)
             .. uint16_be(udp_length)
             .. uint16_be(udp_checksum)
-
         local ip_total_length = 20 + udp_length
         local ip_id_offset = probe.ip_id_offset or packet_number
         local ip_prefix = string.char(69, 0)
@@ -2610,12 +2608,11 @@ local function discover_upnp(pcap_base64)
             result = "B60572 UPnP discovery requires an Ethernet source MAC"
             break
         end
-
-        -- A capture made on Linux "any" uses SLL/SLL2 rather than Ethernet,
-        -- which some tcpreplay builds misinterpret.  Rebuild every captured
+        -- a capture made on Linux 'any' uses SLL/SLL2 rather than Ethernet,
+        -- which some tcpreplay builds misinterpret; rebuild every captured
         -- M-SEARCH as Ethernet, preserving the original inter-packet delays and
-        -- addressing all packets as this base.  SSDP replies are unicast to the
-        -- probe's source IP and UDP port.
+        -- addressing all packets as this base; SSDP replies are unicast to the
+        -- probe's source IP and UDP port
         source_port = 49152 + (os.time() % 16384)
         local packet_pcap_problem = nil
         for index, probe in ipairs(probe_packets) do
@@ -2653,8 +2650,7 @@ local function discover_upnp(pcap_base64)
             "UPnP discovery probe source: " .. source_ip
                 .. ":" .. source_port .. " on " .. wan_if
         )
-
-        -- Match replies by destination, not by an assumed responder source port.
+        -- match replies by destination, not by an assumed responder source port
         local capture_filter = 'udp and ((src host ' .. source_ip .. ' and src port '
             .. tostring(source_port)
             .. ' and dst host 239.255.255.250 and dst port 1900)'
@@ -2674,11 +2670,10 @@ local function discover_upnp(pcap_base64)
         end
         capture_started = true
         sleep(0.1)
-
-        -- Some older tcpreplay builds ignore the first inter-packet delay in a
-        -- multi-packet PCAP.  Send one-packet PCAPs and reproduce every captured
+        -- some older tcpreplay builds ignore the first inter-packet delay in a
+        -- multi-packet PCAP; send one-packet PCAPs and reproduce every captured
         -- gap explicitly so all M-SEARCH requests retain their ordering and
-        -- approximate original timing on those builds as well.
+        -- approximate original timing on those builds as well
         local replay_outputs = {}
         local replay_failure = nil
         for index, packet_path in ipairs(replay_packet_paths) do
@@ -2696,7 +2691,6 @@ local function discover_upnp(pcap_base64)
                     break
                 end
             end
-
             local tcpreplay_command = '(tcpreplay '
                 .. shell_quote('-i' .. wan_if)
                 .. ' ' .. shell_quote(packet_path)
@@ -2719,7 +2713,6 @@ local function discover_upnp(pcap_base64)
                     .. displayable(packet_output, 300)
                 break
             end
-
             local replay_output_lower = packet_output:lower()
             local failed_packets = tonumber(
                 replay_output_lower:match('failed packets:%s*(%d+)')
@@ -2749,9 +2742,8 @@ local function discover_upnp(pcap_base64)
             result = replay_failure
             break
         end
-
-        -- A device may delay a unicast response for any time from zero through
-        -- the requested MX value.  The payload parser clamps MX to UPnP's 1..5.
+        -- a device may delay a unicast response for any time from zero through
+        -- the requested MX value; the payload parser clamps MX to UPnP's 1..5
         response_wait_seconds = math.max(
             0,
             math.min(wait_seconds, capture_deadline - os.time())
@@ -2813,9 +2805,20 @@ local function discover_upnp(pcap_base64)
             observed_record_count
         )
         if #observed_probes ~= #probe_packets then
-            result = "B71304 captured replay contains "
-                .. tostring(#observed_probes) .. ' probe packets; expected '
-                .. tostring(#probe_packets)
+            local output = run_command('LC_ALL=C tcpreplay --version', true)
+            local version = 'unknown'
+            if type(output) == 'string' then
+                version = output:match('version:?%s+([0-9a-zA-Z:%.%-]+)')
+            end
+            local o_of_p = tostring(#observed_probes) .. " of " .. tostring(#probe_packets)
+            local version_string = "tcpreplay " .. version
+            if version == '4.5.2' then
+                -- this is likely a bug in tcpreplay 4.5.2; note "TX_RING was silently dropping
+                -- and reordering packets" on https://github.com/appneta/tcpreplay/releases/tag/v4.6.0
+                result = "B71304 capture contains " .. o_of_p .. " packets; " .. version_string
+            else
+                result = "B19861 capture contains " .. o_of_p .. " packets; " .. version_string
+            end
             break
         end
         local timing_differences = {}
@@ -3035,10 +3038,9 @@ local function discover_upnp(pcap_base64)
     if capture_started and captured_packets == nil and capture_path then
         captured_packets = decode_upnp_capture(capture_path)
     end
-
-    -- Keep normal discovery quiet.  On a failure or an empty discovery, retain
+    -- keep normal discovery quiet; on a failure or an empty discovery, retain
     -- the evidence that distinguishes bad task data, replay trouble, routing,
-    -- and a LAN that simply did not answer.
+    -- and a LAN that simply did not answer
     if not success or diagnostic_reason then
         log_info(
             'UPnP diagnostic triggered: '
@@ -3297,7 +3299,7 @@ local retry_wait = 7
 local retries_left = 2
 log_info("entering main ping loop")
 while true do
-    if not send_deploy_result() then 
+    if not send_deploy_result() then
         log_error("B35355 cannot send deploy results")
     end
     local ok = do_ping()
