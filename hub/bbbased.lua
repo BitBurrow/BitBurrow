@@ -1,5 +1,9 @@
 #!/usr/bin/lua
 
+-- BitBurrow base daemon
+--
+-- strings use single quotes unless they are user-visible English, e.g. logging
+
 --
 -- hard-coded at time of download in get_adopt5s_script()
 --
@@ -223,13 +227,16 @@ local function remove_path(path, log_failures)
     return nil
 end
 
+local function remove_paths(...)
+    for index = 1, select('#', ...) do
+        local path = select(index, ...)
+        remove_path(path)
+    end
+end
+
 local function chmod(path, mode)
     -- return true iff successful
-    if mode then
-        if run_command('chmod ' .. mode .. ' ' .. shell_quote(path), true) then
-            return true
-        end
-    end
+    if mode and run_command('chmod ' .. mode .. ' ' .. shell_quote(path), true) then return true end
     return nil
 end
 
@@ -276,17 +283,9 @@ end
 
 local function mkdir(path, mode, err_if_exists)
     -- return true iff successful; mode and err_if_exists are optional
-    local command = 'mkdir -p '  -- by default, okay if dir already exists
-    if err_if_exists then
-        command = 'mkdir '
-    end
-    if run_command(command .. shell_quote(path), true, true) then
-        if mode then
-            return chmod(path, mode)
-        end
-        return true
-    end
-    return nil
+    local command = err_if_exists and 'mkdir ' or 'mkdir -p '  -- by default, okay if dir already exists
+    if not run_command(command .. shell_quote(path), true, true) then return nil end
+    return not mode or chmod(path, mode)
 end
 
 local function dirname(path)
@@ -324,13 +323,7 @@ end
 local function file_mtime(path)
     -- return mtime (epoch seconds) or 0 on failure
     local stdout = run_command('date +%s -r ' .. shell_quote(path), false, true)
-    if stdout and stdout ~= '' then
-        local t = tonumber(stdout)
-        if t then
-            return t
-        end
-    end
-    return 0
+    return tonumber(stdout) or 0
 end
 
 --
@@ -340,10 +333,7 @@ end
 local function read_text_file(path, empty_if_unreadable, preserve_whitespace)
     -- return file contents, or nil on failure
     local handle = io.open(path, 'r')
-    local ret_error = nil
-    if empty_if_unreadable then
-        ret_error = ''
-    end
+    local ret_error = empty_if_unreadable and '' or nil
     if not handle then
         if empty_if_unreadable then
             log_debug("file unreadable, treating as empty: " .. path)
@@ -618,7 +608,7 @@ local function sleep_using_method(method, seconds)
         end
         return true
     end
-    return nil, 'unknown sleep method ' .. tostring(method)
+    return nil, "unknown sleep method " .. tostring(method)
 end
 
 local function set_sleep_method(test_all_methods)
@@ -633,41 +623,38 @@ local function set_sleep_method(test_all_methods)
         local finished = uptime_seconds()
         logging_level = saved_logging_level
         local elapsed = started and finished and (finished - started) or nil
-        local m_text = 'sleep method ' .. tostring(method) .. ' (' .. sleep_methods[method] .. ')'
+        local m_text = "sleep method " .. tostring(method) .. " (" .. sleep_methods[method] .. ")"
         if ok and elapsed and elapsed >= minimum_elapsed then
-            log_debug(m_text .. ' succeeded: ' .. string.format('%.2f', elapsed) .. ' seconds')
+            log_debug(m_text .. " succeeded: " .. string.format('%.2f', elapsed) .. " seconds")
             sleep_method = sleep_method or method  -- use first method that works on this device
             if not test_all_methods then
                 return true
             end
         else
-            log_debug(m_text .. ' failed: ' .. tostring(problem))
+            log_debug(m_text .. " failed: " .. tostring(problem))
         end
     end
     if sleep_method == nil then
-        log_error('B68347 no usable sleep method')
+        log_error("B68347 no usable sleep method")
         return nil
-    else
-        return true
     end
+    return true
 end
 
 local function sleep(seconds)
     if type(seconds) ~= 'number' or seconds ~= seconds
             or seconds < 0 or seconds == math.huge then
         -- the odd 'seconds ~= seconds' checks for NaN (not a number)
-        log_error('B15064 invalid sleep duration ' .. tostring(seconds))
+        log_error("B15064 invalid sleep duration " .. tostring(seconds))
         return nil
     end
     if seconds == 0 then return true end
-    if not sleep_method then
-        return nil
-    end
+    if not sleep_method then return nil end
     local ok, problem = sleep_using_method(sleep_method, seconds)
     if not ok then
         log_error(
-            'B47295 ' .. sleep_methods[sleep_method] .. ' failed to sleep for '
-                .. tostring(seconds) .. ' seconds: ' .. tostring(problem)
+            "B47295 " .. sleep_methods[sleep_method] .. " failed to sleep for "
+                .. tostring(seconds) .. " seconds: " .. tostring(problem)
         )
         return nil
     end
@@ -931,7 +918,7 @@ end
 
 local cli_verb = nil
 local running_path = arg and arg[0] or ''
-if running_path == '' then fail_early('B72200 cannot find running_path') end
+if running_path == '' then fail_early("B72200 cannot find running_path") end
 
 local function print_help()
     local program = arg and arg[0] or 'bbbased.lua'
@@ -1050,13 +1037,8 @@ local function find_install_dir()
     return nil
 end
 
-local function install_init_service(lua_path)
-    -- return nil on failure
-    -- return true after successful install or reinstall (running under /tmp)
-    local init_path = '/etc/init.d/' .. bbsubd
-    local tmp_path = make_temp_path('/tmp/')  -- not in bbsubd_tmp_dir because it doesn't exist
-    if not tmp_path then return nil end
-    local locked_runner = table.concat({
+local function locked_runner_script(lua_path)
+    return table.concat({
         'mkdir -p ' .. shell_quote(bbsubd_tmp_dir) .. ' || exit 1',
         'chmod 0700 ' .. shell_quote(bbsubd_tmp_dir) .. ' 2>/dev/null',
         'mkdir -p ' .. shell_quote(lock_dir) .. ' || exit 1',
@@ -1069,13 +1051,45 @@ local function install_init_service(lua_path)
         '        echo $$ > ' .. shell_quote(lock_dir_pid_path),
         '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' daemonize',
         '    fi',
-        '    # too noisy: logger -t ' .. shell_quote(bbsubd) .. ' "B53125 waiting for another instance to quit"',
+        '    # too noisy: logger -t ' .. shell_quote(bbsubd) .. ' "B04983 waiting for another instance to quit"',
         '    sleep 1',
         '    i=$((i + 1))',
         'done',
-        'logger -t ' .. shell_quote(bbsubd) .. ' "B64135 giving up; another instance is still running"',
+        'logger -t ' .. shell_quote(bbsubd) .. ' "B86695 giving up; another instance is still running"',
         'exit 0',
     }, '\n')
+end
+
+local function stop_runner_script(message, indent)
+    indent = indent or ''
+    return indent .. table.concat({
+        'logger -t ' .. shell_quote(bbsubd) .. ' ' .. shell_quote(message),
+        'mkdir -p ' .. shell_quote(lock_dir),
+        'touch ' .. shell_quote(lock_dir_stop_request_path),
+        'for i in 0 1 2 3 4 5 6; do',
+        '    pid="$(cat ' .. shell_quote(lock_dir_pid_path) .. ' 2>/dev/null)"',
+        '    [ -z "$pid" ] && break',
+        '    kill -0 "$pid" 2>/dev/null || break',
+        '    sleep 1',
+        'done',
+        '# do not remove lock_dir or lock_file_path here',
+    }, '\n' .. indent)
+end
+
+local function remove_temporary_installer()
+    -- remove installer, but only if in /tmp/
+    if running_path:sub(1, 5) ~= '/tmp/' then return end
+    remove_paths(running_path, dirname(running_path))
+end
+
+local function install_init_service(lua_path)
+    -- return nil on failure
+    -- return true after successful install or reinstall (running under /tmp)
+    local init_path = '/etc/init.d/' .. bbsubd
+    local tmp_path = make_temp_path('/tmp/')  -- not in bbsubd_tmp_dir because it doesn't exist
+    if not tmp_path then return nil end
+    local locked_runner = locked_runner_script(lua_path)
+    local stop_runner = stop_runner_script('stop_service called from procd', '    ')
     local init_text = table.concat({
         '#!/bin/sh /etc/rc.common',
         '',
@@ -1092,29 +1106,14 @@ local function install_init_service(lua_path)
         '    procd_close_instance',
         '}',
         '',
-        'stop_service() {',
-        '    logger -t ' .. bbsubd .. ' "stop_service called from procd"',
-        '    mkdir -p ' .. shell_quote(lock_dir),
-        '    touch ' .. shell_quote(lock_dir_stop_request_path),
-        '    for i in 0 1 2 3 4 5 6; do',
-        '        pid="$(cat ' .. shell_quote(lock_dir_pid_path) .. ' 2>/dev/null)"',
-        '        [ -z "$pid" ] && break',
-        '        kill -0 "$pid" 2>/dev/null || break',
-        '        sleep 1',
-        '    done',
-        '    # do not remove lock_dir or lock_file_path here',
+        'stop_service() {\n' .. stop_runner,
         '}',
         '',
     }, '\n')
-    if not write_text_file(tmp_path, init_text) then
-        remove_path(tmp_path)
-        return nil
-    end
-    if not file_copy(tmp_path, init_path, '0755') then
-        remove_path(tmp_path)
-        return nil
-    end
+    local file_installed = write_text_file(tmp_path, init_text)
+        and file_copy(tmp_path, init_path, '0755')
     remove_path(tmp_path)
+    if not file_installed then return nil end
     if not file_copy(running_path, lua_path, '0644') then return nil end
     if not run_command(shell_quote(init_path) .. ' enabled', true, true) then
         if not run_command(shell_quote(init_path) .. ' enable') then
@@ -1129,10 +1128,7 @@ local function install_init_service(lua_path)
         log_debug("successfully reinstalled; exiting")
     end
     -- new service should run now; don't use this here: dofile(lua_path)
-    if running_path:sub(1, 5) == '/tmp/' then  -- remove installer, but only if in /tmp/
-        remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
-        remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
-    end
+    remove_temporary_installer()
     return true
 end
 
@@ -1147,48 +1143,11 @@ local function install_systemd_service(lua_path)
     local tmp_start_path = make_temp_path('/tmp/')
     local tmp_stop_path = make_temp_path('/tmp/')
     if not tmp_service_path or not tmp_start_path or not tmp_stop_path then
-        remove_path(tmp_service_path)
-        remove_path(tmp_start_path)
-        remove_path(tmp_stop_path)
+        remove_paths(tmp_service_path, tmp_start_path, tmp_stop_path)
         return nil
     end
-    local start_text = table.concat({
-        '#!/bin/sh',
-        'mkdir -p ' .. shell_quote(bbsubd_tmp_dir) .. ' || exit 1',
-        'chmod 0700 ' .. shell_quote(bbsubd_tmp_dir) .. ' 2>/dev/null',
-        'mkdir -p ' .. shell_quote(lock_dir) .. ' || exit 1',
-        'chmod 0700 ' .. shell_quote(lock_dir) .. ' 2>/dev/null',
-        'exec 9>' .. shell_quote(lock_file_path) .. ' || exit 1',
-        'i=0',
-        'while [ "$i" -lt 7 ]; do',
-        '    if flock -n 9; then',
-        '        rm -f ' .. shell_quote(lock_dir_stop_request_path),
-        '        echo $$ > ' .. shell_quote(lock_dir_pid_path),
-        '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' daemonize',
-        '    fi',
-        '    # too noisy: logger -t ' .. shell_quote(bbsubd) .. ' "B22393 waiting for another instance to quit"',
-        '    sleep 1',
-        '    i=$((i + 1))',
-        'done',
-        'logger -t ' .. shell_quote(bbsubd) .. ' "B44696 giving up; another instance is still running"',
-        'exit 0',
-        '',
-    }, '\n')
-    local stop_text = table.concat({
-        '#!/bin/sh',
-        'logger -t ' .. shell_quote(bbsubd) .. ' "stop called from systemd"',
-        'mkdir -p ' .. shell_quote(lock_dir),
-        'touch ' .. shell_quote(lock_dir_stop_request_path),
-        'for i in 0 1 2 3 4 5 6; do',
-        '    pid="$(cat ' .. shell_quote(lock_dir_pid_path) .. ' 2>/dev/null)"',
-        '    [ -z "$pid" ] && break',
-        '    kill -0 "$pid" 2>/dev/null || break',
-        '    sleep 1',
-        'done',
-        '# do not remove lock_dir or lock_file_path here',
-        'exit 0',
-        '',
-    }, '\n')
+    local start_text = '#!/bin/sh\n' .. locked_runner_script(lua_path) .. '\n'
+    local stop_text = '#!/bin/sh\n' .. stop_runner_script('stop called from systemd') .. '\nexit 0\n'
     local service_text = table.concat({
         '[Unit]',
         'Description=' .. bbsubd .. ' daemon',
@@ -1208,45 +1167,14 @@ local function install_systemd_service(lua_path)
         'WantedBy=multi-user.target',
         '',
     }, '\n')
-    if not write_text_file(tmp_start_path, start_text) then
-        remove_path(tmp_service_path)
-        remove_path(tmp_start_path)
-        remove_path(tmp_stop_path)
-        return nil
-    end
-    if not write_text_file(tmp_stop_path, stop_text) then
-        remove_path(tmp_service_path)
-        remove_path(tmp_start_path)
-        remove_path(tmp_stop_path)
-        return nil
-    end
-    if not write_text_file(tmp_service_path, service_text) then
-        remove_path(tmp_service_path)
-        remove_path(tmp_start_path)
-        remove_path(tmp_stop_path)
-        return nil
-    end
-    if not file_copy(tmp_start_path, start_script_path, '0755') then
-        remove_path(tmp_service_path)
-        remove_path(tmp_start_path)
-        remove_path(tmp_stop_path)
-        return nil
-    end
-    if not file_copy(tmp_stop_path, stop_script_path, '0755') then
-        remove_path(tmp_service_path)
-        remove_path(tmp_start_path)
-        remove_path(tmp_stop_path)
-        return nil
-    end
-    if not file_copy(tmp_service_path, service_path, '0644') then
-        remove_path(tmp_service_path)
-        remove_path(tmp_start_path)
-        remove_path(tmp_stop_path)
-        return nil
-    end
-    remove_path(tmp_service_path)
-    remove_path(tmp_start_path)
-    remove_path(tmp_stop_path)
+    local files_installed = write_text_file(tmp_start_path, start_text)
+        and write_text_file(tmp_stop_path, stop_text)
+        and write_text_file(tmp_service_path, service_text)
+        and file_copy(tmp_start_path, start_script_path, '0755')
+        and file_copy(tmp_stop_path, stop_script_path, '0755')
+        and file_copy(tmp_service_path, service_path, '0644')
+    remove_paths(tmp_service_path, tmp_start_path, tmp_stop_path)
+    if not files_installed then return nil end
     if not file_copy(running_path, lua_path, '0644') then return nil end
     remove_path('/etc/init.d/' .. bbsubd)
     if not run_command('systemctl daemon-reload') then return nil end
@@ -1263,34 +1191,18 @@ local function install_systemd_service(lua_path)
         log_debug("successfully reinstalled; exiting")
     end
     -- new service should run now; don't use this here: dofile(lua_path)
-    if running_path:sub(1, 5) == '/tmp/' then  -- remove installer, but only if in /tmp/
-        remove_path(running_path)  -- e.g. /tmp/bbbased.ECEncO/bbbased.lua
-        remove_path(dirname(running_path))  -- e.g. /tmp/bbbased.ECEncO; harmless if not empty
-    end
+    remove_temporary_installer()
     return true
 end
 
-local platform = nil
-if run_command('command -v systemctl', true, true) then
-    platform = 'sysd'  -- must match class Platform() in db.py
-else
-    platform = 'init'
-end
+-- values must match class Platform() in db.py
+local platform = run_command('command -v systemctl', true, true) and 'sysd' or 'init'
 
 local function install_daemon_service(lua_path)
     if platform == 'sysd' then
         return install_systemd_service(lua_path)
     else  -- 'init'
         return install_init_service(lua_path)
-    end
-end
-
-local function daemon_ctl(action)  -- action is 'start', 'stop', or 'restart'
-    if platform == 'sysd' then
-        return run_command('systemctl ' .. action .. ' ' .. shell_quote(bbsubd .. '.service'))
-    else
-        local daemon_path = '/etc/init.d/' .. bbsubd
-        return run_command(shell_quote(daemon_path) .. ' ' .. action)  -- will log_error() on failure
     end
 end
 
@@ -1327,7 +1239,7 @@ local function restart_after_update()
 end
 
 local packager_cmds = nil
-local spec = {
+local packager_specs = {
     {'apt-get', {update = {'apt-get', 'update'}, install = {'apt-get', 'install', '-y'}}},
     {'apk', {update = {'apk', 'update'}, install = {'apk', 'add'}}},
     {'opkg', {update = {'opkg', 'update'}, install = {'opkg', 'install'}}},
@@ -1340,8 +1252,8 @@ local unpack_fn = table.unpack or unpack
 
 local function packager(action, arg)
     if not packager_cmds then  -- find first valid package manager and cache it for future calls
-        for i = 1, #spec do
-            local candidate = spec[i]
+        for i = 1, #packager_specs do
+            local candidate = packager_specs[i]
             if run_command('command -v ' .. candidate[1], true, true) then
                 packager_cmds = candidate[2]
                 break
@@ -1361,7 +1273,7 @@ local function packager(action, arg)
     return run_command(table.concat(parts, ' '), true, true)
 end
 
-local install_one_of_cache = {}  --cache results of successful calls to install_one_of()
+local install_one_of_cache = {}  -- cache results of successful calls to install_one_of()
 
 local function install_one_of(package_list, command)
     local package_cache = install_one_of_cache[package_list]
@@ -1370,8 +1282,7 @@ local function install_one_of(package_list, command)
     end
     package_cache = package_cache or {}
     install_one_of_cache[package_list] = package_cache
-    local retry = 0
-    while retry < 3 do
+    for retry = 0, 2 do  -- 0, 1, 2
         if run_command('command -v ' .. command, true, true) then
             package_cache[command] = true
             return true
@@ -1379,7 +1290,7 @@ local function install_one_of(package_list, command)
         if retry >= 2 then  -- before the last iteration, wait
             sleep(75)
         end
-        if retry >= 1 then  -- before the last 2 iternations, run an update
+        if retry >= 1 then  -- before the last 2 iterations, run an update
             packager('update')
         end
         for pkg in package_list:gmatch("%S+") do
@@ -1390,7 +1301,6 @@ local function install_one_of(package_list, command)
                 return true
             end
         end
-        retry = retry + 1
     end
     log_error("B80574 cannot install package for " .. command)
     -- don't update package_cache[command] so that next call will retry
@@ -1493,15 +1403,10 @@ local function delete_adopt5c_code(path)
     local new_content = table.concat(kept)
     local temp_path = make_temp_path('/tmp')
     if not temp_path then return nil end
-    if not write_text_file(temp_path, new_content) then
-        remove_path(temp_path)
-        return nil
-    end
-    if not chmod(temp_path, mode) then
-        remove_path(temp_path)
-        return nil
-    end
-    if not run_command('mv ' .. shell_quote(temp_path) .. ' ' .. shell_quote(path), true) then
+    local replaced = write_text_file(temp_path, new_content)
+        and chmod(temp_path, mode)
+        and run_command('mv ' .. shell_quote(temp_path) .. ' ' .. shell_quote(path), true)
+    if not replaced then
         remove_path(temp_path)
         return nil
     end
@@ -1537,8 +1442,7 @@ local function ensure_auth_keys()
         true
     )
     if not output then
-        remove_path(auth_privkey_path)
-        remove_path(auth_pubkey_path)
+        remove_paths(auth_privkey_path, auth_pubkey_path)
         return nil
     end
     chmod(auth_privkey_path, '0600')  -- ignore errors, but they do get logged
@@ -1550,8 +1454,7 @@ local function ensure_auth_keys()
         true
     )
     if not output then
-        remove_path(auth_privkey_path)
-        remove_path(auth_pubkey_path)
+        remove_paths(auth_privkey_path, auth_pubkey_path)
         return nil
     end
     return true
@@ -1573,12 +1476,21 @@ local function ensure_wg_keys()
         true
     )
     if not output then
-        remove_path(wg_privkey_path)
-        remove_path(wg_pubkey_path)
+        remove_paths(wg_privkey_path, wg_pubkey_path)
         return nil
     end
     chmod(wg_privkey_path, '0600')  -- ignore errors, but they do get logged
     return true
+end
+
+local function next_retry_state(retry_wait, retries_left, operation)
+    retries_left = retries_left - 1
+    if retries_left > 0 then return retry_wait, retries_left end
+    retry_wait = math.min(retry_wait * 2, 3600)
+    log_info(
+        "increased " .. operation .. " retry wait to " .. tostring(retry_wait) .. " seconds"
+    )
+    return retry_wait, 2
 end
 
 local function do_adopt6c()
@@ -1587,9 +1499,8 @@ local function do_adopt6c()
     -- return nil on permanent failure
     -- retry forever on communication failure
     local auth_mtime = file_mtime(auth_privkey_path)
-    local wg_mtime = file_mtime(wg_privkey_path)
     local uploaded_mtime = file_mtime(pubkeys_uploaded_path)
-    if uploaded_mtime >= auth_mtime and uploaded_mtime >= wg_mtime then
+    if uploaded_mtime >= auth_mtime then
         -- above, use '>=' and not '>' to avoid race condition and disabled client
         log_info("public key already marked as uploaded")
         return false  -- these public keys were previously uploaded
@@ -1625,8 +1536,7 @@ local function do_adopt6c()
         local response_path = make_temp_path()
         if not request_path or not response_path then
             -- log_error() already called from make_temp_path()
-            remove_path(request_path)
-            remove_path(response_path)
+            remove_paths(request_path, response_path)
             return nil
         end
         local request_body = '{'
@@ -1641,9 +1551,8 @@ local function do_adopt6c()
             .. '}'
         local write_ok = write_text_file(request_path, request_body, '0600')
         if not write_ok then
-            -- log_errror() already called from write_text_file()
-            remove_path(request_path)
-            remove_path(response_path)
+            -- log_error() already called from write_text_file()
+            remove_paths(request_path, response_path)
             return nil
         end
         local curl_command = 'curl -sS --connect-timeout 20 --max-time 90 '
@@ -1657,8 +1566,7 @@ local function do_adopt6c()
             .. shell_quote(response_path)
         local curl_output = run_command(curl_command, true)
         local response_body = read_text_file(response_path, true)
-        remove_path(request_path)
-        remove_path(response_path)
+        remove_paths(request_path, response_path)
         if curl_output and response_body then
             log_debug("adopt6c response body: " .. displayable(response_body, 60))
             local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
@@ -1681,15 +1589,7 @@ local function do_adopt6c()
             log_warning("adopt6c attempt failed without a usable response; will retry")
         end
         sleep_with_jitter(retry_wait, 0.5)
-        retries_left = retries_left - 1
-        if retries_left <= 0 then
-            retry_wait = retry_wait * 2
-            if retry_wait > 3600 then
-                retry_wait = 3600
-            end
-            retries_left = 2
-            log_info("increased adopt6c retry wait to " .. tostring(retry_wait) .. " seconds")
-        end
+        retry_wait, retries_left = next_retry_state(retry_wait, retries_left, 'adopt6c')
     end
     log_error("B49403 should never get here")
 end
@@ -1736,29 +1636,32 @@ local function build_ping_request()
     return request_body
 end
 
+local signature_algorithms = {
+    sha256 = {
+        name = 'rsa-pss-sha256',
+        digest = 'sha256',
+        mgf1 = 'sha256',
+        saltlen = '32',
+    },
+    sha512 = {
+        name = 'rsa-pss-sha512',
+        digest = 'sha512',
+        mgf1 = 'sha512',
+        saltlen = '64',
+    },
+}
+
 local function choose_signature_algorithm()
     -- prefer RFC 9421 rsa-pss-sha512; fall back to non-standard rsa-pss-sha256
     local probe_path = make_temp_path()
     local sig_path = make_temp_path()
     if not probe_path or not sig_path then
-        remove_path(probe_path)
-        remove_path(sig_path)
-        return {
-            name = 'rsa-pss-sha256',
-            digest = 'sha256',
-            mgf1 = 'sha256',
-            saltlen = '32',
-        }
+        remove_paths(probe_path, sig_path)
+        return signature_algorithms.sha256
     end
     if not write_text_file(probe_path, 'probe', '0600') then
-        remove_path(probe_path)
-        remove_path(sig_path)
-        return {
-            name = 'rsa-pss-sha256',
-            digest = 'sha256',
-            mgf1 = 'sha256',
-            saltlen = '32',
-        }
+        remove_paths(probe_path, sig_path)
+        return signature_algorithms.sha256
     end
     local ok = run_command(
         'openssl dgst -sha512 '
@@ -1774,23 +1677,12 @@ local function choose_signature_algorithm()
         true,
         true
     )
-    remove_path(probe_path)
-    remove_path(sig_path)
-    if ok then
-        return {
-            name = 'rsa-pss-sha512',
-            digest = 'sha512',
-            mgf1 = 'sha512',
-            saltlen = '64',
-        }
-    end
-    log_warning('OpenSSL lacks rsa-pss-sha512 support; falling back to non-standard rsa-pss-sha256')
-    return {
-        name = 'rsa-pss-sha256',
-        digest = 'sha256',
-        mgf1 = 'sha256',
-        saltlen = '32',
-    }
+    remove_paths(probe_path, sig_path)
+    if ok then return signature_algorithms.sha512 end
+    log_warning(
+        'OpenSSL lacks rsa-pss-sha512 support; falling back to non-standard rsa-pss-sha256'
+    )
+    return signature_algorithms.sha256
 end
 
 local function send_signed_jsonrpc(request_body)
@@ -1840,7 +1732,8 @@ local function send_signed_jsonrpc(request_body)
         local keyid_value = http_quoted_string_escape(subd)
         local nonce_param_value = http_quoted_string_escape(nonce_value)
         local sigalg = choose_signature_algorithm()
-        local signature_params = '("@method" "@authority" "@target-uri" "content-type" "content-digest" "date");created='
+        local signature_params = '("@method" "@authority" "@target-uri" "content-type" '
+            .. '"content-digest" "date");created='
             .. created_value
             .. ';keyid="'
             .. keyid_value
@@ -1881,7 +1774,7 @@ local function send_signed_jsonrpc(request_body)
             true
         )
         if not signature_b64 then break end
-        log_debug("sending signed ping request to " .. api_url)
+        log_debug("sending signed JSON-RPC request to " .. api_url)
         -- hub max timeout is 90 seconds; see clamp_wait_seconds() and others
         local curl_command = 'curl -sS --connect-timeout 20 --max-time 100 '
             .. '-X POST '
@@ -1911,10 +1804,7 @@ local function send_signed_jsonrpc(request_body)
         -- end
         result = response_body
     until true
-    remove_path(body_path)
-    remove_path(sig_base_path)
-    remove_path(sig_bin_path)
-    remove_path(response_path)
+    remove_paths(body_path, sig_base_path, sig_bin_path, response_path)
     return result
 end
 
@@ -2120,21 +2010,37 @@ local function ipv4_in_subnet(address, subnet_address, prefix_length)
         == math.floor(subnet_number / subnet_size)
 end
 
+local function get_upnp_route_info()
+    local info = {gateway = ''}
+    info.wan_route = run_command('ip route show default', true, true)
+    local default_route = info.wan_route and ('\n' .. info.wan_route):match('\n(default[^\r\n]*)')
+    if not default_route then return info, "B73361 cannot determine default route" end
+    info.wan_if = default_route:match('%sdev%s+(%S+)')
+    info.gateway = default_route:match('%svia%s+(%S+)') or ''
+    if not info.wan_if or info.wan_if == '' then return info, "B86262 cannot determine wan_if" end
+    local route_target = info.gateway ~= '' and info.gateway or '239.255.255.250'
+    info.source_route = run_command('ip -4 route get ' .. shell_quote(route_target), true, true)
+    info.source_ip = info.source_route and info.source_route:match('%ssrc%s+(%d+%.%d+%.%d+%.%d+)')
+    local source_if = info.source_route and info.source_route:match('%sdev%s+(%S+)')
+    if source_if and source_if ~= info.wan_if then return info, "B60570 route interfaces differ" end
+    local ip_output = run_command('ip -4 address show dev ' .. shell_quote(info.wan_if), true, true)
+    for address, prefix in tostring(ip_output or ''):gmatch('%sinet%s+(%d+%.%d+%.%d+%.%d+)/(%d+)') do
+        if not info.source_ip then info.source_ip = address end
+        if address == info.source_ip then info.source_prefix = tonumber(prefix) break end
+    end
+    if not info.source_ip then return info, "B60571 cannot determine UPnP source IP" end
+    if not info.source_prefix then return info, "B35288 cannot determine UPnP source subnet" end
+    return info
+end
+
 local function mac_bytes(address)
-    if not address or not address:match(
-            '^[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]$'
-        ) then
+    if not address or not address:match('^[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]$') then
         return nil
     end
     local octets = {}
-    for octet in address:gmatch('[%x][%x]') do
-        octets[#octets + 1] = tonumber(octet, 16)
-    end
+    for octet in address:gmatch('[%x][%x]') do octets[#octets + 1] = tonumber(octet, 16) end
     if #octets ~= 6 then return nil end
-    return string.char(
-        octets[1], octets[2], octets[3],
-        octets[4], octets[5], octets[6]
-    )
+    return string.char(octets[1], octets[2], octets[3], octets[4], octets[5], octets[6])
 end
 
 local min_upnp_probe_packets = 2
@@ -2149,22 +2055,15 @@ local max_upnp_result_bytes = 18000
 
 local function upnp_url_policy(url, gateway, source_ip, source_prefix)
     -- return allowed, gateway match, and host; allowed is nil for malformed URLs
-    if type(url) ~= 'string' or #url > 2048
-            or url:find('[%c%s]')
-            or not url:match('^https?://') then
+    if type(url) ~= 'string' or #url > 2048 or url:find('[%c%s]') or not url:match('^https?://') then
         return nil, false, nil
     end
     local host = http_url_host(url)
     if not host then return nil, false, nil end
     local host_number = ipv4_number(host)
     local gateway_number = ipv4_number(gateway)
-    local matches_gateway = host_number and gateway_number
-        and host_number == gateway_number
-    local matches_subnet = ipv4_in_subnet(
-        host,
-        source_ip,
-        source_prefix
-    )
+    local matches_gateway = host_number and gateway_number and host_number == gateway_number
+    local matches_subnet = ipv4_in_subnet(host, source_ip, source_prefix)
     return matches_gateway or matches_subnet, matches_gateway, host
 end
 
@@ -2199,17 +2098,12 @@ local function filter_upnp_locations(
                             )
                     )
                 elseif rejected_location_count == 9 then
-                    log_warning(
-                        "B92150 additional rejected UPnP LOCATION warnings omitted"
-                    )
+                    log_warning("B92150 additional rejected UPnP LOCATION warnings omitted")
                 end
             else
                 local accepted_count = #locations + #fallback_locations
-                if accepted_count >= max_upnp_locations
-                        and not location_limit_warned then
-                    log_warning(
-                        "B06812 UPnP LOCATION limit reached; ignoring additional URLs"
-                    )
+                if accepted_count >= max_upnp_locations and not location_limit_warned then
+                    log_warning("B06812 UPnP LOCATION limit reached; ignoring additional URLs")
                     location_limit_warned = true
                 end
                 if matches_gateway and accepted_count >= max_upnp_locations
@@ -2218,22 +2112,17 @@ local function filter_upnp_locations(
                     accepted_count = accepted_count - 1
                 end
                 if accepted_count < max_upnp_locations then
-                    local destination = matches_gateway
-                        and locations or fallback_locations
+                    local destination = matches_gateway and locations or fallback_locations
                     destination[#destination + 1] = location
                 end
             end
         end
     end
-    for _, location in ipairs(fallback_locations) do
-        locations[#locations + 1] = location
-    end
+    for _, location in ipairs(fallback_locations) do locations[#locations + 1] = location end
     return locations, response_count
 end
 
-local function read_upnp_control_url(
-        location, seconds_left, gateway, source_ip, source_prefix
-    )
+local function read_upnp_control_url(location, seconds_left, gateway, source_ip, source_prefix)
     local xml_path = make_temp_path()
     if not xml_path then return nil, false end
     local request_timeout = math.max(1, math.min(3, seconds_left or 3))
@@ -2261,10 +2150,7 @@ local function read_upnp_control_url(
                     log_info(
                         "B24547 dropping UPnP control URL outside "
                             .. "gateway/LAN subnet or with invalid authority; host="
-                            .. displayable(
-                                json_escape(control_host or '(invalid)'),
-                                100
-                            )
+                            .. displayable(json_escape(control_host or '(invalid)'), 100)
                     )
                     control_url = nil
                 end
@@ -2275,9 +2161,7 @@ local function read_upnp_control_url(
     return control_url, description_read
 end
 
-local function read_upnp_igds(
-        locations, gateway, source_ip, source_prefix
-    )
+local function read_upnp_igds(locations, gateway, source_ip, source_prefix)
     local igds = {}
     local seen_control_urls = {}
     local descriptions_read = 0
@@ -2286,9 +2170,7 @@ local function read_upnp_igds(
     for _, location in ipairs(locations) do
         if #igds >= max_upnp_igds then
             if not igd_limit_warned then
-                log_warning(
-                    "B90866 UPnP IGD limit reached; ignoring additional descriptions"
-                )
+                log_warning("B90866 UPnP IGD limit reached; ignoring additional descriptions")
                 igd_limit_warned = true
             end
             break
@@ -2309,16 +2191,8 @@ local function read_upnp_igds(
         local found_gateway_igd = false
         if control_url and not seen_control_urls[control_url] then
             seen_control_urls[control_url] = true
-            igds[#igds + 1] = {
-                location = location,
-                control_url = control_url,
-            }
-            local _, matches_gateway = upnp_url_policy(
-                location,
-                gateway,
-                source_ip,
-                source_prefix
-            )
+            igds[#igds + 1] = {location = location, control_url = control_url, }
+            local _, matches_gateway = upnp_url_policy(location, gateway, source_ip, source_prefix)
             found_gateway_igd = matches_gateway
         end
         if found_gateway_igd then break end
@@ -2341,10 +2215,7 @@ local function upnp_result_json(gateway, method, response_count, igds)
             .. '}'
         local separator_bytes = #igd_json > 0 and 1 or 0
         if result_bytes + separator_bytes + #entry > max_upnp_result_bytes then
-            log_warning(
-                "B75089 UPnP discovery result size limit reached; "
-                    .. "ignoring additional IGDs"
-            )
+            log_warning("B75089 UPnP discovery result size limit reached; ignoring additional IGDs")
             break
         end
         igd_json[#igd_json + 1] = entry
@@ -2373,20 +2244,13 @@ local function pcap_header_info(data)
         or (magic[1] == 161 and magic[2] == 178 and magic[3] == 60 and magic[4] == 77)
     if not little_endian and not big_endian then
         return nil, string.format(
-            'unrecognized magic %02x%02x%02x%02x',
-            magic[1], magic[2], magic[3], magic[4]
+            'unrecognized magic %02x%02x%02x%02x', magic[1], magic[2], magic[3], magic[4]
         )
     end
-    local nanosecond =
-        (magic[1] == 77 and magic[2] == 60)
-        or (magic[3] == 60 and magic[4] == 77)
+    local nanosecond = (magic[1] == 77 and magic[2] == 60) or (magic[3] == 60 and magic[4] == 77)
     local network = uint32_at(data, 21, little_endian)
     if not network then return nil, 'short network field' end
-    return {
-        little_endian = little_endian,
-        nanosecond = nanosecond,
-        linktype = network % 65536,
-    }
+    return {little_endian = little_endian, nanosecond = nanosecond, linktype = network % 65536, }
 end
 
 local function extract_upnp_msearch_payload(packet_data)
@@ -2409,12 +2273,8 @@ local function extract_upnp_msearch_payload(packet_data)
         else
             local payload = packet_data:sub(payload_start, payload_end)
             local upper = payload:upper()
-            local expected_host = upper:find(
-                '[\r\n]HOST:%s*239%.255%.255%.250:1900'
-            )
-            local expected_man = upper:find(
-                '[\r\n]MAN:%s*"SSDP:DISCOVER"'
-            )
+            local expected_host = upper:find('[\r\n]HOST:%s*239%.255%.255%.250:1900')
+            local expected_man = upper:find('[\r\n]MAN:%s*"SSDP:DISCOVER"')
             local st = upper:match('[\r\n]ST:%s*([^\r\n]+)')
             if expected_host and expected_man and st and #st <= 256 then
                 st = st:gsub('%s+$', '')
@@ -2429,8 +2289,8 @@ local function extract_upnp_msearch_payload(packet_data)
 end
 
 local function extract_upnp_msearches(pcap_data)
-    -- Link-layer headers vary when tcpdump captures on "any".  Parse the PCAP
-    -- record boundaries and timestamps, then extract every stable SSDP payload.
+    -- link-layer headers vary when tcpdump captures on 'any'; parse the PCAP
+    -- record boundaries and timestamps, then extract every stable SSDP payload
     local header, header_problem = pcap_header_info(pcap_data)
     if not header then return nil, header_problem end
     local probes = {}
@@ -2440,19 +2300,11 @@ local function extract_upnp_msearches(pcap_data)
     local first_fraction_us = nil
     local max_mx = 1
     while record_offset <= #pcap_data do
-        if #pcap_data - record_offset + 1 < 16 then
-            return nil, 'truncated PCAP record header'
-        end
+        if #pcap_data - record_offset + 1 < 16 then return nil, 'truncated PCAP record header' end
         record_count = record_count + 1
-        local timestamp_sec = uint32_at(
-            pcap_data, record_offset, header.little_endian
-        )
-        local timestamp_fraction = uint32_at(
-            pcap_data, record_offset + 4, header.little_endian
-        )
-        local included_length = uint32_at(
-            pcap_data, record_offset + 8, header.little_endian
-        )
+        local timestamp_sec = uint32_at(pcap_data, record_offset, header.little_endian)
+        local timestamp_fraction = uint32_at(pcap_data, record_offset + 4, header.little_endian)
+        local included_length = uint32_at(pcap_data, record_offset + 8, header.little_endian)
         if not timestamp_sec or not timestamp_fraction or not included_length then
             return nil, 'truncated PCAP record fields'
         end
@@ -2467,11 +2319,9 @@ local function extract_upnp_msearches(pcap_data)
         end
         local packet_data = pcap_data:sub(packet_start, packet_end)
         if packet_data:find('M-SEARCH * HTTP/1.1', 1, true) then
-            local payload, problem, mx, st =
-                extract_upnp_msearch_payload(packet_data)
+            local payload, problem, mx, st = extract_upnp_msearch_payload(packet_data)
             if not payload then
-                return nil, 'record ' .. tostring(record_count) .. ': '
-                    .. tostring(problem)
+                return nil, 'record ' .. tostring(record_count) .. ': ' .. tostring(problem)
             end
             local fraction_us = header.nanosecond
                 and math.floor(timestamp_fraction / 1000)
@@ -2480,8 +2330,7 @@ local function extract_upnp_msearches(pcap_data)
                 first_sec = timestamp_sec
                 first_fraction_us = fraction_us
             end
-            local delay_us = (timestamp_sec - first_sec) * 1000000
-                + fraction_us - first_fraction_us
+            local delay_us = (timestamp_sec - first_sec) * 1000000 + fraction_us - first_fraction_us
             if delay_us < 0 then
                 return nil, 'M-SEARCH packet timestamps are not monotonic'
             end
@@ -2503,9 +2352,7 @@ local function extract_upnp_msearches(pcap_data)
     return probes, nil, max_mx, record_count
 end
 
-local function write_upnp_replay_pcap(
-        path, probes, source_ip, source_mac, source_port
-    )
+local function write_upnp_replay_pcap(path, probes, source_ip, source_mac, source_port)
     local source_ip_bytes = ipv4_bytes(source_ip)
     local source_mac_bytes = mac_bytes(source_mac)
     if not source_ip_bytes then return nil, 'invalid source IP' end
@@ -2523,9 +2370,7 @@ local function write_upnp_replay_pcap(
     local replay_start_sec = os.time()
     for packet_number, probe in ipairs(probes) do
         local payload = probe.payload
-        if not payload or #payload > 1472 then
-            return nil, 'M-SEARCH payload is too large'
-        end
+        if not payload or #payload > 1472 then return nil, 'M-SEARCH payload is too large' end
         local udp_length = 8 + #payload
         local udp_without_checksum = uint16_be(source_port)
             .. uint16_be(1900)
@@ -2535,9 +2380,7 @@ local function write_upnp_replay_pcap(
             .. destination_ip_bytes
             .. string.char(0, 17)
             .. uint16_be(udp_length)
-        local udp_checksum = internet_checksum(
-            pseudo_header .. udp_without_checksum .. payload
-        )
+        local udp_checksum = internet_checksum(pseudo_header .. udp_without_checksum .. payload)
         if udp_checksum == 0 then udp_checksum = 65535 end
         local udp_header = uint16_be(source_port)
             .. uint16_be(1900)
@@ -2554,9 +2397,7 @@ local function write_upnp_replay_pcap(
             .. source_ip_bytes
             .. destination_ip_bytes
         local ip_checksum = internet_checksum(ip_prefix)
-        local ip_header = ip_prefix:sub(1, 10)
-            .. uint16_be(ip_checksum)
-            .. ip_prefix:sub(13)
+        local ip_header = ip_prefix:sub(1, 10) .. uint16_be(ip_checksum) .. ip_prefix:sub(13)
         local ethernet_frame = destination_mac_bytes
             .. source_mac_bytes
             .. uint16_be(2048)
@@ -2588,10 +2429,7 @@ local function log_upnp_diagnostic(label, value, max_lines)
     local line_number = 0
     for line in (value .. '\n'):gmatch('(.-)\n') do
         line_number = line_number + 1
-        log_info(
-            'UPnP diagnostic ' .. label .. '[' .. line_number .. ']: '
-                .. displayable(line, 700)
-        )
+        log_info('UPnP diagnostic ' .. label .. '[' .. line_number .. ']: ' .. displayable(line, 700))
         if line_number >= max_lines then
             log_info('UPnP diagnostic ' .. label .. ': (remaining lines omitted)')
             break
@@ -2608,12 +2446,10 @@ local function start_upnp_capture(interface, capture_path, status_path, filter)
         .. ' 2>>' .. shell_quote(status_path)
         .. ' & echo $!'
     local pid = normalize_pid(run_command(command, true, true))
-    if not pid then
-        return nil, 'cannot start tcpdump: ' .. display_text_file(status_path)
-    end
-    -- Use only POSIX shell built-ins plus sleep/kill so this also works on small
-    -- router distributions without a separate timeout utility.  Rechecking the
-    -- process start time prevents the watchdog from signaling a reused PID.
+    if not pid then return nil, 'cannot start tcpdump: ' .. display_text_file(status_path) end
+    -- use only POSIX shell built-ins plus sleep/kill so this also works on small
+    -- router distributions without a separate timeout utility; rechecking the
+    -- process start time prevents the watchdog from signaling a reused PID
     local watchdog_command = '(IFS= read -r upnp_original_stat < /proc/'
         .. pid .. '/stat || exit 0; set -- $upnp_original_stat; shift 21; '
         .. 'upnp_original_start=$1; sleep ' .. tostring(max_upnp_capture_seconds) .. '; '
@@ -2623,11 +2459,7 @@ local function start_upnp_capture(interface, capture_path, status_path, filter)
         .. shell_quote('bbbased: UPnP capture time limit reached')
         .. ' >>' .. shell_quote(status_path) .. '; kill -TERM ' .. pid
         .. ' 2>/dev/null; fi) </dev/null >/dev/null 2>&1 & echo $!'
-    local watchdog_pid = normalize_pid(run_command(
-        watchdog_command,
-        true,
-        true
-    ))
+    local watchdog_pid = normalize_pid(run_command(watchdog_command, true, true))
     if not watchdog_pid then
         kill_process(pid)
         return nil, 'cannot start tcpdump time-limit watchdog'
@@ -2667,11 +2499,7 @@ local function capture_packet_count(status)
 end
 
 local function capture_time_limit_reached(status)
-    return tostring(status or ''):find(
-        'bbbased: UPnP capture time limit reached',
-        1,
-        true
-    ) ~= nil
+    return tostring(status or ''):find('bbbased: UPnP capture time limit reached', 1, true) ~= nil
 end
 
 local function upnp_probe_summary(probes, record_count)
@@ -2679,14 +2507,11 @@ local function upnp_probe_summary(probes, record_count)
     local targets = {}
     for index, probe in ipairs(probes or {}) do
         if index > 1 then
-            gaps[#gaps + 1] = tostring(
-                probe.delay_us - probes[index - 1].delay_us
-            )
+            gaps[#gaps + 1] = tostring(probe.delay_us - probes[index - 1].delay_us)
         end
         targets[#targets + 1] = probe.st
     end
-    local span_us = probes and #probes > 0
-        and probes[#probes].delay_us or 0
+    local span_us = probes and #probes > 0 and probes[#probes].delay_us or 0
     return tostring(#(probes or {})) .. ' M-SEARCH packets from '
         .. tostring(record_count or 0) .. ' PCAP records over '
         .. string.format('%.6f', span_us / 1000000) .. ' seconds; gaps(us)='
@@ -2727,10 +2552,7 @@ local function discover_upnp_pcap(pcap_base64)
     local success = false
     local result = "B04382 discover_upnp failed"
     repeat
-        if not pcap_base64 or pcap_base64 == '' then
-            result = "B86322 missing pcap data"
-            break
-        end
+        if not pcap_base64 or pcap_base64 == '' then result = "B86322 missing pcap data" break end
         pcap_base64 = pcap_base64:gsub('%s', '')
         if #pcap_base64 > 20000 or #pcap_base64 < 20 or #pcap_base64 % 4 ~= 0 then
             result = string.format("B64087 invalid pcap data size (%d bytes)", #pcap_base64)
@@ -2763,10 +2585,7 @@ local function discover_upnp_pcap(pcap_base64)
             break
         end
         local pcap_data = read_text_file(pcap_path, false, true)
-        if not pcap_data then
-            result = "B60578 cannot read decoded UPnP probe PCAP"
-            break
-        end
+        if not pcap_data then result = "B60578 cannot read decoded UPnP probe PCAP" break end
         local extract_problem
         probe_packets, extract_problem, probe_mx, probe_record_count =
             extract_upnp_msearches(pcap_data)
@@ -2774,8 +2593,7 @@ local function discover_upnp_pcap(pcap_base64)
             result = "B60573 invalid UPnP probe PCAP: " .. tostring(extract_problem)
             break
         end
-        if #probe_packets < min_upnp_probe_packets
-                or #probe_packets > max_upnp_probe_packets then
+        if #probe_packets < min_upnp_probe_packets or #probe_packets > max_upnp_probe_packets then
             result = "B16473 invalid UPnP probe PCAP: expected 2 through 11 "
                 .. 'M-SEARCH packets, found '
                 .. tostring(#probe_packets)
@@ -2787,42 +2605,14 @@ local function discover_upnp_pcap(pcap_base64)
             result = "B91912 cannot install discover_upnp dependencies"
             break
         end
-        wan_route = run_command('ip route show default', true, true)
-        local default_route = wan_route and ('\n' .. wan_route):match('\n(default[^\r\n]*)')
-        wan_if = default_route and default_route:match('%sdev%s+(%S+)')
-        gateway = default_route and default_route:match('%svia%s+(%S+)') or ''
-        if not wan_if or wan_if == '' then
-            result = "B86262 cannot determine wan_if"
-            break
-        end
-        local source_route_target = gateway ~= '' and gateway or '239.255.255.250'
-        source_route = run_command('ip -4 route get ' .. shell_quote(source_route_target), true, true)
-        source_ip = source_route and source_route:match(
-            '%ssrc%s+(%d+%.%d+%.%d+%.%d+)'
-        )
-        local source_if = source_route and source_route:match('%sdev%s+(%S+)')
-        if source_if and source_if ~= wan_if then
-            result = "B60570 UPnP route interface differs from default route interface"
-            break
-        end
-        local address_output = run_command('ip -4 address show dev ' .. shell_quote(wan_if), true, true)
-        for address, prefix in tostring(address_output or ''):gmatch(
-                '%sinet%s+(%d+%.%d+%.%d+%.%d+)/(%d+)'
-            ) do
-            if not source_ip then source_ip = address end
-            if address == source_ip then
-                source_prefix = tonumber(prefix)
-                break
-            end
-        end
-        if not source_ip then
-            result = "B60571 cannot determine UPnP discovery source IP"
-            break
-        end
-        if not source_prefix then
-            result = "B35288 cannot determine UPnP discovery source subnet"
-            break
-        end
+        local route_info, route_problem = get_upnp_route_info()
+        if route_problem then result = route_problem break end
+        wan_route = route_info.wan_route
+        wan_if = route_info.wan_if
+        gateway = route_info.gateway
+        source_route = route_info.source_route
+        source_ip = route_info.source_ip
+        source_prefix = route_info.source_prefix
         local link_output = run_command('ip link show dev ' .. shell_quote(wan_if), true, true)
         source_mac = link_output and link_output:match(
             'link/ether%s+([%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x]:[%x][%x])'
@@ -2841,8 +2631,7 @@ local function discover_upnp_pcap(pcap_base64)
         for index, probe in ipairs(probe_packets) do
             local packet_path = make_temp_path()
             if not packet_path then
-                packet_pcap_problem = 'cannot create packet '
-                    .. tostring(index) .. ' replay PCAP'
+                packet_pcap_problem = 'cannot create packet ' .. tostring(index) .. ' replay PCAP'
                 break
             end
             replay_packet_paths[#replay_packet_paths + 1] = packet_path
@@ -2858,20 +2647,17 @@ local function discover_upnp_pcap(pcap_base64)
                 source_port
             )
             if not packet_written then
-                packet_pcap_problem = 'packet ' .. tostring(index) .. ': '
-                    .. tostring(packet_problem)
+                packet_pcap_problem = 'packet ' .. tostring(index) .. ': ' .. tostring(packet_problem)
                 break
             end
         end
         if packet_pcap_problem then
-            result = "B27416 cannot build UPnP packet replay PCAPs: "
-                .. packet_pcap_problem
+            result = "B27416 cannot build UPnP packet replay PCAPs: " .. packet_pcap_problem
             break
         end
         wait_seconds = probe_mx + 1
         log_debug(
-            "UPnP discovery probe source: " .. source_ip
-                .. ":" .. source_port .. " on " .. wan_if
+            "UPnP discovery probe source: " .. source_ip .. ":" .. source_port .. " on " .. wan_if
         )
         -- match replies by destination, not by an assumed responder source port
         local capture_filter = 'udp and ((src host ' .. source_ip .. ' and src port '
@@ -2887,10 +2673,7 @@ local function discover_upnp_pcap(pcap_base64)
             capture_status_path,
             capture_filter
         )
-        if not tcpdump_pid then
-            result = "B26445 " .. tostring(capture_problem)
-            break
-        end
+        if not tcpdump_pid then result = "B26445 " .. tostring(capture_problem) break end
         capture_started = true
         sleep(0.1)
         -- some older tcpreplay builds ignore the first inter-packet delay in a
@@ -2901,11 +2684,9 @@ local function discover_upnp_pcap(pcap_base64)
         local replay_failure = nil
         for index, packet_path in ipairs(replay_packet_paths) do
             if index > 1 then
-                local gap_us = probe_packets[index].delay_us
-                    - probe_packets[index - 1].delay_us
+                local gap_us = probe_packets[index].delay_us - probe_packets[index - 1].delay_us
                 local gap = gap_us / 1000000  -- in seconds
-                if capture_deadline
-                        and os.time() + math.ceil(gap) > capture_deadline then
+                if capture_deadline and os.time() + math.ceil(gap) > capture_deadline then
                     replay_failure = "B53263 UPnP replay would exceed capture time limit"
                     break
                 end
@@ -2918,18 +2699,9 @@ local function discover_upnp_pcap(pcap_base64)
                 .. shell_quote('-i' .. wan_if)
                 .. ' ' .. shell_quote(packet_path)
                 .. ' >' .. shell_quote(tcpreplay_output_path) .. ' 2>&1)'
-            local tcpreplay_ok = run_command(
-                tcpreplay_command,
-                true,
-                true
-            ) ~= nil
-            local packet_output = read_text_file(
-                tcpreplay_output_path,
-                true,
-                true
-            ) or ''
-            replay_outputs[#replay_outputs + 1] = 'packet '
-                .. tostring(index) .. ':\n' .. packet_output
+            local tcpreplay_ok = run_command(tcpreplay_command, true, true) ~= nil
+            local packet_output = read_text_file(tcpreplay_output_path, true, true) or ''
+            replay_outputs[#replay_outputs + 1] = 'packet ' .. tostring(index) .. ':\n' .. packet_output
             if not tcpreplay_ok then
                 replay_failure = "B92999 tcpreplay packet "
                     .. tostring(index) .. " failed: "
@@ -2937,15 +2709,11 @@ local function discover_upnp_pcap(pcap_base64)
                 break
             end
             local replay_output_lower = packet_output:lower()
-            local failed_packets = tonumber(
-                replay_output_lower:match('failed packets:%s*(%d+)')
-            ) or 0
+            local failed_packets = tonumber(replay_output_lower:match('failed packets:%s*(%d+)')) or 0
             local truncated_packets = tonumber(
                 replay_output_lower:match('truncated packets:%s*(%d+)')
             ) or 0
-            local actual_packets = tonumber(
-                replay_output_lower:match('actual:%s*(%d+)%s+packets')
-            )
+            local actual_packets = tonumber(replay_output_lower:match('actual:%s*(%d+)%s+packets'))
             local successful_packets = tonumber(
                 replay_output_lower:match('successful packets:%s*(%d+)')
             )
@@ -2961,21 +2729,12 @@ local function discover_upnp_pcap(pcap_base64)
         end
         tcpreplay_output = table.concat(replay_outputs, '\n')
         write_text_file(tcpreplay_output_path, tcpreplay_output, '0600')
-        if replay_failure then
-            result = replay_failure
-            break
-        end
+        if replay_failure then result = replay_failure break end
         -- a device may delay a unicast response for any time from zero through
         -- the requested MX value; the payload parser clamps MX to UPnP's 1..5
-        response_wait_seconds = math.max(
-            0,
-            math.min(wait_seconds, capture_deadline - os.time())
-        )
+        response_wait_seconds = math.max(0, math.min(wait_seconds, capture_deadline - os.time()))
         if response_wait_seconds < wait_seconds then
-            log_warning(
-                "B05332 UPnP response wait limited to "
-                    .. tostring(response_wait_seconds) .. " seconds"
-            )
+            log_warning("B05332 UPnP limited to " .. tostring(response_wait_seconds) .. " seconds")
         end
         if response_wait_seconds > 0 and not sleep(response_wait_seconds) then
             result = "B08078 cannot wait for UPnP discovery responses"
@@ -2983,44 +2742,31 @@ local function discover_upnp_pcap(pcap_base64)
         end
         if not is_running(tcpdump_pid) then
             capture_status = read_text_file(capture_status_path, true, true)
-            if (capture_packet_count(capture_status) or 0)
-                    >= max_upnp_capture_packets then
-                log_warning(
-                    "B70017 UPnP capture stopped at its "
-                        .. tostring(max_upnp_capture_packets) .. " packet limit"
-                )
+            if (capture_packet_count(capture_status) or 0) >= max_upnp_capture_packets then
+                log_warning("B70017 hit " .. tostring(max_upnp_capture_packets) .. " packet limit")
             elseif capture_time_limit_reached(capture_status) then
-                log_warning(
-                    "B24410 UPnP capture stopped at its "
-                        .. tostring(max_upnp_capture_seconds) .. " second time limit"
-                )
+                log_warning("B24410 hit " .. tostring(max_upnp_capture_seconds) .. " second limit")
             else
-                result = "B25280 tcpdump exited unexpectedly: "
-                    .. display_text_file(capture_status_path)
+                result = "B25280 tcpdump failed: " .. display_text_file(capture_status_path)
                 break
             end
         elseif not kill_process(tcpdump_pid) then
-            result = "B88176 cannot stop tcpdump: "
-                .. display_text_file(capture_status_path)
+            result = "B88176 cannot stop tcpdump: " .. display_text_file(capture_status_path)
             break
         end
         tcpdump_pid = nil
-        capture_status = capture_status
-            or read_text_file(capture_status_path, true, true)
+        capture_status = capture_status or read_text_file(capture_status_path, true, true)
         captured_packets = decode_upnp_capture(capture_path)
         if captured_packets == nil then
-            result = "B25543 cannot decode tcpdump capture: "
-                .. display_text_file(capture_status_path)
+            result = "B25543 cannot decode tcpdump capture: " .. display_text_file(capture_status_path)
             break
         end
-        -- Verify every transmitted payload and the timing produced by the
-        -- one-packet tcpreplay calls.
+        -- verify every transmitted payload and the timing produced by the one-packet tcpreplay calls
         local capture_data = read_text_file(capture_path, true, true)
         local observed_probes, observed_problem, _, observed_record_count =
             extract_upnp_msearches(capture_data)
         if not observed_probes then
-            result = "B21948 cannot inspect captured UPnP replay: "
-                .. tostring(observed_problem)
+            result = "B21948 cannot inspect captured UPnP replay: " .. tostring(observed_problem)
             break
         end
         replay_capture_summary = upnp_probe_summary(
@@ -3029,12 +2775,12 @@ local function discover_upnp_pcap(pcap_base64)
         )
         if #observed_probes ~= #probe_packets then
             local output = run_command('LC_ALL=C tcpreplay --version', true)
-            local version = 'unknown'
+            local version = nil
             if type(output) == 'string' then
                 version = output:match('version:?%s+([0-9a-zA-Z:%.%-]+)')
             end
             local o_of_p = tostring(#observed_probes) .. " of " .. tostring(#probe_packets)
-            local version_string = "tcpreplay " .. version
+            local version_string = "tcpreplay " .. (version or 'unknown')
             if version == '4.5.2' then
                 -- this is likely a bug in tcpreplay 4.5.2; note "TX_RING was silently dropping
                 -- and reordering packets" on https://github.com/appneta/tcpreplay/releases/tag/v4.6.0
@@ -3052,10 +2798,8 @@ local function discover_upnp_pcap(pcap_base64)
                 break
             end
             if index > 1 then
-                local expected_gap = probe_packets[index].delay_us
-                    - probe_packets[index - 1].delay_us
-                local observed_gap = observed.delay_us
-                    - observed_probes[index - 1].delay_us
+                local expected_gap = probe_packets[index].delay_us - probe_packets[index - 1].delay_us
+                local observed_gap = observed.delay_us - observed_probes[index - 1].delay_us
                 if math.abs(observed_gap - expected_gap) > 500000 then
                     timing_differences[#timing_differences + 1] = 'packet '
                         .. tostring(index) .. ' gap was '
@@ -3067,8 +2811,7 @@ local function discover_upnp_pcap(pcap_base64)
             end
         end
         if replay_payload_problem then
-            result = "B40681 captured replay payload differs at packet "
-                .. replay_payload_problem
+            result = "B40681 captured replay payload differs at packet " .. replay_payload_problem
             break
         end
         if #timing_differences > 0 then
@@ -3077,9 +2820,7 @@ local function discover_upnp_pcap(pcap_base64)
         end
         local location_candidates = {}
         for line in captured_packets:gmatch('[^\r\n]+') do
-            local location = line:match(
-                '^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]:%s*(%S+)'
-            )
+            local location = line:match('^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]:%s*(%S+)')
             if location then
                 location_candidates[#location_candidates + 1] = location
             end
@@ -3103,24 +2844,23 @@ local function discover_upnp_pcap(pcap_base64)
         if #locations == 0 then
             local wan_capture_drops = capture_interface_drops(capture_status)
             if wan_capture_drops > 0 then
-                diagnostic_reason = 'no SSDP LOCATION response; WAN capture reported '
-                    .. tostring(wan_capture_drops) .. ' interface drops'
-                result = 'B74816 ' .. diagnostic_reason
+                diagnostic_reason = "no SSDP LOCATION response; WAN capture reported "
+                    .. tostring(wan_capture_drops) .. " interface drops"
+                result = "B74816 " .. diagnostic_reason
                 break
             end
             if upnp_response_count > 0 then
-                diagnostic_reason = 'no UPnP LOCATION response matched the gateway/LAN subnet'
+                diagnostic_reason = "no UPnP LOCATION response matched the gateway/LAN subnet"
             else
-                diagnostic_reason = 'no SSDP LOCATION response was captured after '
-                    .. tostring(#probe_packets) .. ' timed M-SEARCH packets'
+                diagnostic_reason = "no SSDP LOCATION response was captured after "
+                    .. tostring(#probe_packets) .. " timed M-SEARCH packets"
             end
         elseif #igds == 0 then
-            diagnostic_reason =
-                'SSDP responses exposed no supported WANIPConnection/WANPPPConnection service'
+            diagnostic_reason = "no WANIPConnection/WANPPPConnection service in SSDP responses"
         end
         if replay_timing_problem then
             diagnostic_reason = diagnostic_reason
-                and (diagnostic_reason .. '; ' .. replay_timing_problem)
+                and (diagnostic_reason .. "; " .. replay_timing_problem)
                 or replay_timing_problem
         end
         success = true
@@ -3140,10 +2880,7 @@ local function discover_upnp_pcap(pcap_base64)
     -- the evidence that distinguishes bad task data, replay trouble, routing,
     -- and a LAN that simply did not answer
     if not success or diagnostic_reason then
-        log_info(
-            'UPnP diagnostic triggered: '
-                .. displayable(diagnostic_reason or result, 700)
-        )
+        log_info('UPnP diagnostic triggered: ' .. displayable(diagnostic_reason or result, 700))
         if probe_packets then
             log_info(
                 'UPnP diagnostic received probe packets: '
@@ -3168,16 +2905,12 @@ local function discover_upnp_pcap(pcap_base64)
             )
         end
         if replay_capture_summary then
-            log_info(
-                'UPnP diagnostic observed replay packets: '
-                    .. replay_capture_summary
-            )
+            log_info( 'UPnP diagnostic observed replay packets: ' .. replay_capture_summary)
         end
         if tcpreplay_output ~= nil then
             log_upnp_diagnostic(
                 'tcpreplay output',
-                tcpreplay_output
-                    or read_text_file(tcpreplay_output_path, true, true),
+                tcpreplay_output or read_text_file(tcpreplay_output_path, true, true),
                 80
             )
         end
@@ -3191,33 +2924,24 @@ local function discover_upnp_pcap(pcap_base64)
         if capture_started and capture_status_path then
             log_upnp_diagnostic(
                 'WAN tcpdump status',
-                capture_status
-                    or read_text_file(capture_status_path, true, true)
+                capture_status or read_text_file(capture_status_path, true, true)
             )
         end
     end
-    remove_path(encoded_path)
-    remove_path(pcap_path)
-    for _, packet_path in ipairs(replay_packet_paths) do
-        remove_path(packet_path)
-    end
-    remove_path(capture_path)
-    remove_path(capture_status_path)
-    remove_path(tcpreplay_output_path)
+    remove_paths(encoded_path, pcap_path)
+    for _, packet_path in ipairs(replay_packet_paths) do remove_path(packet_path) end
+    remove_paths(capture_path, capture_status_path, tcpreplay_output_path)
     return success, result
 end
 
 local function parse_miniupnpc_output(output)
-    local first_line = type(output) == 'string'
-        and output:match('[^\r\n]+') or nil
+    local first_line = type(output) == 'string' and output:match('[^\r\n]+') or nil
     if type(output) ~= 'string' then
-        return nil, "B90429 invalid miniupnpc header: "
-            .. tostring(first_line or '(empty)')
+        return nil, "B90429 invalid miniupnpc header: " .. tostring(first_line or '(empty)')
     end
     output = output:gsub('\r\n', '\n'):gsub('\r', '\n')
     if not output:lower():find('miniupnpc', 1, true) then
-        return nil, "B20353 invalid miniupnpc header: "
-            .. tostring(first_line or '(empty)')
+        return nil, "B20353 invalid miniupnpc header: " .. tostring(first_line or '(empty)')
     end
     local locations = {}
     local control_url = nil
@@ -3225,15 +2949,8 @@ local function parse_miniupnpc_output(output)
     for line in (output .. '\n'):gmatch('(.-)\n') do
         local trimmed = line:match('^%s*(.-)%s*$')
         local lower_line = trimmed:lower()
-        if lower_line:find(
-                'no igd upnp device found on the network',
-                1,
-                true
-            ) or lower_line:find(
-                'no valid upnp internet gateway device found',
-                1,
-                true
-            ) then
+        if lower_line:find('no igd upnp device found on the network', 1, true)
+                or lower_line:find('no valid upnp internet gateway device found', 1, true) then
             no_valid_igd = true
         end
         local label, value = trimmed:match('^([^:]+):%s*(%S+)%s*$')
@@ -3242,18 +2959,14 @@ local function parse_miniupnpc_output(output)
             if label == 'desc' then
                 locations[#locations + 1] = value
             elseif label == 'found valid igd'
-                    or label:match(
-                        '^found an igd with a reserved ip address%s*%b()$'
-                    ) then
+                    or label:match('^found an igd with a reserved ip address%s*%b()$') then
                 if #value > 2048 or value:find('[%c%s]')
                         or not value:match('^https?://')
                         or not http_url_host(value) then
-                    return nil,
-                        "B81290 invalid miniupnpc output: invalid control URL"
+                    return nil, "B81290 invalid miniupnpc output: invalid control URL"
                 end
                 if control_url and control_url ~= value then
-                    return nil,
-                        "B67840 invalid miniupnpc output: multiple valid IGDs"
+                    return nil, "B67840 invalid miniupnpc output: multiple valid IGDs"
                 end
                 control_url = value
             end
@@ -3269,11 +2982,7 @@ local function parse_miniupnpc_output(output)
         return nil,
             "B73862 invalid miniupnpc output: valid IGD has no description URL"
     end
-    return {
-        locations = locations,
-        control_url = control_url,
-        no_valid_igd = no_valid_igd,
-    }
+    return { locations = locations, control_url = control_url, no_valid_igd = no_valid_igd, }
 end
 
 local function discover_upnp_miniupnpc()
@@ -3283,55 +2992,16 @@ local function discover_upnp_miniupnpc()
     if not install_one_of('iproute2 iproute ip-tiny ip-full', 'ip') then
         return nil, "B27341 cannot install miniupnpc route dependency"
     end
-    local wan_route = run_command('ip route show default', true, true)
-    local default_route = wan_route
-        and ('\n' .. wan_route):match('\n(default[^\r\n]*)')
-    if not default_route then
-        return nil, "B64090 cannot determine default route for miniupnpc discovery"
-    end
-    local wan_if = default_route:match('%sdev%s+(%S+)')
-    local gateway = default_route:match('%svia%s+(%S+)') or ''
-    if not wan_if or wan_if == '' then
-        return nil, "B34958 cannot determine default route for miniupnpc discovery"
-    end
-    local source_route_target = gateway ~= '' and gateway or '239.255.255.250'
-    local source_route = run_command(
-        'ip -4 route get ' .. shell_quote(source_route_target),
-        true,
-        true
-    )
-    local source_ip = source_route and source_route:match(
-        '%ssrc%s+(%d+%.%d+%.%d+%.%d+)'
-    )
-    local source_if = source_route and source_route:match('%sdev%s+(%S+)')
-    if source_if and source_if ~= wan_if then
-        return nil, "B64843 UPnP route interface differs from default route interface"
-    end
-    local source_prefix = nil
-    local address_output = run_command(
-        'ip -4 address show dev ' .. shell_quote(wan_if),
-        true,
-        true
-    )
-    for address, prefix in tostring(address_output or ''):gmatch(
-            '%sinet%s+(%d+%.%d+%.%d+%.%d+)/(%d+)'
-        ) do
-        if not source_ip then source_ip = address end
-        if address == source_ip then
-            source_prefix = tonumber(prefix)
-            break
-        end
-    end
-    if not source_ip then
-        return nil, "B15738 cannot determine UPnP discovery source IP"
-    end
-    if not source_prefix then
-        return nil, "B25604 cannot determine UPnP discovery source subnet"
-    end
+    local route_info, route_problem = get_upnp_route_info()
+    if route_problem then return nil, route_problem end
+    local gateway = route_info.gateway
+    local source_ip = route_info.source_ip
+    local source_prefix = route_info.source_prefix
     -- upnpc may fetch advertised descriptions while selecting an IGD, before
-    -- Lua can filter those URLs.  Bind it to the selected LAN address, ignore
+    -- Lua can filter those URLs; bind it to the selected LAN address, ignore
     -- its selected control URL, then independently filter and read the printed
-    -- description URLs through the bounded common path below.
+    -- description URLs through the bounded common path below; note that
+    -- some platforms that have 'upnpc' do not have 'upnp-listdevices'
     local status_marker = '__BBBASED_UPNPC_EXIT__='
     local command = '(LC_ALL=C upnpc -m ' .. shell_quote(source_ip)
         .. ' -P; upnpc_status=$?; '
@@ -3367,12 +3037,7 @@ local function discover_upnp_miniupnpc()
     if #locations > 0 and descriptions_read == 0 then
         return nil, "B10450 cannot read any UPnP device description"
     end
-    local result = upnp_result_json(
-        gateway,
-        'miniupnpc',
-        response_count,
-        igds
-    )
+    local result = upnp_result_json(gateway, 'miniupnpc', response_count, igds)
     return true, result, #igds > 0
 end
 
@@ -3402,8 +3067,8 @@ local function handle_task(task_id, task_method, task_args)
         end
         local running_path = arg and arg[0]
         if not running_path or not running_path:match('^/') then
-            return send_task_result(task_id, task_method, false, "B09761 invalid arg[0]:"
-                .. tostring(running_path))
+            return send_task_result(task_id, task_method, false,
+                "B09761 invalid arg[0]: " .. tostring(running_path))
         end
         local staged_path = make_temp_path(dirname(running_path))
         if not staged_path then
@@ -3425,15 +3090,18 @@ local function handle_task(task_id, task_method, task_args)
             or #staged_code < 1000 and 'too short'
             or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
             or not staged_code:find("local subd = '" .. subd .. "'", 1, true) and 'wrong subd'
-            or staged_code:find("local file_version = '{file_version}'", 1, true) and 'same file_version'
+            or staged_code:find("local file_version = '{file_version}'", 1, true)
+                and 'same file_version'
             or not staged_ver and 'missing file_version'
             or staged_ver:sub(1, 8) ~= next_ver .. '-' and 'wrong version'
             or not run_command(parse_attempt, true, true) and 'parse failed'
         -- maybe add above:
-            -- or not staged_code:find("local api_url = '" .. api_url .. "'", 1, true) and 'wrong api_url'
+            -- or not staged_code:find("local api_url = '" .. api_url .. "'", 1, true)
+            --     and 'wrong api_url'
         if invalid_reason then
             remove_path(staged_path)
-            return send_task_result(task_id, task_method, false, "B77812 bad download (" .. invalid_reason .. ")")
+            return send_task_result(task_id, task_method, false,
+                "B77812 bad download (" .. invalid_reason .. ")")
         end
         local task_data = task_id .. '\n' .. task_method .. '\n'
         if not write_text_file(deploy_result_path, task_data, '0600') then
@@ -3442,8 +3110,7 @@ local function handle_task(task_id, task_method, task_args)
         end
         chmod(staged_path, get_mode(running_path))  -- ignore errors, but they do get logged
         if not run_command('mv ' .. shell_quote(staged_path) .. ' ' .. shell_quote(running_path)) then
-            remove_path(staged_path)
-            remove_path(deploy_result_path)
+            remove_paths(staged_path, deploy_result_path)
             return send_task_result(task_id, task_method, false, "B57225 mv failed")
         end
         log_info("update installed; restarting")
@@ -3589,14 +3256,6 @@ while true do
                 .. tostring(retries_left)
         )
         sleep_with_jitter(retry_wait, 0.5)
-        retries_left = retries_left - 1
-        if retries_left <= 0 then
-            retry_wait = retry_wait * 2
-            if retry_wait > 3600 then
-                retry_wait = 3600
-            end
-            retries_left = 2
-            log_info("increased ping retry wait to " .. tostring(retry_wait) .. " seconds")
-        end
+        retry_wait, retries_left = next_retry_state(retry_wait, retries_left, 'ping')
     end
 end
