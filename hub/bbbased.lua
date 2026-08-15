@@ -2009,11 +2009,28 @@ end
 
 local function http_url_host(url)
     local authority = url and url:match('^https?://([^/%?#]+)')
-    if not authority then return nil end
-    if authority:sub(1, 1) == '[' then
-        return authority:match('^%[([^%]]+)%]')
+    if not authority or authority == ''
+            or authority:find('@', 1, true)
+            or authority:find('[%c%s]') then
+        return nil
     end
-    return authority:match('^([^:]+)')
+    if authority:sub(1, 1) == '[' then
+        local host, suffix = authority:match('^%[([^%]]+)%](.*)$')
+        if not host or host == '' then return nil end
+        if suffix ~= '' then
+            local port = suffix:match('^:(%d+)$')
+            if not port or tonumber(port) > 65535 then return nil end
+        end
+        return host
+    end
+    local host, port = authority:match('^([^:]+):(%d+)$')
+    if not host then
+        if authority:find(':', 1, true) then return nil end
+        host = authority
+    elseif tonumber(port) > 65535 then
+        return nil
+    end
+    return host ~= '' and host or nil
 end
 
 local function upnp_control_url(xml, location)
@@ -2129,6 +2146,212 @@ local max_upnp_locations = 8
 local max_upnp_igds = 8
 local max_upnp_description_seconds = 12
 local max_upnp_result_bytes = 18000
+
+local function upnp_url_policy(url, gateway, source_ip, source_prefix)
+    -- return allowed, gateway match, and host; allowed is nil for malformed URLs
+    if type(url) ~= 'string' or #url > 2048
+            or url:find('[%c%s]')
+            or not url:match('^https?://') then
+        return nil, false, nil
+    end
+    local host = http_url_host(url)
+    if not host then return nil, false, nil end
+    local host_number = ipv4_number(host)
+    local gateway_number = ipv4_number(gateway)
+    local matches_gateway = host_number and gateway_number
+        and host_number == gateway_number
+    local matches_subnet = ipv4_in_subnet(
+        host,
+        source_ip,
+        source_prefix
+    )
+    return matches_gateway or matches_subnet, matches_gateway, host
+end
+
+local function filter_upnp_locations(
+        candidates, gateway, source_ip, source_prefix
+    )
+    -- enforce the common URL, gateway/subnet, uniqueness, ordering, and count limits
+    local locations = {}
+    local fallback_locations = {}
+    local seen_locations = {}
+    local response_count = 0
+    local rejected_location_count = 0
+    local location_limit_warned = false
+    for _, location in ipairs(candidates or {}) do
+        local allowed, matches_gateway, location_host = upnp_url_policy(
+            location,
+            gateway,
+            source_ip,
+            source_prefix
+        )
+        if allowed ~= nil then response_count = response_count + 1 end
+        if allowed ~= nil and not seen_locations[location] then
+            seen_locations[location] = true
+            if not allowed then
+                rejected_location_count = rejected_location_count + 1
+                if rejected_location_count <= 8 then
+                    log_info(
+                        "B14803 dropping UPnP LOCATION outside gateway/LAN subnet; "
+                            .. "host=" .. displayable(
+                                json_escape(location_host or '(invalid)'),
+                                100
+                            )
+                    )
+                elseif rejected_location_count == 9 then
+                    log_warning(
+                        "B92150 additional rejected UPnP LOCATION warnings omitted"
+                    )
+                end
+            else
+                local accepted_count = #locations + #fallback_locations
+                if accepted_count >= max_upnp_locations
+                        and not location_limit_warned then
+                    log_warning(
+                        "B06812 UPnP LOCATION limit reached; ignoring additional URLs"
+                    )
+                    location_limit_warned = true
+                end
+                if matches_gateway and accepted_count >= max_upnp_locations
+                        and #fallback_locations > 0 then
+                    table.remove(fallback_locations)
+                    accepted_count = accepted_count - 1
+                end
+                if accepted_count < max_upnp_locations then
+                    local destination = matches_gateway
+                        and locations or fallback_locations
+                    destination[#destination + 1] = location
+                end
+            end
+        end
+    end
+    for _, location in ipairs(fallback_locations) do
+        locations[#locations + 1] = location
+    end
+    return locations, response_count
+end
+
+local function read_upnp_control_url(
+        location, seconds_left, gateway, source_ip, source_prefix
+    )
+    local xml_path = make_temp_path()
+    if not xml_path then return nil, false end
+    local request_timeout = math.max(1, math.min(3, seconds_left or 3))
+    local connect_timeout = math.min(2, request_timeout)
+    local curl_command = 'curl -fsS --globoff --connect-timeout '
+        .. tostring(connect_timeout) .. ' --max-time '
+        .. tostring(request_timeout) .. ' '
+        .. '--max-filesize 1048576 -o '
+        .. shell_quote(xml_path) .. ' ' .. shell_quote(location)
+    local control_url = nil
+    local description_read = false
+    if run_command(curl_command, true, true) then
+        local xml = read_text_file(xml_path, false, true)
+        if xml and #xml <= 1048576 then
+            description_read = true
+            control_url = upnp_control_url(xml, location)
+            if control_url then
+                local allowed, _, control_host = upnp_url_policy(
+                    control_url,
+                    gateway,
+                    source_ip,
+                    source_prefix
+                )
+                if not allowed then
+                    log_info(
+                        "B24547 dropping UPnP control URL outside "
+                            .. "gateway/LAN subnet or with invalid authority; host="
+                            .. displayable(
+                                json_escape(control_host or '(invalid)'),
+                                100
+                            )
+                    )
+                    control_url = nil
+                end
+            end
+        end
+    end
+    remove_path(xml_path)
+    return control_url, description_read
+end
+
+local function read_upnp_igds(
+        locations, gateway, source_ip, source_prefix
+    )
+    local igds = {}
+    local seen_control_urls = {}
+    local descriptions_read = 0
+    local description_deadline = os.time() + max_upnp_description_seconds
+    local igd_limit_warned = false
+    for _, location in ipairs(locations) do
+        if #igds >= max_upnp_igds then
+            if not igd_limit_warned then
+                log_warning(
+                    "B90866 UPnP IGD limit reached; ignoring additional descriptions"
+                )
+                igd_limit_warned = true
+            end
+            break
+        end
+        local seconds_left = description_deadline - os.time()
+        if seconds_left <= 0 then
+            log_warning("B39908 UPnP device-description time limit reached")
+            break
+        end
+        local control_url, description_read = read_upnp_control_url(
+            location,
+            seconds_left,
+            gateway,
+            source_ip,
+            source_prefix
+        )
+        if description_read then descriptions_read = descriptions_read + 1 end
+        local found_gateway_igd = false
+        if control_url and not seen_control_urls[control_url] then
+            seen_control_urls[control_url] = true
+            igds[#igds + 1] = {
+                location = location,
+                control_url = control_url,
+            }
+            local _, matches_gateway = upnp_url_policy(
+                location,
+                gateway,
+                source_ip,
+                source_prefix
+            )
+            found_gateway_igd = matches_gateway
+        end
+        if found_gateway_igd then break end
+    end
+    return igds, descriptions_read
+end
+
+local function upnp_result_json(gateway, method, response_count, igds)
+    local result_prefix = '{'
+        .. '"gateway":"' .. json_escape(gateway) .. '",'
+        .. '"method":"' .. json_escape(method) .. '",'
+        .. '"response_count":' .. tostring(response_count) .. ','
+        .. '"igds":['
+    local igd_json = {}
+    local result_bytes = #result_prefix + 2  -- closing ]}
+    for _, igd in ipairs(igds) do
+        local entry = '{'
+            .. '"location":"' .. json_escape(igd.location) .. '",'
+            .. '"control_url":"' .. json_escape(igd.control_url) .. '"'
+            .. '}'
+        local separator_bytes = #igd_json > 0 and 1 or 0
+        if result_bytes + separator_bytes + #entry > max_upnp_result_bytes then
+            log_warning(
+                "B75089 UPnP discovery result size limit reached; "
+                    .. "ignoring additional IGDs"
+            )
+            break
+        end
+        igd_json[#igd_json + 1] = entry
+        result_bytes = result_bytes + separator_bytes + #entry
+    end
+    return result_prefix .. table.concat(igd_json, ',') .. ']}'
+end
 
 local function uint32_at(data, offset, little_endian)
     local b1, b2, b3, b4 = data:byte(offset, offset + 3)
@@ -2471,7 +2694,7 @@ local function upnp_probe_summary(probes, record_count)
         .. '; ST=' .. table.concat(targets, ' | ')
 end
 
-local function discover_upnp(pcap_base64)
+local function discover_upnp_pcap(pcap_base64)
     -- return success flag and JSON discovery results, or failure details
     local encoded_path = nil
     local pcap_path = nil
@@ -2852,130 +3075,27 @@ local function discover_upnp(pcap_base64)
             replay_timing_problem = 'captured replay timing differed: '
                 .. table.concat(timing_differences, '; ')
         end
-        local locations = {}
-        local fallback_locations = {}
-        local seen_locations = {}
-        local upnp_response_count = 0
-        local rejected_location_count = 0
-        local location_limit_warned = false
+        local location_candidates = {}
         for line in captured_packets:gmatch('[^\r\n]+') do
             local location = line:match(
                 '^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]:%s*(%S+)'
             )
-            if location and #location <= 2048 and location:match('^https?://') then
-                upnp_response_count = upnp_response_count + 1
-            end
-            if location and #location <= 2048 and location:match('^https?://')
-                    and not seen_locations[location] then
-                seen_locations[location] = true
-                local location_host = http_url_host(location)
-                local location_number = ipv4_number(location_host)
-                local gateway_number = ipv4_number(gateway)
-                local matches_gateway = location_number and gateway_number
-                    and location_number == gateway_number
-                local matches_subnet = ipv4_in_subnet(
-                    location_host,
-                    source_ip,
-                    source_prefix
-                )
-                if not matches_gateway and not matches_subnet then
-                    rejected_location_count = rejected_location_count + 1
-                    if rejected_location_count <= 8 then
-                        log_info(
-                            "B14803 dropping UPnP LOCATION outside gateway/LAN subnet; "
-                                .. "host=" .. displayable(
-                                    json_escape(location_host or '(invalid)'),
-                                    100
-                                )
-                        )
-                    elseif rejected_location_count == 9 then
-                        log_warning(
-                            "B92150 additional rejected UPnP LOCATION warnings omitted"
-                        )
-                    end
-                else
-                    local accepted_count = #locations + #fallback_locations
-                    if accepted_count >= max_upnp_locations
-                            and not location_limit_warned then
-                        log_warning(
-                            "B06812 UPnP LOCATION limit reached; ignoring additional URLs"
-                        )
-                        location_limit_warned = true
-                    end
-                    if matches_gateway and accepted_count >= max_upnp_locations
-                            and #fallback_locations > 0 then
-                        table.remove(fallback_locations)
-                        accepted_count = accepted_count - 1
-                    end
-                    if accepted_count < max_upnp_locations then
-                        local destination = matches_gateway
-                            and locations or fallback_locations
-                        destination[#destination + 1] = location
-                    end
-                end
+            if location then
+                location_candidates[#location_candidates + 1] = location
             end
         end
-        for _, location in ipairs(fallback_locations) do
-            locations[#locations + 1] = location
-        end
-        local igds = {}
-        local seen_control_urls = {}
-        local descriptions_read = 0
-        local description_deadline = os.time() + max_upnp_description_seconds
-        local igd_limit_warned = false
-        for _, location in ipairs(locations) do
-            if #igds >= max_upnp_igds then
-                if not igd_limit_warned then
-                    log_warning(
-                        "B90866 UPnP IGD limit reached; ignoring additional descriptions"
-                    )
-                    igd_limit_warned = true
-                end
-                break
-            end
-            local description_seconds_left = description_deadline - os.time()
-            if description_seconds_left <= 0 then
-                log_warning(
-                    "B39908 UPnP device-description time limit reached"
-                )
-                break
-            end
-            local found_gateway_igd = false
-            local xml_path = make_temp_path()
-            if xml_path then
-                local request_timeout = math.max(
-                    1,
-                    math.min(3, description_seconds_left)
-                )
-                local connect_timeout = math.min(2, request_timeout)
-                local curl_command = 'curl -fsS --connect-timeout '
-                    .. tostring(connect_timeout) .. ' --max-time '
-                    .. tostring(request_timeout) .. ' '
-                    .. '--max-filesize 1048576 -o '
-                    .. shell_quote(xml_path) .. ' ' .. shell_quote(location)
-                if run_command(curl_command, true, true) then
-                    local xml = read_text_file(xml_path, false, true)
-                    if xml and #xml <= 1048576 then
-                        descriptions_read = descriptions_read + 1
-                        local control_url = upnp_control_url(xml, location)
-                        if control_url and #control_url <= 2048
-                                and not seen_control_urls[control_url] then
-                            seen_control_urls[control_url] = true
-                            igds[#igds + 1] = {
-                                location = location,
-                                control_url = control_url,
-                            }
-                            local location_number = ipv4_number(http_url_host(location))
-                            local gateway_number = ipv4_number(gateway)
-                            found_gateway_igd = location_number and gateway_number
-                                and location_number == gateway_number
-                        end
-                    end
-                end
-                remove_path(xml_path)
-            end
-            if found_gateway_igd then break end
-        end
+        local locations, upnp_response_count = filter_upnp_locations(
+            location_candidates,
+            gateway,
+            source_ip,
+            source_prefix
+        )
+        local igds, descriptions_read = read_upnp_igds(
+            locations,
+            gateway,
+            source_ip,
+            source_prefix
+        )
         if #locations > 0 and descriptions_read == 0 then
             result = "B60567 cannot read any UPnP device description"
             break
@@ -3003,30 +3123,8 @@ local function discover_upnp(pcap_base64)
                 and (diagnostic_reason .. '; ' .. replay_timing_problem)
                 or replay_timing_problem
         end
-        local result_prefix = '{'
-            .. '"gateway":"' .. json_escape(gateway) .. '",'
-            .. '"response_count":' .. tostring(upnp_response_count) .. ','
-            .. '"igds":['
-        local igd_json = {}
-        local result_bytes = #result_prefix + 2  -- closing ]}
-        for _, igd in ipairs(igds) do
-            local entry = '{'
-                .. '"location":"' .. json_escape(igd.location) .. '",'
-                .. '"control_url":"' .. json_escape(igd.control_url) .. '"'
-                .. '}'
-            local separator_bytes = #igd_json > 0 and 1 or 0
-            if result_bytes + separator_bytes + #entry > max_upnp_result_bytes then
-                log_warning(
-                    "B75089 UPnP discovery result size limit reached; "
-                        .. "ignoring additional IGDs"
-                )
-                break
-            end
-            igd_json[#igd_json + 1] = entry
-            result_bytes = result_bytes + separator_bytes + #entry
-        end
         success = true
-        result = result_prefix .. table.concat(igd_json, ',') .. ']}'
+        result = upnp_result_json(gateway, 'pcap', upnp_response_count, igds)
     until true
     if tcpdump_pid and not kill_process(tcpdump_pid) then
         log_warning("B38790 cleanup could not stop tcpdump")
@@ -3107,6 +3205,181 @@ local function discover_upnp(pcap_base64)
     remove_path(capture_status_path)
     remove_path(tcpreplay_output_path)
     return success, result
+end
+
+local function parse_miniupnpc_output(output)
+    local first_line = type(output) == 'string'
+        and output:match('[^\r\n]+') or nil
+    if type(output) ~= 'string' then
+        return nil, "B90429 invalid miniupnpc header: "
+            .. tostring(first_line or '(empty)')
+    end
+    output = output:gsub('\r\n', '\n'):gsub('\r', '\n')
+    if not output:lower():find('miniupnpc', 1, true) then
+        return nil, "B20353 invalid miniupnpc header: "
+            .. tostring(first_line or '(empty)')
+    end
+    local locations = {}
+    local control_url = nil
+    local no_valid_igd = false
+    for line in (output .. '\n'):gmatch('(.-)\n') do
+        local trimmed = line:match('^%s*(.-)%s*$')
+        local lower_line = trimmed:lower()
+        if lower_line:find(
+                'no igd upnp device found on the network',
+                1,
+                true
+            ) or lower_line:find(
+                'no valid upnp internet gateway device found',
+                1,
+                true
+            ) then
+            no_valid_igd = true
+        end
+        local label, value = trimmed:match('^([^:]+):%s*(%S+)%s*$')
+        if label then
+            label = label:match('^%s*(.-)%s*$'):lower()
+            if label == 'desc' then
+                locations[#locations + 1] = value
+            elseif label == 'found valid igd'
+                    or label:match(
+                        '^found an igd with a reserved ip address%s*%b()$'
+                    ) then
+                if #value > 2048 or value:find('[%c%s]')
+                        or not value:match('^https?://')
+                        or not http_url_host(value) then
+                    return nil,
+                        "B81290 invalid miniupnpc output: invalid control URL"
+                end
+                if control_url and control_url ~= value then
+                    return nil,
+                        "B67840 invalid miniupnpc output: multiple valid IGDs"
+                end
+                control_url = value
+            end
+        end
+    end
+    if control_url and no_valid_igd then
+        return nil, "B61412 invalid miniupnpc output: contradictory IGD result"
+    end
+    if not control_url and #locations == 0 and not no_valid_igd then
+        return nil, "B96940 invalid miniupnpc output: missing IGD result"
+    end
+    if control_url and #locations == 0 then
+        return nil,
+            "B73862 invalid miniupnpc output: valid IGD has no description URL"
+    end
+    return {
+        locations = locations,
+        control_url = control_url,
+        no_valid_igd = no_valid_igd,
+    }
+end
+
+local function discover_upnp_miniupnpc()
+    if not install_one_of('miniupnpc', 'upnpc') then
+        return nil, "B87103 cannot install miniupnpc discovery dependency"
+    end
+    if not install_one_of('iproute2 iproute ip-tiny ip-full', 'ip') then
+        return nil, "B27341 cannot install miniupnpc route dependency"
+    end
+    local wan_route = run_command('ip route show default', true, true)
+    local default_route = wan_route
+        and ('\n' .. wan_route):match('\n(default[^\r\n]*)')
+    if not default_route then
+        return nil, "B64090 cannot determine default route for miniupnpc discovery"
+    end
+    local wan_if = default_route:match('%sdev%s+(%S+)')
+    local gateway = default_route:match('%svia%s+(%S+)') or ''
+    if not wan_if or wan_if == '' then
+        return nil, "B34958 cannot determine default route for miniupnpc discovery"
+    end
+    local source_route_target = gateway ~= '' and gateway or '239.255.255.250'
+    local source_route = run_command(
+        'ip -4 route get ' .. shell_quote(source_route_target),
+        true,
+        true
+    )
+    local source_ip = source_route and source_route:match(
+        '%ssrc%s+(%d+%.%d+%.%d+%.%d+)'
+    )
+    local source_if = source_route and source_route:match('%sdev%s+(%S+)')
+    if source_if and source_if ~= wan_if then
+        return nil, "B64843 UPnP route interface differs from default route interface"
+    end
+    local source_prefix = nil
+    local address_output = run_command(
+        'ip -4 address show dev ' .. shell_quote(wan_if),
+        true,
+        true
+    )
+    for address, prefix in tostring(address_output or ''):gmatch(
+            '%sinet%s+(%d+%.%d+%.%d+%.%d+)/(%d+)'
+        ) do
+        if not source_ip then source_ip = address end
+        if address == source_ip then
+            source_prefix = tonumber(prefix)
+            break
+        end
+    end
+    if not source_ip then
+        return nil, "B15738 cannot determine UPnP discovery source IP"
+    end
+    if not source_prefix then
+        return nil, "B25604 cannot determine UPnP discovery source subnet"
+    end
+    -- upnpc may fetch advertised descriptions while selecting an IGD, before
+    -- Lua can filter those URLs.  Bind it to the selected LAN address, ignore
+    -- its selected control URL, then independently filter and read the printed
+    -- description URLs through the bounded common path below.
+    local status_marker = '__BBBASED_UPNPC_EXIT__='
+    local command = '(LC_ALL=C upnpc -m ' .. shell_quote(source_ip)
+        .. ' -P; upnpc_status=$?; '
+        .. 'printf "\\n' .. status_marker .. '%s\\n" '
+        .. '"$upnpc_status"; exit 0)'
+    local output = run_command(command, true, true)
+    if output == nil then
+        return nil, "B37602 cannot run upnpc -P"
+    end
+    local exit_code = tonumber(output:match('\n' .. status_marker .. '(%d+)$'))
+    if not exit_code then
+        return nil, "B39609 cannot determine upnpc -P exit status"
+    end
+    output = output:gsub('\n' .. status_marker .. '%d+$', '')
+    local parsed, problem = parse_miniupnpc_output(output)
+    if not parsed then return nil, problem end
+    if exit_code ~= 0 and not parsed.no_valid_igd then
+        return nil, "B56290 upnpc -P exited with status "
+            .. tostring(exit_code)
+    end
+    local locations, response_count = filter_upnp_locations(
+        parsed.locations,
+        gateway,
+        source_ip,
+        source_prefix
+    )
+    local igds, descriptions_read = read_upnp_igds(
+        locations,
+        gateway,
+        source_ip,
+        source_prefix
+    )
+    if #locations > 0 and descriptions_read == 0 then
+        return nil, "B10450 cannot read any UPnP device description"
+    end
+    local result = upnp_result_json(
+        gateway,
+        'miniupnpc',
+        response_count,
+        igds
+    )
+    return true, result, #igds > 0
+end
+
+local function discover_upnp(pcap_base64)
+    local ok, output, found_igd = discover_upnp_miniupnpc()
+    if ok and found_igd then return ok, output end
+    return discover_upnp_pcap(pcap_base64)
 end
 
 local function handle_task(task_id, task_method, task_args)
@@ -3327,4 +3600,3 @@ while true do
         end
     end
 end
-
