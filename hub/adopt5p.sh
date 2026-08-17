@@ -130,18 +130,44 @@ packager() {
 }
 
 make_temp_path() {
-    temp_path="$(mktemp -d "${TMPDIR:-/tmp}/bbbased.XXXXXX" 2>/dev/null)" && return 0
-    temp_path="/tmp/bbbased.$$"
-    mkdir -p "$temp_path"
-    log_error "B58172 mktemp failed; using: $temp_path"
+    # temp directory is later removed in cleanup_temp_path()
+    if temp_path=$(mktemp -d "${TMPDIR:-/tmp}/bbbased.XXXXXX" 2>/dev/null) &&
+            [ -d "$temp_path" ]; then
+        return 0
+    fi
+    temp_path=''
+    for attempt in 1 2 3; do
+        if IFS= read -r suffix 2>/dev/null < /proc/sys/kernel/random/uuid; then
+            candidate="${TMPDIR:-/tmp}/bbbased.$suffix"
+        else
+            break
+        fi
+        if mkdir -m 700 "$candidate" 2>/dev/null; then
+            temp_path=$candidate
+            log_error "B58172 mktemp failed; using: $temp_path" || :
+            return 0
+        fi
+    done
+    log_error "B29784 cannot create a secure temporary directory"
+    return 1
+}
+
+cleanup_temp_path() {
+    if [ -n "$bbbased_path" ]; then
+        rm -f "$bbbased_path" 2>/dev/null || true
+    fi
+    if [ -n "$temp_path" ]; then
+        rmdir "$temp_path" 2>/dev/null || true
+    fi
 }
 
 ### set-up
 sleep 1; echo "" >&2  # clean separation from curl output
 echo "" >&2  # blank line
 echo "installing BitBurow ..." >&2
-make_temp_path
+make_temp_path || exit 1
 bbbased_path="$temp_path/bbbased.lua"
+trap cleanup_temp_path 0
 find_packager_exe || true
 
 ### install curl or wget

@@ -384,7 +384,7 @@ local function write_text_file(path, content, mode)
         return nil
     end
     if mode then
-        chmod(path, mode)  -- ignore errors, but they do get logged
+        if not chmod(path, mode) then remove_path(path) return nil end
         log_debug("set permissions on " .. path .. " to " .. mode)
     end
     return true
@@ -1079,7 +1079,11 @@ end
 local function remove_temporary_installer()
     -- remove installer, but only if in /tmp/
     if running_path:sub(1, 5) ~= '/tmp/' then return end
-    remove_paths(running_path, dirname(running_path))
+    remove_path(running_path)
+    local parent = dirname(running_path)
+    if dirname(parent) == '/tmp' then
+        remove_path(parent)  -- remove dir created in adopt5p.sh:make_temp_path()
+    end
 end
 
 local function install_init_service(lua_path)
@@ -1427,6 +1431,12 @@ local wg_pubkey_path = config_dir .. 'wgbb1_public.key'
 local pubkeys_uploaded_path = config_dir .. 'pubkeys_uploaded'
 local deploy_result_path = config_dir .. 'deploy_result'
 
+local function run_command_with_umask_077(command)
+    local wrapped = 'if umask 077; then ' .. command .. '; else false; fi'
+    -- don't need to undo umask because io.popen() starts the command in a separate process
+    return run_command(wrapped, true)
+end
+
 local function ensure_auth_keys()
     if is_readable(auth_privkey_path) and is_readable(auth_pubkey_path) then
         log_debug("auth_privkey and auth_pubkey both already exist")
@@ -1434,29 +1444,23 @@ local function ensure_auth_keys()
     end
     -- could recover if privkey still exists, but we're not going to such extremes to cover user error
     log_info("authentication keys are missing; generating new keypair")
-    remove_path(auth_pubkey_path)
+    remove_paths(auth_privkey_path, auth_pubkey_path)  -- privkey so it is recreated with umask 077
     -- note: OpenSSL 1.1.1 found on test routers can't sign with Ed25519 keys
-    local output = run_command(
+    local output = run_command_with_umask_077(
         'openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out '
-            .. shell_quote(auth_privkey_path),
-        true
+            .. shell_quote(auth_privkey_path)
     )
     if not output then
         remove_paths(auth_privkey_path, auth_pubkey_path)
         return nil
     end
-    chmod(auth_privkey_path, '0600')  -- ignore errors, but they do get logged
-    output = run_command(
+    output = run_command_with_umask_077(
         'openssl pkey -in '
             .. shell_quote(auth_privkey_path)
             .. ' -pubout -out '
-            .. shell_quote(auth_pubkey_path),
-        true
+            .. shell_quote(auth_pubkey_path)
     )
-    if not output then
-        remove_paths(auth_privkey_path, auth_pubkey_path)
-        return nil
-    end
+    if not output then remove_paths(auth_privkey_path, auth_pubkey_path) return nil end
     return true
 end
 
@@ -1468,18 +1472,12 @@ local function ensure_wg_keys()
     end
     log_info("WireGuard keys are missing; generating new keypair")
     remove_path(wg_pubkey_path)
-    local output = run_command(
-        '{ '
-            .. 'wg genkey >' .. shell_quote(wg_privkey_path) .. ' && '
-            .. 'wg pubkey <' .. shell_quote(wg_privkey_path) .. ' >' .. shell_quote(wg_pubkey_path)
-            .. '; }',
-        true
+    local output = run_command_with_umask_077(
+        'wg genkey >' .. shell_quote(wg_privkey_path)
+            .. ' && wg pubkey <' .. shell_quote(wg_privkey_path)
+            .. ' >' .. shell_quote(wg_pubkey_path)
     )
-    if not output then
-        remove_paths(wg_privkey_path, wg_pubkey_path)
-        return nil
-    end
-    chmod(wg_privkey_path, '0600')  -- ignore errors, but they do get logged
+    if not output then remove_paths(wg_privkey_path, wg_pubkey_path) return nil end
     return true
 end
 
