@@ -244,8 +244,8 @@ done
 
 ### run Lua script
 if [ -s "$bbbased_path" ]; then
-    echo "running $lua_exe $bbbased_path" >&2
-    run_as_root "$lua_exe" "$bbbased_path"
+    echo "running $lua_exe $bbbased_path install" >&2
+    run_as_root "$lua_exe" "$bbbased_path" install
 else
     log_error "B29909 cannot download $download_url"
 fi

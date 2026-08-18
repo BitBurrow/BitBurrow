@@ -1076,25 +1076,10 @@ local function stop_runner_script(message, indent)
     }, '\n' .. indent)
 end
 
-local function remove_temporary_installer()
-    -- remove installer, but only if in /tmp/
-    if running_path:sub(1, 5) ~= '/tmp/' then return end
-    remove_path(running_path)
-    local parent = dirname(running_path)
-    if dirname(parent) == '/tmp' then
-        remove_path(parent)  -- remove dir created in adopt5p.sh:make_temp_path()
-    end
-end
-
-local function install_init_service(lua_path)
-    -- return nil on failure
-    -- return true after successful install or reinstall (running under /tmp)
-    local init_path = '/etc/init.d/' .. bbsubd
-    local tmp_path = make_temp_path('/tmp/')  -- not in bbsubd_tmp_dir because it doesn't exist
-    if not tmp_path then return nil end
+local function init_service_text(lua_path)
     local locked_runner = locked_runner_script(lua_path)
     local stop_runner = stop_runner_script('stop_service called from procd', '    ')
-    local init_text = table.concat({
+    return table.concat({
         '#!/bin/sh /etc/rc.common',
         '',
         'START=95',
@@ -1114,10 +1099,61 @@ local function install_init_service(lua_path)
         '}',
         '',
     }, '\n')
-    local file_installed = write_text_file(tmp_path, init_text)
-        and file_copy(tmp_path, init_path, '0755')
+end
+
+local function systemd_service_texts(lua_path)
+    local start_text = '#!/bin/sh\n' .. locked_runner_script(lua_path) .. '\n'
+    local stop_text = '#!/bin/sh\n' .. stop_runner_script('stop called from systemd') .. '\nexit 0\n'
+    local service_text = table.concat({
+        '[Unit]',
+        'Description=' .. bbsubd .. ' daemon',
+        'After=network-online.target',
+        'Wants=network-online.target',
+        '',
+        '[Service]',
+        'Type=simple',
+        'ExecStart=/usr/local/sbin/' .. bbsubd .. '-start.sh',
+        'ExecStop=/usr/local/sbin/' .. bbsubd .. '-stop.sh',
+        'Restart=always',
+        'RestartSec=5',
+        'StandardOutput=journal',
+        'StandardError=journal',
+        '',
+        '[Install]',
+        'WantedBy=multi-user.target',
+        '',
+    }, '\n')
+    return start_text, stop_text, service_text
+end
+
+local function install_service_file(path, content, mode)
+    -- return success and whether the file was changed
+    if read_text_file(path, true, true) == content and get_mode(path) == mode then
+        return true, false
+    end
+    local tmp_path = make_temp_path('/tmp/')  -- bbsubd_tmp_dir may not exist during installation
+    if not tmp_path then return nil end
+    local installed = write_text_file(tmp_path, content) and file_copy(tmp_path, path, mode)
     remove_path(tmp_path)
-    if not file_installed then return nil end
+    if not installed then return nil end
+    return true, true
+end
+
+local function remove_temporary_installer()
+    -- remove installer, but only if in /tmp/
+    if running_path:sub(1, 5) ~= '/tmp/' then return end
+    remove_path(running_path)
+    local parent = dirname(running_path)
+    if dirname(parent) == '/tmp' then
+        remove_path(parent)  -- remove dir created in adopt5p.sh:make_temp_path()
+    end
+end
+
+local function install_init_service(lua_path)
+    -- return nil on failure
+    -- return true after successful install or reinstall (running under /tmp)
+    local init_path = '/etc/init.d/' .. bbsubd
+    if not install_service_file(init_path, init_service_text(lua_path), '0755') then return nil end
     if not file_copy(running_path, lua_path, '0644') then return nil end
     if not run_command(shell_quote(init_path) .. ' enabled', true, true) then
         if not run_command(shell_quote(init_path) .. ' enable') then
@@ -1143,42 +1179,12 @@ local function install_systemd_service(lua_path)
     local service_path = '/etc/systemd/system/' .. service_name
     local start_script_path = '/usr/local/sbin/' .. bbsubd .. '-start.sh'
     local stop_script_path = '/usr/local/sbin/' .. bbsubd .. '-stop.sh'
-    local tmp_service_path = make_temp_path('/tmp/')  -- not in bbsubd_tmp_dir because it doesn't exist
-    local tmp_start_path = make_temp_path('/tmp/')
-    local tmp_stop_path = make_temp_path('/tmp/')
-    if not tmp_service_path or not tmp_start_path or not tmp_stop_path then
-        remove_paths(tmp_service_path, tmp_start_path, tmp_stop_path)
+    local start_text, stop_text, service_text = systemd_service_texts(lua_path)
+    if not install_service_file(start_script_path, start_text, '0755')
+            or not install_service_file(stop_script_path, stop_text, '0755')
+            or not install_service_file(service_path, service_text, '0644') then
         return nil
     end
-    local start_text = '#!/bin/sh\n' .. locked_runner_script(lua_path) .. '\n'
-    local stop_text = '#!/bin/sh\n' .. stop_runner_script('stop called from systemd') .. '\nexit 0\n'
-    local service_text = table.concat({
-        '[Unit]',
-        'Description=' .. bbsubd .. ' daemon',
-        'After=network-online.target',
-        'Wants=network-online.target',
-        '',
-        '[Service]',
-        'Type=simple',
-        'ExecStart=' .. start_script_path,
-        'ExecStop=' .. stop_script_path,
-        'Restart=always',
-        'RestartSec=5',
-        'StandardOutput=journal',
-        'StandardError=journal',
-        '',
-        '[Install]',
-        'WantedBy=multi-user.target',
-        '',
-    }, '\n')
-    local files_installed = write_text_file(tmp_start_path, start_text)
-        and write_text_file(tmp_stop_path, stop_text)
-        and write_text_file(tmp_service_path, service_text)
-        and file_copy(tmp_start_path, start_script_path, '0755')
-        and file_copy(tmp_stop_path, stop_script_path, '0755')
-        and file_copy(tmp_service_path, service_path, '0644')
-    remove_paths(tmp_service_path, tmp_start_path, tmp_stop_path)
-    if not files_installed then return nil end
     if not file_copy(running_path, lua_path, '0644') then return nil end
     remove_path('/etc/init.d/' .. bbsubd)
     if not run_command('systemctl daemon-reload') then return nil end
@@ -1208,6 +1214,40 @@ local function install_daemon_service(lua_path)
     else  -- 'init'
         return install_init_service(lua_path)
     end
+end
+
+local function ensure_service_uses_explicit_verb(lua_path)
+    -- Update managed service files before this version reports a successful deployment.
+    if not lua_path:match('^/') then
+        log_error("B41806 cannot update service files from relative path " .. lua_path)
+        return nil
+    end
+    local any_changed = false
+    if platform == 'init' then
+        local init_path = '/etc/init.d/' .. bbsubd
+        local ok, changed = install_service_file(init_path, init_service_text(lua_path), '0755')
+        if not ok then return nil end
+        any_changed = changed
+    else
+        local service_path = '/etc/systemd/system/' .. bbsubd .. '.service'
+        local start_script_path = '/usr/local/sbin/' .. bbsubd .. '-start.sh'
+        local stop_script_path = '/usr/local/sbin/' .. bbsubd .. '-stop.sh'
+        local start_text, stop_text, service_text = systemd_service_texts(lua_path)
+        local ok, changed = install_service_file(start_script_path, start_text, '0755')
+        if not ok then return nil end
+        any_changed = changed or any_changed
+        ok, changed = install_service_file(stop_script_path, stop_text, '0755')
+        if not ok then return nil end
+        any_changed = changed or any_changed
+        ok, changed = install_service_file(service_path, service_text, '0644')
+        if not ok then return nil end
+        any_changed = changed or any_changed
+        if any_changed and not run_command('systemctl daemon-reload') then return nil end
+    end
+    if any_changed then
+        log_info("B49077 updated service files to use an explicit daemonize verb")
+    end
+    return true
 end
 
 local function restart_after_update()
@@ -3202,6 +3242,10 @@ if cli_verb ~= 'daemonize' then log_error("B38333 cli_verb == " .. cli_verb) os.
 log_warning("B20392 BitBurrow base daemon, log level " .. logging_level
     .. ", version " .. file_version)
 if not set_sleep_method() then cleanup_and_exit(13) end
+if not ensure_service_uses_explicit_verb(running_path) then
+    log_error("B67392 cannot update service files for explicit command-line verbs")
+    cleanup_and_exit(14)
+end
 install_one_of('curl', 'curl')
 install_one_of('openssl openssl-util', 'openssl')
 
