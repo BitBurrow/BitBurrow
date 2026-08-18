@@ -12,7 +12,7 @@ local file_version = '{file_version}'
 local api_url = '{api_url}'
 local download_url = '{download_url}'
 local subd = '{subd}'
-local token_path = '/tmp/{ott_filename}'
+local token_filename = '{ott_filename}'
 local log_err_route = '{log_err_route}'
 
 --
@@ -20,7 +20,14 @@ local log_err_route = '{log_err_route}'
 --
 
 local bbsubd = 'bb' .. subd
-local bbsubd_tmp_dir = '/tmp/' .. bbsubd .. '/'  -- note all directories end in '/'
+local tmp_dir = os.getenv('TMPDIR')
+if tmp_dir and tmp_dir ~= '' then
+    tmp_dir = tmp_dir:gsub('/+$', '') .. '/'  -- note all directories end in '/'
+else
+    tmp_dir = '/tmp/'
+end
+local token_path = tmp_dir .. token_filename
+local bbsubd_tmp_dir = tmp_dir .. bbsubd .. '/'
 local lock_dir = bbsubd_tmp_dir .. 'lock/'
 local lock_dir_pid_path = lock_dir .. 'pid'
 local lock_file_path = lock_dir .. 'flock'
@@ -77,7 +84,7 @@ end
 local function log(message, level)
     if level >= 30 then  -- send errors and warnings to server
         -- run_command() and make_temp_path() are not defined yet
-        local tmp_template = shell_quote('/tmp/' .. bbsubd .. '.log.XXXXXX')
+        local tmp_template = shell_quote(tmp_dir .. bbsubd .. '.log.XXXXXX')
         local tmp_pipe = io.popen('umask 077; mktemp ' .. tmp_template .. ' 2>/dev/null', 'r')
         if not tmp_pipe then return nil end
         local tmp_path = tmp_pipe:read('*l')
@@ -929,7 +936,6 @@ local function print_help()
         "",
         "Verbs:",
         "  install      Install or reinstall the daemon as a system service.",
-        "               This verb is implied when run under /tmp/.",
         "  daemonize    Run the daemon in the foreground. This internal verb is",
         "               normally invoked by a service wrapper holding the lock.",
         "  run-tests    Run the self-tests and exit.",
@@ -962,8 +968,6 @@ for _, value in ipairs(arg) do
         set_cli_verb('help')
     elseif value == '--version' then
         set_cli_verb('version')
-    elseif value == '--flock-locked' then  -- for compatibility with installs before 2026-08-13
-        set_cli_verb('daemonize')
     elseif value:sub(1, 1) == '-' then
         log_error("invalid argument: " .. value)
         print_help()
@@ -971,9 +975,6 @@ for _, value in ipairs(arg) do
     else
         set_cli_verb(value)
     end
-end
-if cli_verb == nil and running_path:sub(1, 5) == '/tmp/' then
-    cli_verb = 'install'
 end
 if cli_verb == nil then
     log_error("a verb is required")
@@ -1039,6 +1040,8 @@ end
 
 local function locked_runner_script(lua_path)
     return table.concat({
+        'TMPDIR=' .. shell_quote(tmp_dir),
+        'export TMPDIR',
         'mkdir -p ' .. shell_quote(bbsubd_tmp_dir) .. ' || exit 1',
         'chmod 0700 ' .. shell_quote(bbsubd_tmp_dir) .. ' 2>/dev/null',
         'mkdir -p ' .. shell_quote(lock_dir) .. ' || exit 1',
@@ -1074,6 +1077,15 @@ local function stop_runner_script(message, indent)
         'done',
         '# do not remove lock_dir or lock_file_path here',
     }, '\n' .. indent)
+end
+
+local function remove_temporary_installer()
+    -- remove only the exact temporary layout created by adopt5p.sh
+    if running_path:sub(1, #tmp_dir) ~= tmp_dir then return end
+    local relative_path = running_path:sub(#tmp_dir + 1)
+    local temp_name = relative_path:match('^(bbbased%.[^/]+)/bbbased%.lua$')
+    if not temp_name then return end
+    remove_paths(running_path, tmp_dir .. temp_name)
 end
 
 local function init_service_text(lua_path)
@@ -1131,7 +1143,7 @@ local function install_service_file(path, content, mode)
     if read_text_file(path, true, true) == content and get_mode(path) == mode then
         return true, false
     end
-    local tmp_path = make_temp_path('/tmp/')  -- bbsubd_tmp_dir may not exist during installation
+    local tmp_path = make_temp_path(tmp_dir)  -- bbsubd_tmp_dir may not exist during installation
     if not tmp_path then return nil end
     local installed = write_text_file(tmp_path, content) and file_copy(tmp_path, path, mode)
     remove_path(tmp_path)
@@ -1139,19 +1151,8 @@ local function install_service_file(path, content, mode)
     return true, true
 end
 
-local function remove_temporary_installer()
-    -- remove installer, but only if in /tmp/
-    if running_path:sub(1, 5) ~= '/tmp/' then return end
-    remove_path(running_path)
-    local parent = dirname(running_path)
-    if dirname(parent) == '/tmp' then
-        remove_path(parent)  -- remove dir created in adopt5p.sh:make_temp_path()
-    end
-end
-
 local function install_init_service(lua_path)
-    -- return nil on failure
-    -- return true after successful install or reinstall (running under /tmp)
+    -- return nil on failure, true after successful install or reinstall
     local init_path = '/etc/init.d/' .. bbsubd
     if not install_service_file(init_path, init_service_text(lua_path), '0755') then return nil end
     if not file_copy(running_path, lua_path, '0644') then return nil end
@@ -1173,8 +1174,7 @@ local function install_init_service(lua_path)
 end
 
 local function install_systemd_service(lua_path)
-    -- return nil on failure
-    -- return true after successful install or reinstall (running under /tmp)
+    -- return nil on failure, true after successful install or reinstall
     local service_name = bbsubd .. '.service'
     local service_path = '/etc/systemd/system/' .. service_name
     local start_script_path = '/usr/local/sbin/' .. bbsubd .. '-start.sh'
@@ -1214,40 +1214,6 @@ local function install_daemon_service(lua_path)
     else  -- 'init'
         return install_init_service(lua_path)
     end
-end
-
-local function ensure_service_uses_explicit_verb(lua_path)
-    -- Update managed service files before this version reports a successful deployment.
-    if not lua_path:match('^/') then
-        log_error("B41806 cannot update service files from relative path " .. lua_path)
-        return nil
-    end
-    local any_changed = false
-    if platform == 'init' then
-        local init_path = '/etc/init.d/' .. bbsubd
-        local ok, changed = install_service_file(init_path, init_service_text(lua_path), '0755')
-        if not ok then return nil end
-        any_changed = changed
-    else
-        local service_path = '/etc/systemd/system/' .. bbsubd .. '.service'
-        local start_script_path = '/usr/local/sbin/' .. bbsubd .. '-start.sh'
-        local stop_script_path = '/usr/local/sbin/' .. bbsubd .. '-stop.sh'
-        local start_text, stop_text, service_text = systemd_service_texts(lua_path)
-        local ok, changed = install_service_file(start_script_path, start_text, '0755')
-        if not ok then return nil end
-        any_changed = changed or any_changed
-        ok, changed = install_service_file(stop_script_path, stop_text, '0755')
-        if not ok then return nil end
-        any_changed = changed or any_changed
-        ok, changed = install_service_file(service_path, service_text, '0644')
-        if not ok then return nil end
-        any_changed = changed or any_changed
-        if any_changed and not run_command('systemctl daemon-reload') then return nil end
-    end
-    if any_changed then
-        log_info("B49077 updated service files to use an explicit daemonize verb")
-    end
-    return true
 end
 
 local function restart_after_update()
@@ -1387,7 +1353,7 @@ local function delete_adopt5c_code(path)
         '  rm ',
         '  kil',
         'fi',
-        'T=/tmp/',
+        'T=',
         'echo ',
         'echo ',
         'U=http',
@@ -1445,7 +1411,7 @@ local function delete_adopt5c_code(path)
         end
     end
     local new_content = table.concat(kept)
-    local temp_path = make_temp_path('/tmp')
+    local temp_path = make_temp_path(tmp_dir)
     if not temp_path then return nil end
     local replaced = write_text_file(temp_path, new_content)
         and chmod(temp_path, mode)
@@ -1805,8 +1771,8 @@ local function send_signed_jsonrpc(request_body)
         if not sign_output then break end
         -- verify:
         -- openssl dgst -sha512 -sigopt rsa_padding_mode:pss -sigopt rsa_mgf1_md:sha512 \
-        --     -sigopt rsa_pss_saltlen:64 -verify /tmp/client_rsapss_pub.pem \
-        --     -signature /tmp/api_data.sig /tmp/api_data
+        --     -sigopt rsa_pss_saltlen:64 -verify <tmp-dir>/client_rsapss_pub.pem \
+        --     -signature <tmp-dir>/api_data.sig <tmp-dir>/api_data
         local signature_b64 = run_command(
             'openssl base64 -A -in ' .. shell_quote(sig_bin_path),
             true
@@ -3208,7 +3174,7 @@ local function do_ping()
 end
 
 --
--- if running from /tmp, install or reinstall as a service and exit
+-- install or reinstall as a service and exit
 --
 
 if get_uid() ~= 0 then
@@ -3242,10 +3208,6 @@ if cli_verb ~= 'daemonize' then log_error("B38333 cli_verb == " .. cli_verb) os.
 log_warning("B20392 BitBurrow base daemon, log level " .. logging_level
     .. ", version " .. file_version)
 if not set_sleep_method() then cleanup_and_exit(13) end
-if not ensure_service_uses_explicit_verb(running_path) then
-    log_error("B67392 cannot update service files for explicit command-line verbs")
-    cleanup_and_exit(14)
-end
 install_one_of('curl', 'curl')
 install_one_of('openssl openssl-util', 'openssl')
 

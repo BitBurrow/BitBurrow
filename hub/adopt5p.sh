@@ -42,6 +42,12 @@ find_packager_exe() {
     return 1
 }
 
+shell_quote() {
+    printf "'"
+    printf '%s' "$1" | sed "s/'/'\\\\''/g"
+    printf "'"
+}
+
 run_as_root() {
     if [ "$(id -u)" -eq 0 ]; then
         "$@"
@@ -56,7 +62,12 @@ run_as_root() {
         return $?
     fi
     if command -v su >/dev/null 2>&1; then
-        su -c "$(printf '%s ' "$@")"
+        root_command=''
+        for root_arg do
+            quoted_arg=$(shell_quote "$root_arg") || return 1
+            root_command="${root_command}${root_command:+ }${quoted_arg}"
+        done
+        su -c "$root_command"
         return $?
     fi
     log_error "B24773 cannot run as root; trying as current user"
@@ -245,7 +256,7 @@ done
 ### run Lua script
 if [ -s "$bbbased_path" ]; then
     echo "running $lua_exe $bbbased_path install" >&2
-    run_as_root "$lua_exe" "$bbbased_path" install
+    run_as_root env TMPDIR="${TMPDIR:-/tmp}" "$lua_exe" "$bbbased_path" install
 else
     log_error "B29909 cannot download $download_url"
 fi
