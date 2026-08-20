@@ -4,8 +4,8 @@ steps:
 - path: ''
   title: Choose how to connect
   md: |-
-    * **Automatic**: Install an app on an Android phone or tablet.
-    * **Manual**: Sign in to the router's web interface using a web browser.
+    * ( ) **Automatic**: Install an app on an Android phone or tablet.
+    * ( ) **Manual**: Sign in to the router's web interface using a web browser.
 
     You can return to this step and choose again later.
   id: adopt0n

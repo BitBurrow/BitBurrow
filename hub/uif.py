@@ -583,83 +583,200 @@ def render_content(sections):
     return idelem
 
 
+def split_radio_markdown(md: str, step_id: str):
+    before_lines = list()
+    after_lines = list()
+    choices = list()
+    chosen = None  # current choice
+    found_group = False
+    for line in md.splitlines(keepends=True):
+        bare_line = line.rstrip('\r\n')
+        match = re.fullmatch(r' *\* +\( *\) +\*\*([^*\r\n]+)\*\*(.*)', bare_line)
+        if match:
+            if found_group and chosen is None:
+                raise Berror(f"B42068 multiple radio groups in step {step_id!r}")
+            if chosen is not None:
+                choices.append(tuple(chosen))
+            label = match.group(1).strip()
+            if not label:
+                raise Berror(f"B90631 empty radio label in step {step_id!r}")
+            chosen = [label, match.group(2).rstrip()]
+            found_group = True
+            continue
+        if chosen is not None:
+            if bare_line.strip() and line[:1].isspace():
+                description = chosen[1].rstrip()
+                continuation = bare_line.strip()
+                chosen[1] = f'{description} {continuation}' if description else f' {continuation}'
+                continue
+            choices.append(tuple(chosen))
+            chosen = None
+        if found_group:
+            after_lines.append(line)
+        else:
+            before_lines.append(line)
+    if chosen is not None:
+        choices.append(tuple(chosen))
+    return ''.join(before_lines), choices, ''.join(after_lines)
+
+
+def load_stepper_data(yaml_path: str):
+    with open(yaml_path, 'r', encoding='utf-8') as f:
+        data = yaml.safe_load(f)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get('pre_md'), str)
+        or not isinstance(data.get('steps'), list)
+    ):
+        raise Berror(f"B82173 invalid stepper data in {yaml_path}")
+    all_steps = data['steps']
+    path_map = dict()
+    id_map = dict()
+    required_fields = ('path', 'title', 'md', 'id')
+    for s in all_steps:
+        if not isinstance(s, dict) or not all(
+            isinstance(s.get(field), str) for field in required_fields
+        ):
+            raise Berror(f"B26754 invalid step in {yaml_path}")
+        path = s['path']
+        step_id = s['id']
+        if not step_id or step_id == 'pre_md':
+            raise Berror(f"B85146 invalid id {step_id!r} in {yaml_path}")
+        if path and not path.startswith('/'):
+            raise Berror(f"B41603 path {path!r} in {yaml_path} must start with '/'")
+        if path in path_map:
+            raise Berror(f"B19389 duplicate path '{path}' in {yaml_path}")
+        if step_id in id_map:
+            raise Berror(f"B33451 duplicate id '{step_id}' in {yaml_path}")
+        path_map[path] = s
+        id_map[step_id] = s
+        radio_before, radio_choices, radio_after = split_radio_markdown(s['md'], step_id)
+        s['radio_before'] = radio_before
+        s['radio_choices'] = radio_choices
+        s['radio_after'] = radio_after
+    if '' not in path_map:
+        raise Berror(f"B50427 root path is missing in {yaml_path}")
+    for s in all_steps:
+        if not s['path']:
+            continue
+        parent_path = s['path'].rsplit('/', 1)[0]
+        parent = path_map.get(parent_path)
+        if parent is None:
+            raise Berror(f"B29874 parent path {parent_path!r} for {s['path']!r} is missing")
+        parent.setdefault('children', []).append(s)
+        s['parent'] = parent
+    for s in all_steps:
+        children = s.get('children', [])
+        named_children = {c['path'].rsplit('/', 1)[-1]: c for c in children}
+        next_child = named_children.pop('Next', None)
+        if next_child is not None and named_children:
+            raise Berror(f"B63925 step {s['id']!r} mixes a Next path with named paths")
+        radio_labels = [label for label, _ in s['radio_choices']]
+        if len(radio_labels) != len(set(radio_labels)):
+            raise Berror(f"B17350 duplicate radio label in step {s['id']!r}")
+        if radio_labels and set(radio_labels) != set(named_children):
+            missing = [
+                f'{s["path"]}/{label}' if s['path'] else f'/{label}'
+                for label in radio_labels
+                if label not in named_children
+            ]
+            unexpected = [
+                child['path']
+                for label, child in named_children.items()
+                if label not in radio_labels
+            ]
+            raise Berror(
+                f"B58641 radio paths do not match step {s['id']!r}: "
+                f'missing={missing!r}; unexpected={unexpected!r}'
+            )
+        if named_children and not radio_labels:
+            raise Berror(f"B71269 step {s['id']!r} has named paths but no radio buttons")
+        s['radio_children'] = {label: named_children[label] for label in radio_labels}
+    return data, all_steps, path_map, id_map
+
+
 def render_stepper(stage: str, idelem_lambdas=None):
     if idelem_lambdas is None:
         idelem_lambdas = dict()
     yaml_path = os.path.join(util.ui_path, f'setup-{stage}.yaml')
-    with open(yaml_path, 'r', encoding='utf-8') as f:
-        data = yaml.safe_load(f)
+    data, all_steps, path_map, id_map = load_stepper_data(yaml_path)
     idelem = dict()  # map of maps
-    done_set_contents = set()
+    done_set_contents = dict()
 
     def set_contents(step_id):
-        if step_id in done_set_contents:
-            return  # already set for this step
         for obj_id, obj in idelem[step_id].items():
-            if obj_id in idelem_lambdas:
-                idelem_lambdas[obj_id](obj)
-        done_set_contents.add(step_id)
+            key = (step_id, obj_id)
+            callback = idelem_lambdas.get(obj_id)
+            if callback is not None and done_set_contents.get(key) is not obj:
+                callback(obj)
+                done_set_contents[key] = obj
 
     idelem['pre_md'] = dict()  # for this section, map for each element ID to its actual object
     render_markdown_with_ctags(data['pre_md'], idelem['pre_md'], None)  # text above list
     set_contents('pre_md')
-    all_steps = data['steps']
-    path_map = dict()  # 'path' from here forward means the sequence of choices the user made
-    id_map = dict()
     for s in all_steps:
-        if path_map.setdefault(s['path'], s) != s:
-            raise Berror(f"B19389 duplicate path '{s['path']}' in {yaml_path}")
-        if id_map.setdefault(s['id'], s) != s:
-            raise Berror(f"B33451 duplicate id '{s['id']}' in {yaml_path}")
         idelem[s['id']] = dict()
-    for s in all_steps:  # use paths to create a tree structure
-        if len(s['path']) == 0:
-            continue  # root has no parent
-        parent_path = re.sub(r'/[^/]*$', '', s['path'])
-        parent = path_map[parent_path]
-        if 'children' not in parent:
-            parent['children'] = list()
-        parent['children'].append(s)
-        s['parent'] = parent
+    selected_radio_values = dict()
     # 'header-nav' makes steps clickable (works, but possibly fragile after stepper.remove())
     with ui.stepper().props('vertical header-nav').classes('w-full max-w-5xl') as stepper:
 
-        def on_click_other(child, from_step_el):
+        def delete_steps_after(step_el) -> None:
+            children = list(stepper.default_slot.children)
+            try:
+                i = children.index(step_el)
+            except ValueError:
+                return
+            for ch in children[i + 1 :]:
+                stepper.remove(ch)
 
-            def delete_steps_after(step_el) -> None:
-                children = list(stepper.default_slot.children)
-                try:
-                    i = children.index(step_el)
-                except ValueError:
-                    return
-                for ch in children[i + 1 :]:
-                    stepper.remove(ch)
+        def render_step_contents(s, step):
+            render_markdown_with_ctags(s['radio_before'], idelem[s['id']], None)
+            radio = None
+            if s['radio_choices']:
+                choices = {
+                    label: f'{label}\n{description}' if description else label
+                    for label, description in s['radio_choices']
+                }
+                initial = selected_radio_values.setdefault(s['id'], s['radio_choices'][0][0])
 
-            delete_steps_after(from_step_el)
-            build_steps_down(child)
-            stepper.next()
+                def select_branch(e, s=s, step=step):
+                    selected_radio_values[s['id']] = e.value
+                    delete_steps_after(step)
+                    build_steps_down(s['radio_children'][e.value])
+
+                radio = ui.radio(choices, value=initial, on_change=select_branch).classes('w-full')
+                radio.add_slot(
+                    'label',
+                    r'''
+                        <span>
+                            <strong>{{ props.label.split('\n')[0] }}</strong><template
+                                v-if="props.label.includes('\n')"
+                            >{{ props.label.slice(props.label.indexOf('\n') + 1) }}</template>
+                        </span>
+                    ''',
+                )
+            render_markdown_with_ctags(s['radio_after'], idelem[s['id']], None)
+            return radio
 
         def build_steps_down(s):
             while True:
                 nextc = None
                 with stepper:
-                    with ui.step(s['id']).props(f'title={s["title"]}') as step:
-                        render_markdown_with_ctags(s['md'], idelem[s['id']], None)
+                    with ui.step(s['id'], title=s['title']) as step:
+                        radio = render_step_contents(s, step)
                         with ui.stepper_navigation():
                             if 'parent' in s:
                                 ui.button('Back', on_click=stepper.previous).props('outline')
-                            for c in s.get('children', list()):
-                                label = c['path'].rsplit('/', 1)[-1]
-                                if label == 'Next':
-                                    nextc = c
-                                    ui.button(label, on_click=stepper.next)
-                                else:
-                                    l = lambda child=c, step=step: on_click_other(child, step)
-                                    ui.button(label, on_click=l)
-                    if nextc:
-                        s = nextc
-                    else:
+                            children = s.get('children', list())
+                            if radio is not None:
+                                nextc = s['radio_children'][radio.value]
+                                ui.button('Next', on_click=stepper.next)
+                            elif children:
+                                nextc = children[0]
+                                ui.button('Next', on_click=stepper.next)
+                    if nextc is None:
                         break
+                    s = nextc
 
         def on_step_change(e):
             step_id = e.value

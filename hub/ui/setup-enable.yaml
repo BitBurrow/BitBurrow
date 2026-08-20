@@ -18,8 +18,8 @@ steps:
 - path: /Next/Next
   title: Step 3
   md: |-
-    1. Iteritorem novum ad fontem electricum coniunge.
-    1. Fune Ethernet coniunge portum "WAN" novi iteritoris cum uno portuum "LAN" veteris iteritoris.
+    * ( ) **Step 4a**: Iteritorem novum ad fontem electricum coniunge.
+    * ( ) **Step 4b**: Fune Ethernet coniunge portum "WAN" novi iteritoris cum uno portuum "LAN" veteris iteritoris.
   id: pli
 - path: /Next/Next/Step 4a
   title: Step 4a
