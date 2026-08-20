@@ -557,6 +557,8 @@ def render_header(is_logged_in: bool):
                     ui.menu_item("About", lambda: ui.navigate.to('/about'))
                     ui.menu_item("Log in", lambda: ui.navigate.to('/login'))
             menu_icon.on('click', lambda e: menu.open())
+    # set a maximum width for page content so images on desktop aren't huge
+    ui.query('.nicegui-content').classes('w-full max-w-4xl mx-auto text-base lg:text-lg')
 
 
 def render_content(sections):
