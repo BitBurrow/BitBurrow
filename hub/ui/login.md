@@ -4,7 +4,7 @@
 
 {{ image(source='padlock-24051.svg', align='center', width='50%') }}
 
-Please enter your login key below. If you don't have one, you can use a coupon code
+Please enter your login key below. If you don't have one, you can use a invite code
 to [create a new login key](/welcome).
 
 {{ input(id='login_key', login_key=True, password=True, label='Login key',

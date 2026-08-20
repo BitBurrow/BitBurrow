@@ -1,5 +1,5 @@
 ###
-### login key details (used for coupon codes too)
+### login key details (used for invite codes too)
 ###
 
 import re

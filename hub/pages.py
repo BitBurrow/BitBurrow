@@ -28,33 +28,33 @@ def welcome(client: Client):
         return
     sections = uif.parse_markdown_sections('welcome')
     ui.run_javascript(f"document.title = '{sections[0]}'")
-    qparam_coupon = client.request.query_params.get('coupon')
+    qparam_invite = client.request.query_params.get('invite')
     uif.render_header(is_logged_in=False)
     idelem = uif.render_content(sections)
-    if qparam_coupon:
-        idelem['coupon_code'].set_value(qparam_coupon)
+    if qparam_invite:
+        idelem['invite_code'].set_value(qparam_invite)
 
     async def on_continue():
-        coupon = lk.plain_login_key(idelem['coupon_code'].value.upper() or '')
+        invite = lk.plain_login_key(idelem['invite_code'].value.upper() or '')
         try:
-            aid = db.validate_login_key(coupon, allowed_kinds=db.coupon)
+            aid = db.validate_login_key(invite, allowed_kinds=db.invite)
         except db.CredentialsError as e:
-            ui.notify(db.style_login_key_error_message(str(e), db.coupon))
+            ui.notify(db.style_login_key_error_message(str(e), db.invite))
             return
         idelem['continue'].disable()
-        ui.navigate.to(f'/confirm?coupon={coupon}')
+        ui.navigate.to(f'/confirm?invite={invite}')
 
     async def check_enter(e):
         if e.args.get('key') == 'Enter':
             await on_continue()
 
     async def on_blur():
-        coupon = lk.plain_login_key(idelem['coupon_code'].value.upper() or '')
-        idelem['coupon_code'].value = lk.styled_login_key(coupon)  # add dashes where needed
+        invite = lk.plain_login_key(idelem['invite_code'].value.upper() or '')
+        idelem['invite_code'].value = lk.styled_login_key(invite)  # add dashes where needed
 
     idelem['continue'].on_click(callback=on_continue)
-    idelem['coupon_code'].on('keydown', check_enter)  # pressing Enter submits form
-    idelem['coupon_code'].on('blur', on_blur)
+    idelem['invite_code'].on('keydown', check_enter)  # pressing Enter submits form
+    idelem['invite_code'].on('blur', on_blur)
 
 
 ###
@@ -67,13 +67,13 @@ def confirm(client: Client):
     if auth.is_logged_in(client):
         ui.navigate.to('/home')
         return
-    qparam_coupon = client.request.query_params.get('coupon')
-    if not qparam_coupon:  # coupon code is required
-        ui.navigate.to(f'/welcome?coupon={qparam_coupon}')
+    qparam_invite = client.request.query_params.get('invite')
+    if not qparam_invite:  # invite code is required
+        ui.navigate.to(f'/welcome?invite={qparam_invite}')
     try:  # validate (no other way to confirm that user came via /welcome)
-        aid = db.validate_login_key(qparam_coupon, allowed_kinds=db.coupon)
+        aid = db.validate_login_key(qparam_invite, allowed_kinds=db.invite)
     except db.CredentialsError as e:  # send them back to /welcome
-        ui.navigate.to(f'/welcome?coupon={qparam_coupon}')
+        ui.navigate.to(f'/welcome?invite={qparam_invite}')
     sections = uif.parse_markdown_sections('confirm')
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=False)
@@ -81,7 +81,7 @@ def confirm(client: Client):
     login_key = db.new_account(
         kind=db.AccountKind.NONE,  # in DB but disabled until confirmed
         valid_for=TimeDelta(days=1),  # expire in 1 day if not confirmed
-        parent_account_id=aid,  # coupon code used
+        parent_account_id=aid,  # invite code used
     )
     idelem['login_key'].set_value(lk.styled_login_key(login_key))
 

@@ -234,7 +234,7 @@ def input(
     font_size: str = None,  # e.g. '14px', '1rem'
     show_copy: bool = False,
     max_length: int = None,
-    login_key: bool = False,  # enforce login key or coupon code entry
+    login_key: bool = False,  # enforce login key or invite code entry
     password: bool = False,
 ):
     def valid_login_key(v: str):
@@ -254,7 +254,7 @@ def input(
     classes = ['w-full', 'max-w-xl']
     if login_key:
         props.append('input-class="text-uppercase"')  # capitalize input (.value still mixed case)
-        # classes.append('text-uppercase')  # shows "COUPON CODE" rather than "Coupon code"
+        # classes.append('text-uppercase')  # shows "INVITE CODE" rather than "Invite code"
         # or this instead: 'text-transform: uppercase'
     obj = (
         ui.input(

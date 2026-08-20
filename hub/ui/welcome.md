@@ -81,7 +81,7 @@ connection, and forwards all traffic through it.)
 
 ## What do I need to get started?
 
-1. A coupon code for a BitBurrow hub. If you do not have access to one, you can
+1. A invite code for a BitBurrow hub. If you do not have access to one, you can
    [set up your own hub](https://bitburrow.com/hub/) (this requires some Linux
    background) or ask your company or organization about doing this.
 1. Two Flint routers (**GL.iNet GL-AX1800**), available from
@@ -96,9 +96,9 @@ connection, and forwards all traffic through it.)
 
 # ..
 
-Please enter your coupon code below (if it is not already filled in).
+Please enter your invite code below (if it is not already filled in).
 
-{{ input(id='coupon_code', login_key=True, label='Coupon code',
+{{ input(id='invite_code', login_key=True, label='Invite code',
 placeholder='XXXX-XXXXX-XXXX-XXXXX', font_size='18px', icon='confirmation_number') }}
 
 {{ button(id='continue', text="Continue") }}

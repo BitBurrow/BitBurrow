@@ -80,13 +80,13 @@ def set_unique_value(session, rec, attr, retry, valuef):
 
 
 ###
-### DB table Account - an administrative login, coupon code, manager, or user
+### DB table Account - an administrative login, invite code, manager, or user
 ###
 
 
 class AccountKind(enum.Enum):
-    ADMIN = 900  # can create, edit, and delete coupon codes; can edit and delete managers and users
-    COUPON = 700  # can create managers (that's all)
+    ADMIN = 900  # can create, edit, and delete invite codes; can edit and delete managers and users
+    INVITE = 700  # can create managers (that's all)
     MANAGER = 400  # can set up, edit, and delete bases and clients
     USER = 200  # can set up, edit, and delete clients for a specific intf_id on one base
     NONE = 0  # not valid
@@ -94,7 +94,7 @@ class AccountKind(enum.Enum):
     def __str__(self):
         str_map = {
             900: "admin account",
-            700: "coupon code",
+            700: "invite code",
             400: "manager account",
             200: "user account",
             0: "none",
@@ -108,7 +108,7 @@ class AccountKind(enum.Enum):
     def token_name(self):
         str_map = {
             900: "admin login key",
-            700: "coupon code",
+            700: "invite code",
             400: "login key",
             200: "user login key",
             0: "disabled account",
@@ -121,9 +121,9 @@ class AccountKind(enum.Enum):
 
 
 admin_or_manager = {AccountKind.ADMIN, AccountKind.MANAGER}
-coupon = {AccountKind.COUPON}
-admin_manager_or_coupon = {AccountKind.ADMIN, AccountKind.MANAGER, AccountKind.COUPON}
-lkocc_string = '__login_key_or_coupon_code__'
+invite = {AccountKind.INVITE}
+admin_manager_or_invite = {AccountKind.ADMIN, AccountKind.MANAGER, AccountKind.INVITE}
+lkocc_string = '__login_key_or_invite_code__'
 
 
 class Account(SQLModel, table=True):
@@ -242,14 +242,14 @@ def validate_login_key(login_key, allowed_kinds=None) -> int:
             raise CredentialsError(f"B18952 this {lkocc_string} is expired")
         if allowed_kinds is not None:
             if account.kind not in allowed_kinds:
-                if account.kind in admin_or_manager and allowed_kinds == coupon:
+                if account.kind in admin_or_manager and allowed_kinds == invite:
                     raise CredentialsError(
-                        "B10052 you entered a login key, not a coupon code; choose 'Log in'"
+                        "B10052 you entered a login key, not a invite code; choose 'Log in'"
                         " from the ≡ menu and enter this again"
                     )
-                elif account.kind in coupon and allowed_kinds == admin_or_manager:
+                elif account.kind in invite and allowed_kinds == admin_or_manager:
                     raise CredentialsError(
-                        "B20900 you entered a coupon code; please enter a login key"
+                        "B20900 you entered a invite code; please enter a login key"
                         " or choose the 'create a new login key' link above"
                     )
                 elif account.kind == AccountKind.NONE:
@@ -264,8 +264,8 @@ def style_login_key_error_message(err: str, allowed_kinds):  # make CredentialEr
     if berror_code_parts := re.match(r'(B[0-9]{5}) (.*)', err):
         err = berror_code_parts.group(2)  # remove Berror code
         # alternate:  err = f"{berror_code_parts.group(2)} (error {berror_code_parts.group(1)})"
-    if AccountKind.COUPON in allowed_kinds:
-        kind_string = AccountKind.token_name(AccountKind.COUPON)
+    if AccountKind.INVITE in allowed_kinds:
+        kind_string = AccountKind.token_name(AccountKind.INVITE)
     else:
         kind_string = AccountKind.token_name(AccountKind.MANAGER)  # login key
     replaced = err.replace(lkocc_string, kind_string)

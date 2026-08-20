@@ -98,8 +98,8 @@ def cli(return_help_text=False):
         help="Create a new admin account and display its login key. KEEP THIS LOGIN KEY SAFE!",
     )
     subparsers.add_parser(
-        "create-coupon-code",
-        help="Create a new coupon and display it. KEEP THIS SAFE!",
+        "create-invite-code",
+        help="Create a new invite and display it. KEEP THIS SAFE!",
     )
     p_shell = subparsers.add_parser(
         "shell-to-device",
@@ -333,9 +333,9 @@ def entry_point():
             print(f"Login key for your new {db.AccountKind.ADMIN} (KEEP THIS SAFE!): {login_key}")
             del login_key  # do not store!
             sys.exit(0)
-        elif args.command == 'create-coupon-code':
-            login_key = db.new_account(db.AccountKind.COUPON)
-            print(f"Your new {db.AccountKind.COUPON} (KEEP IT SAFE): {login_key}")
+        elif args.command == 'create-invite-code':
+            login_key = db.new_account(db.AccountKind.INVITE)
+            print(f"Your new {db.AccountKind.INVITE} (KEEP IT SAFE): {login_key}")
             del login_key  # do not store!
             sys.exit(0)
         elif args.command == 'shell-to-device':
@@ -396,7 +396,7 @@ def entry_point():
         logger.info(f"❚ Starting BitBurrow hub")
         logger.info(f"❚   version string: {version_string}")
         logger.info(f"❚   admin accounts: {db.account_count(db.AccountKind.ADMIN)}")
-        logger.info(f"❚   coupons: {db.account_count(db.AccountKind.COUPON)}")
+        logger.info(f"❚   invites: {db.account_count(db.AccountKind.INVITE)}")
         logger.info(f"❚   manager accounts: {db.account_count(db.AccountKind.MANAGER)}")
         logger.info(f"❚   user accounts: {db.account_count(db.AccountKind.USER)}")
         for address in address_list:
