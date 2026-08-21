@@ -487,7 +487,12 @@ def setup(client: Client, device_slug: str):
         'animated transition-prev="slide-right" transition-next="slide-left" keep-alive'
     ).classes('w-full') as panels:
         with ui.tab_panel('adopt'):
-            uif.render_stepper('adopt', idelem_lambdas)
+            uif.render_stepper(
+                'adopt',
+                idelem_lambdas,
+                initial_path=device.setup_ui_path,
+                on_path_change=lambda path: db.set_setup_ui_path(device.id, path),
+            )
         with ui.tab_panel('enable'):
             with ui.card().classes('w-full max-w-5xl mb-4'):
                 ui.label('UPnP discovery').classes('text-lg font-medium')

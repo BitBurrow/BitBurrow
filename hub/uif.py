@@ -697,11 +697,12 @@ def load_stepper_data(yaml_path: str):
     return data, all_steps, path_map, id_map
 
 
-def render_stepper(stage: str, idelem_lambdas=None):
+def render_stepper(stage: str, idelem_lambdas=None, initial_path='/', on_path_change=None):
     if idelem_lambdas is None:
         idelem_lambdas = dict()
     yaml_path = os.path.join(util.ui_path, f'setup-{stage}.yaml')
     data, all_steps, path_map, id_map = load_stepper_data(yaml_path)
+    initial_step = path_map.get('' if initial_path == '/' else initial_path, path_map[''])
     idelem = dict()  # map of maps
     done_set_contents = dict()
 
@@ -719,8 +720,16 @@ def render_stepper(stage: str, idelem_lambdas=None):
     for s in all_steps:
         idelem[s['id']] = dict()
     selected_radio_values = dict()
+    child = initial_step
+    while parent := child.get('parent'):
+        for label, radio_child in parent['radio_children'].items():
+            if radio_child is child:
+                selected_radio_values[parent['id']] = label
+                break
+        child = parent
     # 'header-nav' makes steps clickable (works, but possibly fragile after stepper.remove())
-    with ui.stepper().props('vertical header-nav').classes('w-full max-w-5xl') as stepper:
+    s = ui.stepper(value=initial_step['id'])
+    with s.props('vertical header-nav').classes('w-full max-w-5xl') as stepper:
 
         def delete_steps_after(step_el) -> None:
             children = list(stepper.default_slot.children)
@@ -785,9 +794,12 @@ def render_stepper(stage: str, idelem_lambdas=None):
             s = id_map.get(step_id)
             if s:
                 set_contents(s['id'])
+                if on_path_change is not None:
+                    on_path_change(s['path'] or '/')
             else:
                 logger.warning(f"B74741 unknown step {step_id!r} (should probably never happen)")
 
         stepper.on_value_change(on_step_change)
         build_steps_down(path_map[''])
+        set_contents(initial_step['id'])
     return idelem

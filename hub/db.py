@@ -433,6 +433,7 @@ class Device(SQLModel, table=True):
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='devices')
     platform: Platform | None = None
+    setup_ui_path: str = ''  # path of last-active step in 'setup-adopt.yaml'; '' means root
     upnp_igd_url: str = 'untried'  # UPnP control URL or r'^(untried|disabled|unavailable|failed)$'
     upnp_igd_date: DateTime = Field(  # date of last UPnP discovery attempt
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
@@ -464,6 +465,12 @@ class Device(SQLModel, table=True):
                 return "adopt5a"  # OTT has been created
         else:
             return "adopt6c"  # OTT verified; auth_pubkey accepted
+
+
+def set_setup_ui_path(device_id: int, path: str) -> None:
+    with Session(engine) as session:
+        session.exec(update(Device).where(Device.id == device_id).values(setup_ui_path=path))
+        session.commit()
 
 
 def clamp_wait_seconds(wait_seconds: int | None) -> int:
