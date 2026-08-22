@@ -656,10 +656,10 @@ def load_stepper_data(yaml_path: str):
         s['radio_before'] = radio_before
         s['radio_choices'] = radio_choices
         s['radio_after'] = radio_after
-    if '' not in path_map:
+    if '' not in path_map:  # '' means root (not '/')
         raise Berror(f"B50427 root path is missing in {yaml_path}")
     for s in all_steps:
-        if not s['path']:
+        if not s['path']:  # root has no parent
             continue
         parent_path = s['path'].rsplit('/', 1)[0]
         parent = path_map.get(parent_path)
@@ -697,12 +697,12 @@ def load_stepper_data(yaml_path: str):
     return data, all_steps, path_map, id_map
 
 
-def render_stepper(stage: str, idelem_lambdas=None, initial_path='/', on_path_change=None):
+def render_stepper(stage: str, idelem_lambdas=None, initial_path='', on_path_change=None):
     if idelem_lambdas is None:
         idelem_lambdas = dict()
     yaml_path = os.path.join(util.ui_path, f'setup-{stage}.yaml')
     data, all_steps, path_map, id_map = load_stepper_data(yaml_path)
-    initial_step = path_map.get('' if initial_path == '/' else initial_path, path_map[''])
+    initial_step = path_map.get('' if initial_path == '' else initial_path, path_map[''])
     idelem = dict()  # map of maps
     done_set_contents = dict()
 
@@ -795,7 +795,7 @@ def render_stepper(stage: str, idelem_lambdas=None, initial_path='/', on_path_ch
             if s:
                 set_contents(s['id'])
                 if on_path_change is not None:
-                    on_path_change(s['path'] or '/')
+                    on_path_change(s['path'] or '')
             else:
                 logger.warning(f"B74741 unknown step {step_id!r} (should probably never happen)")
 
