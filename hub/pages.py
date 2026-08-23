@@ -478,23 +478,38 @@ def setup(client: Client, device_slug: str):
         adopt5c_code_obj['value'] = obj
         obj.set_content(db.get_adopt5c_code(device.id, api.adopt5l_route))
 
-    def on_regenerate_adopt5c_code():
+    async def on_regenerate_adopt5c_code():
         obj = adopt5c_code_obj['value']
-        if obj is not None:  # generate a new adopt5c code, invalidate the old one
-            # if device.adopt_state() >= 'adopt6c':
-            #     # note: if base is up, this is a race because next ping will invalidate the OTT
-            #     # search: tag_invalidate_device_ott
-            #     FIXME: confirm with dialog box:
-            #     This base router is already associated with this hub.
-            #     Generating and using a new code on a different base router may
-            #     detach the current one ('{device.subd}'). Proceed
-            #     only if the current base router is not working, disconnected,
-            #     or has been factory-reset.
-            obj.set_content(db.get_adopt5c_code(device.id, api.adopt5l_route, regenerate=True))
+        if obj is None:
+            return
+        current_device = db.get_device_by_slug(device_slug, aid)
+        if current_device is None:
+            ui.notify("This base router could not be found.")
+            return
+        if current_device.adopt_state() >= 'adopt6c':
+            # note: if base is up, this is a race because next ping will invalidate the OTT
+            # search: tag_invalidate_device_ott
+            text = adopt_idelem['dialogs']['adopt5c_regenerate']
+            with ui.dialog() as dialog, ui.card().classes('max-w-xl'):
+                ui.label(text['message']).classes('text-subtitle2')
+                button = lambda key, val: ui.button(text[key], on_click=lambda: dialog.submit(val))
+                with ui.row().classes("w-full justify-end gap-2"):
+                    button("Cancel", False).props('flat')
+                    button("Confirm", True).props('flat color=negative')
+            if not await dialog:
+                return
+        obj.set_content(db.get_adopt5c_code(device.id, api.adopt5l_route, regenerate=True))
 
     def set_adopt5c_regenerate(obj):
-        obj.props('flat dense no-caps').classes('underline')
-        obj.on_click(on_regenerate_adopt5c_code)
+        obj.on(
+            'click',
+            on_regenerate_adopt5c_code,
+            js_handler=(
+                '(e) => { const a = e.target.closest("a"); '
+                'if (a && a.getAttribute("href") === "#adopt5c_regenerate") '
+                '{ e.preventDefault(); emit(); } }'
+            ),
+        )
 
     idelem_lambdas = {
         'adopt5c_regenerate': set_adopt5c_regenerate,
@@ -510,7 +525,7 @@ def setup(client: Client, device_slug: str):
         'animated transition-prev="slide-right" transition-next="slide-left" keep-alive'
     ).classes('w-full') as panels:
         with ui.tab_panel('adopt'):
-            uif.render_stepper(
+            adopt_idelem = uif.render_stepper(
                 'adopt',
                 idelem_lambdas,
                 initial_path=device.setup_ui_path,

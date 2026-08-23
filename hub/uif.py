@@ -436,9 +436,11 @@ def render_markdown_with_ctags(md: str, idelem: dict[str, object], within=None):
             if split_bare:  # avoid extra vertical space between elements
                 if within:
                     with within:
-                        ui.markdown(split_bare)
+                        obj = ui.markdown(split_bare)
                 else:
-                    ui.markdown(split_bare)
+                    obj = ui.markdown(split_bare)
+                for id in re.findall(r'\[[^]]+\]\(#([a-zA-Z_]\w*)\)', split_bare):
+                    idelem[id] = obj  # allow callbacks on inline Markdown links
 
 
 def render_expansion(title_md: str, within=None):
@@ -802,4 +804,5 @@ def render_stepper(stage: str, idelem_lambdas=None, initial_path='', on_path_cha
         stepper.on_value_change(on_step_change)
         build_steps_down(path_map[''])
         set_contents(initial_step['id'])
+    idelem['dialogs'] = data.get('dialogs', dict())
     return idelem

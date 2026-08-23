@@ -1,5 +1,14 @@
 pre_md: |-
   Connect a new base router to the BitBurrow hub.
+dialogs:
+  adopt5c_regenerate:
+    message: >-
+      This base router is currently connected to this hub. Generating and using a
+      new code on a different base router will either fail or disconnect the
+      current base router. Proceed only if the current base router is not working,
+      disconnected, or has been factory-reset.
+    cancel: Cancel
+    confirm: Regenerate code now
 steps:
 - path: ''
   title: Choose how to connect
@@ -113,9 +122,8 @@ steps:
   md: |-
     Copy the text from the block of code below. You can use the button in the top-
     right corner of the code box for this. **Note: this code is only valid for
-    45 minutes**. {{ comment(text='if changing max time, search: tag_ott_valid_for') }}
-
-    {{ button(id='adopt5c_regenerate', text='Regenerate code now') }}
+    45 minutes**. [Regenerate code now](#adopt5c_regenerate)
+    {{ comment(text='if changing max time, search: tag_ott_valid_for') }}
 
     {{ code_block(id='adopt5c_code', text='', language='sh') }}
   id: adopt5c
