@@ -472,10 +472,33 @@ def setup(client: Client, device_slug: str):
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=True)
     idelem = uif.render_content(sections)
+    adopt5c_code_obj = {'value': None}
+
+    def set_adopt5c_code(obj):
+        adopt5c_code_obj['value'] = obj
+        obj.set_content(db.get_adopt5c_code(device.id, api.adopt5l_route))
+
+    def on_regenerate_adopt5c_code():
+        obj = adopt5c_code_obj['value']
+        if obj is not None:  # generate a new adopt5c code, invalidate the old one
+            # if device.adopt_state() >= 'adopt6c':
+            #     # note: if base is up, this is a race because next ping will invalidate the OTT
+            #     # search: tag_invalidate_device_ott
+            #     FIXME: confirm with dialog box:
+            #     This base router is already associated with this hub.
+            #     Generating and using a new code on a different base router may
+            #     detach the current one ('{device.subd}'). Proceed
+            #     only if the current base router is not working, disconnected,
+            #     or has been factory-reset.
+            obj.set_content(db.get_adopt5c_code(device.id, api.adopt5l_route, regenerate=True))
+
+    def set_adopt5c_regenerate(obj):
+        obj.props('flat dense no-caps').classes('underline')
+        obj.on_click(on_regenerate_adopt5c_code)
+
     idelem_lambdas = {
-        'adopt5c_code': lambda obj: obj.set_content(
-            db.get_adopt5c_code(device.id, api.adopt5l_route)
-        ),
+        'adopt5c_regenerate': set_adopt5c_regenerate,
+        'adopt5c_code': set_adopt5c_code,
     }
     add_custom_css()
     render_tab_buttons()

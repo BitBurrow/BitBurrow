@@ -115,6 +115,8 @@ steps:
     right corner of the code box for this. **Note: this code is only valid for
     45 minutes**. {{ comment(text='if changing max time, search: tag_ott_valid_for') }}
 
+    {{ button(id='adopt5c_regenerate', text='Regenerate code now') }}
+
     {{ code_block(id='adopt5c_code', text='', language='sh') }}
   id: adopt5c
 - path: /Manual/Next/Next/Next/Next/Next/Next/Next/Next/Next

@@ -1842,65 +1842,86 @@ def delete_device(id: int) -> None:
         session.commit()
 
 
-def get_adopt5c_code(device_id, api_path: str) -> str:
+def get_adopt5c_code(device_id, api_path: str, regenerate: bool = False) -> str:
     """Return a shell script, e.g. for /etc/rc.local, to begin adopting a BitBurrow base router"""
     if not hasattr(get_adopt5c_code, 'cache'):
         get_adopt5c_code.cache = dict()
         get_adopt5c_code.cache_lock = threading.Lock()
     now = DateTime.now(TimeZone.utc)
     with get_adopt5c_code.cache_lock:
+        for cached_device_id, (expires_at, _) in list(get_adopt5c_code.cache.items()):
+            if expires_at <= now:
+                del get_adopt5c_code.cache[cached_device_id]
         with Session(engine) as session:
             device: Device = session.exec(
                 select(Device).where(Device.id == device_id)
             ).one_or_none()
             if not device:
                 raise Berror(f"B24371 cannot find device {device_id}")
-            if device.ott_id is not None:  # device has an OTT; try to find it
-                ls: LoginSession = session.exec(
+
+            def create_new_ott():
+                server_token_timedelta = TimeDelta(
+                    minutes=45
+                )  # max time for base router to call API
+                # if changing max time above, search: tag_ott_valid_for
+                token, lsid = new_login_session(device.account_id, server_token_timedelta)
+                device.ott_id = lsid
+                session.commit()
+                logger.info(f"B87566 base {device.subd} completed adopt5a (OTT {lsid} created)")
+                # note: if token[0] or token[22] is '-', echo still just echos, i.e. it
+                # doesn't complain about an invalid option :-)
+                value = (  # should be mirrored in delete_adopt5c_code(); search: tag_adopt5c_code
+                    util.fix_lan_overlap_shell_code()  # avoid gzbify() OpenSSL dependency
+                    + f'T=/tmp/{ott_filename(device.subd)}\n'
+                    + f'echo {token[0:22]}>$T\n'
+                    + f'echo {token[22:]}>>$T\n'
+                    + f'U={conf.base_url()}{api_path.format(subd=device.subd)}\n'
+                    + f'(curl $U || wget -O- $U) |sh\n'
+                )
+                # try to make sure delete_adopt5c_code() in bbbased.lua will work
+                util.verify_adopt5c_code_prefixes(value)  # logs errors; should we fail too?
+                cache_ttl = TimeDelta(
+                    hours=1
+                )  # cache expires after 60 minutes and is purged on access
+                get_adopt5c_code.cache[device_id] = (now + cache_ttl, value)
+                return value
+
+            if regenerate:  # create a new OTT no matter what
+                get_adopt5c_code.cache.pop(device_id, None)
+                if device.ott_id is not None:  # invalidate former OTT
+                    log_out(device.ott_id)
+                    device.ott_id = None
+                return create_new_ott()
+            ls: LoginSession | None = None
+            if device.ott_id is not None:  # device has OTT id
+                ls = session.exec(
                     select(LoginSession).where(LoginSession.id == device.ott_id)
                 ).one_or_none()
                 if not ls:  # couldn't find OTT, so clear its id from device
+                    logger.warning(f"B82963 device {device_id} OTT id seems to not exist")
                     device.ott_id = None
-            if device.ott_id is not None:
-                assert ls.kind == LoginSessionKind.DEVICE_OTT
-                if ls.valid_until.replace(tzinfo=TimeZone.utc) < now:  # OTT is expired
-                    device.ott_id = None
-            if device.ott_id is not None:  # OTT is valid
-                cached = get_adopt5c_code.cache.get(device_id)
-                if cached is not None:
-                    expires_at, value = cached
-                    if expires_at > now:
+                    session.commit()
+                else:  # OTT exists
+                    if ls.valid_until.replace(tzinfo=TimeZone.utc) <= now:
+                        if device.adopt_state() >= 'adopt6c':
+                            # unlikely or impossible to get here, but it's fine
+                            return "(code has already been processed)"
+                        else:
+                            return "(code has expired)"
+                    # valid OTT exists
+                    assert ls.kind == LoginSessionKind.DEVICE_OTT
+                    cached = get_adopt5c_code.cache.get(device_id)
+                    if cached is None:
+                        logger.warning(f"B21159 device {device_id} cached OTT lost; hub restarted?")
+                        return "(unable to display)"
+                    else:
+                        expires_at, value = cached  # expires_at was checked above
                         return value
-                    del get_adopt5c_code.cache[device_id]
-                    logger.warning(f"B72353 device {device_id} OTT is valid but cache expired")
-                else:
-                    logger.warning(f"B21159 device {device_id} cached OTT lost; hub restarted?")
-                # we shouldn't get here, but if we do, abandon the old OTT
-                log_out(device.ott_id)
-            # create a new OTT
-            server_token_timedelta = TimeDelta(minutes=45)  # max time for base router to call API
-            # if changing max time above, search: tag_ott_valid_for
-            token, lsid = new_login_session(device.account_id, server_token_timedelta)
-            device.ott_id = lsid
-            session.commit()
-            logger.info(f"B87566 base {device.subd} completed adopt5a (OTT {lsid} created)")
-            # note: if token[0] or token[22] is '-', echo still just echos, i.e. it
-            # doesn't complain about an invalid option :-)
-            value = (  # should be mirrored in delete_adopt5c_code(); search: tag_adopt5c_code
-                util.fix_lan_overlap_shell_code()  # avoid gzbify() OpenSSL dependency
-                + f'T=/tmp/{ott_filename(device.subd)}\n'
-                + f'echo {token[0:22]}>$T\n'
-                + f'echo {token[22:]}>>$T\n'
-                + f'U={conf.base_url()}{api_path.format(subd=device.subd)}\n'
-                + f'(curl $U || wget -O- $U) |sh\n'
-            )
-            # try to make sure delete_adopt5c_code() in bbbased.lua will work
-            util.verify_adopt5c_code_prefixes(value)  # logs errors; should we fail too?
-            cache_ttl = TimeDelta(
-                hours=1
-            )  # in RAM for 60 minutes (safely longer than OTT validity)
-            get_adopt5c_code.cache[device_id] = (now + cache_ttl, value)
-            return value
+            # no OTT
+            if device.adopt_state() >= 'adopt6c':  # OTT does not exist, but base is adopted
+                return "(code has been used and accepted)"
+            else:
+                return create_new_ott()
 
 
 def store_adopt6c_pubkey(device_id, auth_pubkey: str):
