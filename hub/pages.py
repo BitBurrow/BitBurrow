@@ -494,8 +494,8 @@ def setup(client: Client, device_slug: str):
                 ui.label(text['message']).classes('text-subtitle2')
                 button = lambda key, val: ui.button(text[key], on_click=lambda: dialog.submit(val))
                 with ui.row().classes("w-full justify-end gap-2"):
-                    button("Cancel", False).props('flat')
-                    button("Confirm", True).props('flat color=negative')
+                    button('cancel', False).props('flat')
+                    button('confirm', True).props('flat color=negative')
             if not await dialog:
                 return
         obj.set_content(db.get_adopt5c_code(device.id, api.adopt5l_route, regenerate=True))
