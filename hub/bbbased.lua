@@ -1683,10 +1683,8 @@ local function choose_signature_algorithm()
     )
     remove_paths(probe_path, sig_path)
     if ok then return signature_algorithms.sha512 end
-    log_warning(
-        'OpenSSL lacks rsa-pss-sha512 support; falling back to non-standard rsa-pss-sha256'
-    )
-    return signature_algorithms.sha256
+    log_warning('B41234 OpenSSL lacks rsa-pss-sha512 support; falling back to rsa-pss-sha256')
+    return signature_algorithms.sha256  -- non-standard for RFC 9421
 end
 
 local function send_signed_jsonrpc(request_body)
