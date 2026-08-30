@@ -77,6 +77,16 @@ if [ "$versions_changed" -eq 1 ]; then
 fi
 
 ###
+### update file_version in 'hub/bbbased.lua'
+###
+
+bbbased_path='hub/bbbased.lua'
+if printf '%s\n' "$staged_files" |grep -Fxq -- "$bbbased_path"; then
+    sed -i "s/^local commit_date = .*/local commit_date = '$b36datetime'/" "$bbbased_path"
+    git add "$bbbased_path"
+fi
+
+###
 ### return to former directory
 ###
 

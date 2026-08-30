@@ -1,8 +1,7 @@
 #!/usr/bin/lua
 
 -- BitBurrow base daemon
---
--- strings use single quotes unless they are user-visible English, e.g. logging
+-- note: strings use single quotes unless they are user-visible English, e.g. logging
 
 --
 -- hard-coded at time of download in get_adopt5s_script()
@@ -19,6 +18,7 @@ local log_err_route = '{log_err_route}'
 -- globals
 --
 
+local commit_date = '0tkkasu'
 local bbsubd = 'bb' .. subd
 local tmp_dir = os.getenv('TMPDIR')
 if tmp_dir and tmp_dir ~= '' then
