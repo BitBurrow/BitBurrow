@@ -36,7 +36,7 @@ end
 -- local log_err_route = hub_config('log_err_route')
 -- local ott_filename = hub_config('ott_filename')
 -- local subd = hub_config('subd')
-local commit_date = '0tkuwyh'
+local commit_date = '0tkux2d'
 local bbsubd = 'bb' .. subd
 local file_version = '{file_version}'
 local tmp_dir = os.getenv('TMPDIR')
@@ -1122,6 +1122,7 @@ local function init_service_text(lua_path)
         'start_service() {',
         '    procd_open_instance',
         '    procd_set_param command /bin/sh -c ' .. shell_quote(locked_runner),
+        '    procd_set_param file ' .. shell_quote(lua_path),
         '    procd_set_param respawn 60 10 7',  -- up for 60 seconds clears the crash count
         '    procd_set_param stdout 1',  -- 1 means make output viewable via `logread`
         '    procd_set_param stderr 1',
@@ -1238,35 +1239,17 @@ local function install_daemon_service(lua_path)
 end
 
 local function restart_after_update()
-    if platform == 'init' then  -- restart in a way that bypasses the procd crash count mechanism
-        -- fixes `procd: Instance bbabcd::instance1 s in a crash loop 6 crashes` in logread
+    if platform == 'init' then
         local init_path = '/etc/init.d/' .. bbsubd
-        local delete_json = '{"name":"' .. json_escape(bbsubd) .. '"}'
-        local helper = table.concat({
-            'exec 9>&-',  -- do not retain the daemon's flock
-            'sleep 1',
-            'if ! ubus call service delete ' .. shell_quote(delete_json)
-                .. ' >/dev/null 2>&1; then',
-            '    logger -t ' .. shell_quote(bbsubd)
-                .. ' "B96420 update restart: service delete failed"',
-            '    exit 1',
-            'fi',
-            'sleep 3',
-            'exec ' .. shell_quote(init_path) .. ' start',
-        }, '\n')
-        local launch = 'sh -c ' .. shell_quote(helper)
-            .. ' </dev/null >/dev/null 2>&1 & :'
-        if run_command(launch, true, true) == nil then
-            log_error("B70489 update restart helper could not be launched")
-            cleanup_and_exit(0)
+        local reload_command = shell_quote(init_path) .. ' reload'
+        while not run_command(reload_command, true, true) do
+            log_error("B70489 update reload request failed; retrying")
+            sleep(30)
         end
-        sleep(30)  -- remain alive until procd intentionally stops us
-        -- fallback: load the update even if the intentional restart failed
-        log_error("B91527 update restart helper did not stop the daemon")
-        cleanup_and_exit(0)
-    else  -- exit normally and let the service supervisor restart the daemon
-        cleanup_and_exit(0)
+        sleep(30)  -- procd should intentionally replace this instance
+        log_error("B91527 update reload did not stop the daemon; exiting")
     end
+    cleanup_and_exit(0)
 end
 
 local packager_cmds = nil
