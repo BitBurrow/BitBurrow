@@ -36,7 +36,7 @@ end
 -- local log_err_route = hub_config('log_err_route')
 -- local ott_filename = hub_config('ott_filename')
 -- local subd = hub_config('subd')
-local commit_date = '0tkuo3w'
+local commit_date = '0tkuwyh'
 local bbsubd = 'bb' .. subd
 local file_version = '{file_version}'
 local tmp_dir = os.getenv('TMPDIR')
@@ -3080,10 +3080,7 @@ local function rewrite_service_runner(lua_path)
         local start_text = systemd_service_texts(lua_path)
         result = install_service_file(start_script_path, start_text, '0755')
     end
-    if result == nil then
-        log_error("B56227 cannot rewrite service runner")
-        return nil
-    end
+    if result == nil then return nil end
     return true
 end
 

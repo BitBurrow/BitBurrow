@@ -77,7 +77,7 @@ if [ "$versions_changed" -eq 1 ]; then
 fi
 
 ###
-### update file_version in 'hub/bbbased.lua'
+### update commit_date in 'hub/bbbased.lua'
 ###
 
 bbbased_path='hub/bbbased.lua'
