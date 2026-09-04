@@ -4,29 +4,48 @@
 -- note: strings use single quotes unless they are user-visible English, e.g. logging
 
 --
--- hard-coded at time of download in get_adopt5s_script()
+-- for backwards compatibility during update to 0tkuo3w; future versions will use HUBCONF
 --
 
-local file_version = '{file_version}'
 local api_url = '{api_url}'
 local download_url = '{download_url}'
-local subd = '{subd}'
-local token_filename = '{ott_filename}'
 local log_err_route = '{log_err_route}'
+local ott_filename = '{ott_filename}'
+local subd = '{subd}'
 
 --
 -- globals
 --
 
-local commit_date = '0tkkasu'
+local hubconf = os.getenv('HUBCONF') or table.concat({
+    'api_url=' .. api_url,
+    'download_url=' .. download_url,
+    'log_err_route=' .. log_err_route,
+    'ott_filename=' .. ott_filename,
+    'subd=' .. subd,
+}, '\n')
+
+local function hub_config(key)
+    for k, v in hubconf:gmatch('([^\r\n=]+)=([^\r\n]*)') do
+        if k == key then return v end
+    end
+end
+
+-- local api_url = hub_config('api_url')
+-- local download_url = hub_config('download_url')
+-- local log_err_route = hub_config('log_err_route')
+-- local ott_filename = hub_config('ott_filename')
+-- local subd = hub_config('subd')
+local commit_date = '0tkuo3w'
 local bbsubd = 'bb' .. subd
+local file_version = '{file_version}'
 local tmp_dir = os.getenv('TMPDIR')
 if tmp_dir and tmp_dir ~= '' then
     tmp_dir = tmp_dir:gsub('/+$', '') .. '/'  -- note all directories end in '/'
 else
     tmp_dir = '/tmp/'
 end
-local token_path = tmp_dir .. token_filename
+local ott_path = tmp_dir .. ott_filename
 local bbsubd_tmp_dir = tmp_dir .. bbsubd .. '/'
 local lock_dir = bbsubd_tmp_dir .. 'lock/'
 local lock_dir_pid_path = lock_dir .. 'pid'
@@ -1042,6 +1061,8 @@ local function locked_runner_script(lua_path)
     return table.concat({
         'TMPDIR=' .. shell_quote(tmp_dir),
         'export TMPDIR',
+        'HUBCONF=' .. shell_quote(hubconf),
+        'export HUBCONF',
         'mkdir -p ' .. shell_quote(bbsubd_tmp_dir) .. ' || exit 1',
         'chmod 0700 ' .. shell_quote(bbsubd_tmp_dir) .. ' 2>/dev/null',
         'mkdir -p ' .. shell_quote(lock_dir) .. ' || exit 1',
@@ -1509,11 +1530,11 @@ local function do_adopt6c()
         log_info("public key already marked as uploaded")
         return false  -- these public keys were previously uploaded
     end
-    local token = read_text_file(token_path, true):gsub("%s+", "")
+    local token = read_text_file(ott_path, true):gsub("%s+", "")
     -- strip '\n' from middle if 2 'echo ... >>$T' lines in get_adopt5c_code()
-    local token_mtime = file_mtime(token_path)
+    local token_mtime = file_mtime(ott_path)
     if token == '' or token_mtime == 0 then
-        log_warning("B16500 cannot read " .. token_path .. "; trying ping")
+        log_warning("B16500 cannot read " .. ott_path .. "; trying ping")
         return false  -- just in case pubkey was uploaded but updating pubkeys_uploaded_path failed
     end
     local retry_wait = 7
@@ -1527,7 +1548,7 @@ local function do_adopt6c()
     while true do
         if (os.time() - token_mtime) >= 45*60 then
             -- if changing max time above, search: tag_ott_valid_for
-            log_error("B31143 token " .. token_path .. " is expired")  -- enforced on server too
+            log_error("B31143 token " .. ott_path .. " is expired")  -- enforced on server too
             return nil
         end
         log_debug(
@@ -3049,6 +3070,23 @@ local function discover_upnp(pcap_base64)
     return discover_upnp_pcap(pcap_base64)
 end
 
+local function rewrite_service_runner(lua_path)
+    local result = nil
+    if platform == 'init' then
+        local init_path = '/etc/init.d/' .. bbsubd
+        result = install_service_file(init_path, init_service_text(lua_path), '0755')
+    else
+        local start_script_path = '/usr/local/sbin/' .. bbsubd .. '-start.sh'
+        local start_text = systemd_service_texts(lua_path)
+        result = install_service_file(start_script_path, start_text, '0755')
+    end
+    if result == nil then
+        log_error("B56227 cannot rewrite service runner")
+        return nil
+    end
+    return true
+end
+
 local function handle_task(task_id, task_method, task_args)
     -- return true iff task was handled or no task was present
     if not task_id or not task_method then return true end
@@ -3086,24 +3124,22 @@ local function handle_task(task_id, task_method, task_args)
         local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' /usr/bin/lua -e '
             .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
         local staged_code = read_text_file(staged_path, false, true)
-        local staged_ver = staged_code and staged_code:match("\nlocal file_version = '([^'\r\n]+)'")
+        local new_commit_date = staged_code:match("\nlocal[ \t]+commit_date[ \t]*=[ \t]*'([^']+)'")
         local invalid_reason =
             not staged_code and 'unreadable'
             or #staged_code < 1000 and 'too short'
             or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
-            or not staged_code:find("local subd = '" .. subd .. "'", 1, true) and 'wrong subd'
-            or staged_code:find("local file_version = '{file_version}'", 1, true)
-                and 'same file_version'
-            or not staged_ver and 'missing file_version'
-            or staged_ver:sub(1, 8) ~= next_ver .. '-' and 'wrong version'
+            or new_commit_date < commit_date and 'downgrade'
             or not run_command(parse_attempt, true, true) and 'parse failed'
-        -- maybe add above:
-            -- or not staged_code:find("local api_url = '" .. api_url .. "'", 1, true)
-            --     and 'wrong api_url'
         if invalid_reason then
             remove_path(staged_path)
             return send_task_result(task_id, task_method, false,
                 "B77812 bad download (" .. invalid_reason .. ")")
+        end
+        -- '0tkuo3w' is bridge release to using HUBCONF environment variable
+        if commit_date == '0tkuo3w' and not rewrite_service_runner(running_path) then
+            remove_path(staged_path)
+            return send_task_result(task_id, task_method, false, "B56227 cannot rewrite service runner")
         end
         local task_data = task_id .. '\n' .. task_method .. '\n'
         if not write_text_file(deploy_result_path, task_data, '0600') then
@@ -3226,7 +3262,7 @@ end
 local adopt6c_result = do_adopt6c()
 if adopt6c_result == nil or adopt6c_result == true then  -- fatal error or success
     delete_adopt5c_code('/etc/rc.local')
-    remove_path(token_path)
+    remove_path(ott_path)
 end
 if adopt6c_result == nil then  -- fatal error, no point in retrying
     log_error("B36017 cannot continue with uploading keys")

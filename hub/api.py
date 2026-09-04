@@ -67,9 +67,13 @@ def get_file(
 @router.get(adopt5l_route, response_class=PlainTextResponse)
 def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
     subd = sanitize_subd(subd)  # unverified; 'adopt5p.sh' does not contain any secrets
-    expand_braces = lambda s: s.replace(
-        '{download_url}', conf.base_url() + adopt5s_route.format(subd=subd)
-    ).replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
+    expand_braces = (  # for security, these hub_config values are immutable; in alphabetical order
+        lambda s: s.replace('{api_url}', conf.base_url() + jsonrpc_route)
+        .replace('{download_url}', conf.base_url() + adopt5s_route.format(subd=subd))
+        .replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
+        .replace('{ott_filename}', db.ott_filename(subd))
+        .replace('{subd}', subd)
+    )
     return get_file(
         request,
         subd,

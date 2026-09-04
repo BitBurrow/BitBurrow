@@ -1,7 +1,25 @@
 #!/bin/sh
 
-download_url='{download_url}'
-log_err_route='{log_err_route}'
+hub_config_data='
+api_url={api_url}
+download_url={download_url}
+log_err_route={log_err_route}
+ott_filename={ott_filename}
+subd={subd}
+'
+
+hub_config() {
+    while IFS='=' read -r hub_config_key hub_config_value; do
+        if [ "$hub_config_key" = "$1" ]; then
+            printf '%s\n' "$hub_config_value"
+            return 0
+        fi
+    done <<HUB_CONFIG_EOF
+$hub_config_data
+HUB_CONFIG_EOF
+    return 1
+}
+
 packager_exe=''
 temp_path=''
 bbbased_path=''
@@ -10,10 +28,10 @@ lua_exe=''
 log_error() {
     echo "log_error $1" >&2  # the redirect to stderr fixes buffering issue on some systems
     if command -v curl >/dev/null 2>&1; then
-        curl -f --max-time 60 -X POST --data "$1" "$log_err_route" >/dev/null 2>&1 || true
+        curl -f --max-time 60 -X POST --data "$1" "$(hub_config log_err_route)" >/dev/null 2>&1 || true
         return 0
     fi
-    wget -q -T 60 --post-data="$1" "$log_err_route" >/dev/null 2>&1 || true
+    wget -q -T 60 --post-data="$1" "$(hub_config log_err_route)" >/dev/null 2>&1 || true
     return 0
 }
 
@@ -245,7 +263,7 @@ fi
 ### download Lua script
 loop_count=0
 while [ "$loop_count" -le 10 ]; do
-    download "$download_url" "$bbbased_path" || true
+    download "$(hub_config download_url)" "$bbbased_path" || true
     if [ -s "$bbbased_path" ]; then
         break
     fi
@@ -256,7 +274,8 @@ done
 ### run Lua script
 if [ -s "$bbbased_path" ]; then
     echo "running $lua_exe $bbbased_path install" >&2
-    run_as_root env TMPDIR="${TMPDIR:-/tmp}" "$lua_exe" "$bbbased_path" install
+    run_as_root env HUBCONF="$hub_config_data" TMPDIR="${TMPDIR:-/tmp}" \
+        "$lua_exe" "$bbbased_path" install
 else
-    log_error "B29909 cannot download $download_url"
+    log_error "B29909 cannot download $(hub_config download_url)"
 fi
