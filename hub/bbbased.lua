@@ -36,7 +36,7 @@ end
 -- local log_err_route = hub_config('log_err_route')
 -- local ott_filename = hub_config('ott_filename')
 -- local subd = hub_config('subd')
-local commit_date = '0tkux2d'
+local commit_date = '0tkuy4w'  -- automatically updated in git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local file_version = '{file_version}'
 local tmp_dir = os.getenv('TMPDIR')

@@ -82,7 +82,7 @@ fi
 
 bbbased_path='hub/bbbased.lua'
 if printf '%s\n' "$staged_files" |grep -Fxq -- "$bbbased_path"; then
-    sed -i "s/^local commit_date = .*/local commit_date = '$b36datetime'/" "$bbbased_path"
+    sed -i "s|^\(local commit_date[[:space:]]*=[[:space:]]*\)'[^']*'|\1'$b36datetime'|" "$bbbased_path"
     git add "$bbbased_path"
 fi
 
