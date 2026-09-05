@@ -93,19 +93,15 @@ def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
         logger.error(util.front_berror_code(e, subd, ip_address))
         raise HTTPException(status_code=500, detail="Internal Server Error")
     fv = version.file_version()
-    content = (
-        version.code.replace('{file_version}', fv)
-        .replace('{api_url}', conf.base_url() + jsonrpc_route)
-        .replace('{download_url}', conf.base_url() + adopt5s_route.format(subd=subd))
-        .replace('{subd}', subd)
-        .replace('{ott_filename}', db.ott_filename(subd))
-        .replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
-    )
     logger.info(f"B76218 base {subd} completed adopt5s from {ip_address} (bbbased {fv})")
     return PlainTextResponse(
-        content=content,
+        content=version.code,
         media_type='text/plain; charset=utf-8',
-        headers={'Cache-Control': 'no-store'},
+        headers={
+            'Cache-Control': 'no-store',
+            'X-BitBurrow-File-Version': version.file_version(),
+            'X-BitBurrow-Signature': 'to-be-implemented',
+        },
     )
 
 

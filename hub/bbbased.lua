@@ -3,42 +3,33 @@
 -- BitBurrow base daemon
 -- note: strings use single quotes unless they are user-visible English, e.g. logging
 
---
--- for backwards compatibility during update to 0tkuo3w; future versions will use HUBCONF
---
-
-local api_url = '{api_url}'
-local download_url = '{download_url}'
-local log_err_route = '{log_err_route}'
-local ott_filename = '{ott_filename}'
-local subd = '{subd}'
+local function fail_early(message)
+    io.stderr:write(message .. '\n')
+    os.exit(1)
+end
 
 --
 -- globals
 --
 
-local hubconf = os.getenv('HUBCONF') or table.concat({
-    'api_url=' .. api_url,
-    'download_url=' .. download_url,
-    'log_err_route=' .. log_err_route,
-    'ott_filename=' .. ott_filename,
-    'subd=' .. subd,
-}, '\n')
+local hubconf = os.getenv('HUBCONF') or ''
 
 local function hub_config(key)
     for k, v in hubconf:gmatch('([^\r\n=]+)=([^\r\n]*)') do
         if k == key then return v end
     end
+    fail_early("B09542 HUBCONF environment variable is missing a value for " .. key)
 end
 
--- local api_url = hub_config('api_url')
--- local download_url = hub_config('download_url')
--- local log_err_route = hub_config('log_err_route')
--- local ott_filename = hub_config('ott_filename')
--- local subd = hub_config('subd')
-local commit_date = '0tkuy4w'  -- automatically updated in git_hooks/pre-commit
+local api_url = hub_config('api_url')
+local download_url = hub_config('download_url')
+local log_err_route = hub_config('log_err_route')
+local ott_filename = hub_config('ott_filename')
+local subd = hub_config('subd')
+local commit_date = '0tkvwss'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
-local file_version = '{file_version}'
+local config_dir = '/etc/' .. bbsubd .. '/'
+local base_config_path = config_dir .. 'base.conf'
 local tmp_dir = os.getenv('TMPDIR')
 if tmp_dir and tmp_dir ~= '' then
     tmp_dir = tmp_dir:gsub('/+$', '') .. '/'  -- note all directories end in '/'
@@ -52,6 +43,7 @@ local lock_dir_pid_path = lock_dir .. 'pid'
 local lock_file_path = lock_dir .. 'flock'
 local lock_dir_stop_request_path = lock_dir .. 'stop_request'
 local sleep_method = nil
+local base_config = nil
 
 --
 -- logging
@@ -72,11 +64,6 @@ local function displayable(str, max_len)
     end
     local ellipsis = (#str > max_len) and '...' or ''
     return str:sub(1, max_len):gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t') .. ellipsis
-end
-
-local function fail_early(message)
-    io.stderr:write(message .. '\n')
-    os.exit(1)
 end
 
 local function open_log()
@@ -413,6 +400,60 @@ local function write_text_file(path, content, mode)
         if not chmod(path, mode) then remove_path(path) return nil end
         log_debug("set permissions on " .. path .. " to " .. mode)
     end
+    return true
+end
+
+local function copy_table(source)
+    local copy = {}
+    for key, value in pairs(source) do copy[key] = value end
+    return copy
+end
+
+local function base_config_text(values)
+    local keys = {}
+    for key, value in pairs(values) do
+        if type(key) ~= 'string' or not key:match('^[a-z][a-z0-9_]*$') then
+            log_error("B82637 invalid base.conf key: " .. tostring(key))
+            return nil
+        end
+        if type(value) ~= 'string' or value:find('[\r\n]') or value:find('\0', 1, true) then
+            log_error("B15724 invalid base.conf value for " .. key)
+            return nil
+        end
+        keys[#keys + 1] = key
+    end
+    table.sort(keys)
+    local lines = {}
+    for _, key in ipairs(keys) do lines[#lines + 1] = key .. '=' .. values[key] end
+    return #lines > 0 and table.concat(lines, '\n') .. '\n' or ''
+end
+
+local function save_base_config(values)
+    local text_data = base_config_text(values)
+    if not text_data then return nil end
+    local temp_path = make_temp_path(config_dir)
+    if not temp_path then return nil end
+    if not write_text_file(temp_path, text_data, '0600') then
+        remove_path(temp_path)
+        return nil
+    end
+    local rename_ok, rename_error = os.rename(temp_path, base_config_path)
+    if not rename_ok then
+        log_error("B28691 cannot replace " .. base_config_path .. " (" .. tostring(rename_error) .. ")")
+        remove_path(temp_path)
+        return nil
+    end
+    log_debug("saved key-value data to " .. base_config_path)
+    return true
+end
+
+local function clear_pending_task_result()
+    local updated_config = copy_table(base_config)
+    updated_config.pending_task_id = nil
+    updated_config.pending_task_method = nil
+    updated_config.pending_update_state = nil  -- used to track actual install of a new version
+    if not save_base_config(updated_config) then return nil end
+    base_config = updated_config
     return true
 end
 
@@ -938,6 +979,41 @@ local function run_tests()
     return t1
 end
 
+local function read_key_value_file(path)
+    local values = {}
+    local handle = io.open(path, 'r')
+    if not handle then return values end
+    local line_number = 0
+    for line in handle:lines() do
+        line_number = line_number + 1
+        line = line:gsub('\r$', '')
+        if line ~= '' then
+            local key, value = line:match('^([a-z][a-z0-9_]*)=(.*)$')
+            if not key then
+                handle:close()
+                fail_early("B71246 invalid key-value data at " .. path .. ':' .. line_number)
+            end
+            values[key] = value
+        end
+    end
+    local close_ok, close_error = handle:close()
+    if close_ok == nil then
+        fail_early("B40316 cannot close " .. path .. " (" .. tostring(close_error) .. ")")
+    end
+    return values
+end
+
+base_config = read_key_value_file(base_config_path)  -- NOT local (defined near top of this file)
+local file_version = base_config.file_version
+if not file_version or file_version == '' then
+    log_error("B62917 " .. base_config_path .. " is missing file_version")
+    file_version = commit_date .. "-aaaa"
+end
+if file_version:sub(1,7) ~= commit_date then
+    log_error("B50795 version mismatch: '" .. commit_date .. "' not in '" .. file_version .. "'")
+    file_version = commit_date .. "-aaaa"
+end
+
 --
 -- CLI
 --
@@ -1433,13 +1509,11 @@ end
 --
 
 math.randomseed(os.time() + tonumber(get_pid() or '0'))
-local config_dir = '/etc/' .. bbsubd .. '/'
 local auth_privkey_path = config_dir .. 'client_rsapss.pem'
 local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
 local wg_privkey_path = config_dir .. 'wgbb1_private.key'
 local wg_pubkey_path = config_dir .. 'wgbb1_public.key'
 local pubkeys_uploaded_path = config_dir .. 'pubkeys_uploaded'
-local deploy_result_path = config_dir .. 'deploy_result'
 
 local function run_command_with_umask_077(command)
     local wrapped = 'if umask 077; then ' .. command .. '; else false; fi'
@@ -1849,7 +1923,8 @@ local function send_task_result(task_id, task_method, ok, output)
     return nil
 end
 
-local function send_deploy_result()
+local deploy_result_path = config_dir .. 'deploy_result'  -- for bridge version 0tkvwss
+local function send_deploy_result()  -- for bridge version 0tkvwss
     local task_data = read_text_file(deploy_result_path, true, true)
     if not task_data or task_data == '' then return true end
     local task_id, task_method = task_data:match('^([^\r\n]+)[\r\n]+([^\r\n]+)')
@@ -1863,6 +1938,20 @@ local function send_deploy_result()
         return true
     end
     return nil
+end
+
+local function send_pending_task_result()
+    local task_id = base_config.pending_task_id
+    local task_method = base_config.pending_task_method
+    if task_id == nil and task_method == nil then return true end
+    if not task_id or task_id == '' or task_method ~= 'update'
+            or base_config.pending_update_state ~= 'installed' then
+        log_warning("B81916 invalid pending task result; clearing it")
+        clear_pending_task_result()
+        return nil
+    end
+    if not send_task_result(task_id, task_method, true, 'ok') then return nil end
+    return clear_pending_task_result()
 end
 
 local function xml_unescape(value)
@@ -3053,18 +3142,29 @@ local function discover_upnp(pcap_base64)
     return discover_upnp_pcap(pcap_base64)
 end
 
-local function rewrite_service_runner(lua_path)
-    local result = nil
-    if platform == 'init' then
-        local init_path = '/etc/init.d/' .. bbsubd
-        result = install_service_file(init_path, init_service_text(lua_path), '0755')
-    else
-        local start_script_path = '/usr/local/sbin/' .. bbsubd .. '-start.sh'
-        local start_text = systemd_service_texts(lua_path)
-        result = install_service_file(start_script_path, start_text, '0755')
+-- -- keeping for possible future use; see commit 7f442c3
+-- local function rewrite_service_runner(lua_path)
+--     local result = nil
+--     if platform == 'init' then
+--         local init_path = '/etc/init.d/' .. bbsubd
+--         result = install_service_file(init_path, init_service_text(lua_path), '0755')
+--     else
+--         local start_script_path = '/usr/local/sbin/' .. bbsubd .. '-start.sh'
+--         local start_text = systemd_service_texts(lua_path)
+--         result = install_service_file(start_script_path, start_text, '0755')
+--     end
+--     if result == nil then return nil end
+--     return true
+-- end
+
+local function http_header_value(headers, wanted_name)
+    local result
+    local wanted_lower = wanted_name:lower()
+    for line in headers:gmatch('[^\r\n]+') do
+        local name, value = line:match('^([^:]+):[ \t]*(.-)[ \t]*$')
+        if name and name:lower() == wanted_lower then result = value end
     end
-    if result == nil then return nil end
-    return true
+    return result
 end
 
 local function handle_task(task_id, task_method, task_args)
@@ -3075,16 +3175,16 @@ local function handle_task(task_id, task_method, task_args)
         return send_task_result(task_id, task_method, true, 'ok')
     end
     if task_method == 'update' then
-        local staged_path = task_args and json_get_string(task_args, 'path') or nil
-        if staged_path ~= 'hub/bbbased.lua' then
+        local requested_path = task_args and json_get_string(task_args, 'path') or nil
+        if requested_path ~= 'hub/bbbased.lua' then
             return send_task_result(task_id, task_method, false,
-                "B63317 invalid update path: " .. tostring(staged_path))
+                "B63317 invalid update path: " .. tostring(requested_path))
         end
-        local next_ver = task_args and json_get_string(task_args, 'version') or nil
-        if not next_ver or #next_ver ~= 7 or not next_ver:match('^[0-9a-z]+$') then
-            return send_task_result(task_id, task_method, false,
-                "B42164 invalid next version: " .. tostring(next_ver))
-        end
+        -- local next_ver = task_args and json_get_string(task_args, 'version') or nil
+        -- if not next_ver or #next_ver ~= 7 or not next_ver:match('^[0-9a-z]+$') then
+        --     return send_task_result(task_id, task_method, false,
+        --         "B42164 invalid next version: " .. tostring(next_ver))
+        -- end
         local running_path = arg and arg[0]
         if not running_path or not running_path:match('^/') then
             return send_task_result(task_id, task_method, false,
@@ -3094,21 +3194,40 @@ local function handle_task(task_id, task_method, task_args)
         if not staged_path then
             return send_task_result(task_id, task_method, false, "B19042 cannot create temp file")
         end
-        local command = 'curl -f --max-time 120 -o '
+        local header_path = make_temp_path(dirname(running_path))
+        if not header_path then
+            remove_path(staged_path)
+            return send_task_result(task_id, task_method, false, "B89951 cannot create temp file")
+        end
+        local command = 'curl -f --max-time 120 --dump-header '
+            .. shell_quote(header_path) .. ' --output '
             .. shell_quote(staged_path) .. ' '
             .. shell_quote(download_url)
         if not run_command(command) then
-            remove_path(staged_path)
+            remove_paths(staged_path, header_path)
             return send_task_result(task_id, task_method, false, "B18136 download failed")
         end
+        local response_headers = read_text_file(header_path, false, true)
+        remove_path(header_path)
+        local new_file_version = response_headers
+            and http_header_value(response_headers, 'x-bitburrow-file-version') or nil
+        local downloaded_signature = response_headers
+            and http_header_value(response_headers, 'x-bitburrow-signature') or nil
         local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' /usr/bin/lua -e '
             .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
         local staged_code = read_text_file(staged_path, false, true)
-        local new_commit_date = staged_code:match("\nlocal[ \t]+commit_date[ \t]*=[ \t]*'([^']+)'")
+        local new_commit_date = staged_code
+            and staged_code:match("\nlocal[ \t]+commit_date[ \t]*=[ \t]*'([^']+)'") or nil
         local invalid_reason =
-            not staged_code and 'unreadable'
+            not response_headers and 'unreadable response headers'
+            or not new_file_version and 'missing file-version header'
+            or new_file_version == '' and 'empty file-version header'
+            or not downloaded_signature and 'missing signature header'
+            or downloaded_signature == '' and 'empty signature header'
+            or not staged_code and 'unreadable'
             or #staged_code < 1000 and 'too short'
             or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
+            or not new_commit_date and 'missing commit_date'
             or new_commit_date < commit_date and 'downgrade'
             or not run_command(parse_attempt, true, true) and 'parse failed'
         if invalid_reason then
@@ -3116,21 +3235,28 @@ local function handle_task(task_id, task_method, task_args)
             return send_task_result(task_id, task_method, false,
                 "B77812 bad download (" .. invalid_reason .. ")")
         end
-        -- '0tkuo3w' is bridge release to using HUBCONF environment variable
-        if commit_date == '0tkuo3w' and not rewrite_service_runner(running_path) then
-            remove_path(staged_path)
-            return send_task_result(task_id, task_method, false, "B56227 cannot rewrite service runner")
-        end
-        local task_data = task_id .. '\n' .. task_method .. '\n'
-        if not write_text_file(deploy_result_path, task_data, '0600') then
+        local updated_config = copy_table(base_config)
+        updated_config.pending_task_id = task_id
+        updated_config.pending_task_method = task_method
+        updated_config.pending_update_state = 'prepared'
+        updated_config.file_version = new_file_version
+        if not save_base_config(updated_config) then
             remove_path(staged_path)
             return send_task_result(task_id, task_method, false, "B33348 cannot save update state")
         end
         chmod(staged_path, get_mode(running_path))  -- ignore errors, but they do get logged
         if not run_command('mv ' .. shell_quote(staged_path) .. ' ' .. shell_quote(running_path)) then
-            remove_paths(staged_path, deploy_result_path)
+            remove_path(staged_path)
+            if not save_base_config(base_config) then
+                log_error("B62066 cannot restore base.conf after mv failure")
+            end
             return send_task_result(task_id, task_method, false, "B57225 mv failed")
         end
+        updated_config.pending_update_state = 'installed'  -- 'mv' was successful
+        if not save_base_config(updated_config) then
+            log_error("B97163 cannot mark update as installed")  -- update task will probably fail
+        end
+        base_config = updated_config
         log_info("update installed; restarting")
         restart_after_update()
     end
@@ -3257,8 +3383,13 @@ local retry_wait = 7
 local retries_left = 2
 log_info("entering main ping loop")
 while true do
-    if not send_deploy_result() then
-        log_error("B35355 cannot send deploy results")
+    if commit_date == '0tkvwss' then
+        if not send_deploy_result() then
+            log_error("B35355 cannot send deploy results")
+        end
+    end
+    if not send_pending_task_result() then
+        log_error("B91867 cannot send pending task result")
     end
     local ok = do_ping()
     if ok then
