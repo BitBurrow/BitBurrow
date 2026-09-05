@@ -26,7 +26,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tkw4t0'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tkwmhl'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -873,7 +873,7 @@ local function json_unescape(value)
                 result[#result + 1] = decoded
                 pos = slash + 2
             else
-                -- Preserve malformed or incomplete escapes for the caller to reject or display.
+                -- preserve malformed or incomplete escapes for the caller to reject or display
                 result[#result + 1] = '\\'
                 pos = slash + 1
             end
@@ -1317,19 +1317,24 @@ end
 local function restart_after_update()
     if platform == 'init' then
         local init_path = '/etc/init.d/' .. bbsubd
-        -- updates replace the Lua file, so repair older generated service definitions here
+        -- updates replace bbbased.lua, so repair older generated service definitions here
         local service_text = init_service_text(running_path)
         while not install_service_file(init_path, service_text, '0755') do
-            log_error("B83269 update init service repair failed; retrying")
+            log_warning("B83269 update init service repair failed; retrying")
             sleep(30)
         end
-        local reload_command = 'exec 9>&-; ' .. shell_quote(init_path) .. ' reload'
-        while not run_command(reload_command, true, true) do
-            log_error("B70489 update reload request failed; retrying")
+        -- procd reload is conditional: an identical file can return success without
+        -- actually replacing the process; running '/etc/init.d/bbabcd restart' via ssh
+        -- changed the PID and left the replacement running; close inherited FD 9 so the
+        -- replacement can acquire the daemon lock
+        local restart_command = 'exec 9>&-; ' .. shell_quote(init_path) .. ' restart'
+        while not run_command(restart_command, true, true) do
+            log_error("B70489 update restart request failed; retrying")
             sleep(30)
         end
-        sleep(30)  -- procd should intentionally replace this instance
-        log_error("B91527 update reload did not stop the daemon; exiting")
+        -- a successful restart should kill this process; reaching here indicates a procd failure
+        sleep(30)
+        log_error("B91527 update restart did not stop the daemon; exiting")
     end
     cleanup_and_exit(0)
 end

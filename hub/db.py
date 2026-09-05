@@ -1327,10 +1327,8 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
             # reported_cv is file version from base router, but with '.' for irrelevant platforms
             reported_cv = f'{reported_fv[0:7]}-{test_levels}'
             approved_cv = approved_bv.compare_version(platform)
-            # e = f"B97799 comparing values: {reported_cv} ↔ {approved_cv}"
-            # logger.debug(util.front_berror_code(e, subd, ip))
             if reported_cv > approved_cv:  # string-compare, e.g. '0tf4ijm-.e..'
-                e = f"B16354 on unapproved version: bbbased {reported_cv}"
+                e = f"B16354 unapproved version {reported_cv} > {approved_cv}"
                 logger.warning(util.front_berror_code(e, subd, ip))
             elif reported_cv < approved_cv:
                 task_id = enqueue_task(
