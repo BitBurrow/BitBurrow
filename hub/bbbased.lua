@@ -26,7 +26,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tkwmhl'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tkwnij'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -1934,23 +1934,6 @@ local function send_task_result(task_id, task_method, ok, output)
     return nil
 end
 
-local deploy_result_path = config_dir .. 'deploy_result'  -- for bridge version 0tkvwss
-local function send_deploy_result()  -- for bridge version 0tkvwss
-    local task_data = read_text_file(deploy_result_path, true, true)
-    if not task_data or task_data == '' then return true end
-    local task_id, task_method = task_data:match('^([^\r\n]+)[\r\n]+([^\r\n]+)')
-    if not task_id or task_method ~= 'update' then
-        log_warning("B49873 invalid deploy result marker; removing it")
-        remove_path(deploy_result_path)
-        return nil
-    end
-    if send_task_result(task_id, task_method, true, 'ok') then
-        remove_path(deploy_result_path)
-        return true
-    end
-    return nil
-end
-
 local function send_pending_task_result()
     local task_id = base_config.pending_task_id
     local task_method = base_config.pending_task_method
@@ -3402,11 +3385,6 @@ local retry_wait = 7
 local retries_left = 2
 log_info("entering main ping loop")
 while true do
-    if commit_date == '0tkvwss' then
-        if not send_deploy_result() then
-            log_error("B35355 cannot send deploy results")
-        end
-    end
     if not send_pending_task_result() then
         log_error("B91867 cannot send pending task result")
     end
