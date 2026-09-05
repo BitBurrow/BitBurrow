@@ -26,7 +26,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tkvy5q'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tkw4t0'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -154,7 +154,7 @@ local function http_quoted_string_escape(value)
 end
 
 local function run_command(command, merge_stderr, failure_ok)
-    -- return the captured output after stripping trailing whitespace, or nil on failure
+    -- return captured output on success; return nil, output, and exit code on command failure
     -- do not use shell pipelines here (`set -o pipefail` not universally supported)
     -- instead, use a command with file redirection and `&&` within { ... }
     log_debug("running command: " .. command)
@@ -197,7 +197,7 @@ local function run_command(command, merge_stderr, failure_ok)
     else
         log_error(msg)
     end
-    return nil
+    return nil, output, exit_code
 end
 
 local function trim_trailing_slashes(path)
@@ -984,9 +984,9 @@ local function read_key_value_file(path)
     local handle = io.open(path, 'r')
     if not handle then return values end
     local line_number = 0
-    for line in handle:lines() do
+    for raw_line in handle:lines() do
         line_number = line_number + 1
-        line = line:gsub('\r$', '')
+        local line = raw_line:gsub('\r$', '')
         if line ~= '' then
             local key, value = line:match('^([a-z][a-z0-9_]*)=(.*)$')
             if not key then
@@ -3219,8 +3219,6 @@ local function handle_task(task_id, task_method, task_args)
             and http_header_value(response_headers, 'x-bitburrow-file-version') or nil
         local downloaded_signature = response_headers
             and http_header_value(response_headers, 'x-bitburrow-signature') or nil
-        local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' /usr/bin/lua -e '
-            .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
         local staged_code = read_text_file(staged_path, false, true)
         local new_commit_date = staged_code
             and staged_code:match("\nlocal[ \t]+commit_date[ \t]*=[ \t]*'([^']+)'") or nil
@@ -3235,7 +3233,17 @@ local function handle_task(task_id, task_method, task_args)
             or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
             or not new_commit_date and 'missing commit_date'
             or new_commit_date < commit_date and 'downgrade'
-            or not run_command(parse_attempt, true, true) and 'parse failed'
+        if not invalid_reason then
+            local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' /usr/bin/lua -e '
+                .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
+            local parse_ok, parse_output, parse_exit_code = run_command(parse_attempt, true, true)
+            if not parse_ok then
+                local parse_error = parse_output and parse_output ~= '' and parse_output
+                    or parse_exit_code and 'exit code ' .. tostring(parse_exit_code)
+                    or 'no error output'
+                invalid_reason = 'parse failed: ' .. displayable(parse_error, 170)
+            end
+        end
         if invalid_reason then
             remove_path(staged_path)
             return send_task_result(task_id, task_method, false,
