@@ -26,7 +26,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tkvwss'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tkvy5q'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -1317,7 +1317,13 @@ end
 local function restart_after_update()
     if platform == 'init' then
         local init_path = '/etc/init.d/' .. bbsubd
-        local reload_command = shell_quote(init_path) .. ' reload'
+        -- updates replace the Lua file, so repair older generated service definitions here
+        local service_text = init_service_text(running_path)
+        while not install_service_file(init_path, service_text, '0755') do
+            log_error("B83269 update init service repair failed; retrying")
+            sleep(30)
+        end
+        local reload_command = 'exec 9>&-; ' .. shell_quote(init_path) .. ' reload'
         while not run_command(reload_command, true, true) do
             log_error("B70489 update reload request failed; retrying")
             sleep(30)
