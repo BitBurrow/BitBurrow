@@ -549,18 +549,32 @@ def tls_cert_script():  # script to run certbot for wildcard TLS cert
 
 def read_versions_file() -> dict:
     versions = dict()
-    versions_path = os.path.join(project_root_path, 'versions')  # updated in git_hooks/pre-commit
+    errors = list()
+    # 'versions.yaml' is updated at commit time via git_hooks/pre-commit
+    versions_path = os.path.join(project_root_path, 'versions.yaml')
     try:
         with open(versions_path, encoding='utf-8') as f:
-            for line in f:
-                line = line.rstrip('\n')
-                if not line or line.startswith('#'):
-                    continue
-                parts = line.split(' ', 1)  # path can begin with or contain spaces
-                if len(parts) == 2:
-                    versions[parts[1]] = parts[0]
-                else:
-                    logger.error(f"B21888 invalid line in 'versions': {line}")
+            data = yaml.safe_load(f)
     except OSError:
         return versions
+    except yaml.YAMLError as e:
+        data = None
+        errors.append(f"parse failed: {e}")
+    if not errors and not isinstance(data, dict):
+        errors.append("root must be a dict")
+    if not errors and not isinstance(data.get('paths'), list):
+        errors.append("'paths' must be a list")
+    if not errors:
+        for index, item in enumerate(data['paths']):
+            if not isinstance(item, dict):
+                errors.append(f"paths[{index}] must be a dict")
+                continue
+            path = item.get('path')
+            version = item.get('version')
+            if not isinstance(path, str) or not path or not isinstance(version, str) or not version:
+                errors.append(f"paths[{index}] must 'path' and 'version'")
+                continue
+            versions[path] = version
+    if errors:
+        logger.error(f"B21888 invalid 'versions.yaml': {'; '.join(errors)}")
     return versions

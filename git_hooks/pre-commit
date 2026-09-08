@@ -13,6 +13,27 @@ set -eo pipefail
 pushd $(git rev-parse --show-toplevel) >/dev/null
 
 ###
+### check dependencies
+###
+
+if ! command -v yq >/dev/null 2>&1; then
+    echo "Missing dependency: this hook requires Kislyuk yq." >&2
+    echo "Install Ubuntu's package with: sudo apt install yq" >&2
+    exit 1
+fi
+yq_help="$(LC_ALL=C yq --help 2>&1 || true)"
+if ! grep -Fq 'jq wrapper for YAML documents' <<< "$yq_help"; then
+    echo "Unsupported yq: this hook requires Kislyuk yq (the jq wrapper)." >&2
+    echo "Install Ubuntu's package with: sudo apt install yq" >&2
+    exit 1
+fi
+if ! command -v jq >/dev/null 2>&1; then
+    echo "Missing dependency: Kislyuk yq requires jq." >&2
+    echo "Install Ubuntu's package with: sudo apt install jq" >&2
+    exit 1
+fi
+
+###
 ### enforce formatting with Black
 ###
 
@@ -31,17 +52,17 @@ export DUP_BERROR_CODES=$(echo $TO_SCAN |tr ' ' '\n' |while read -r F; do if [ !
 if [ -n "$DUP_BERROR_CODES" ]; then echo "Please remove duplicate Berror code(s): $DUP_BERROR_CODES" |tr -d '\n'; echo; sleep 2; exit 1; fi
 
 ###
-### update 'versions' file to track timestamp of certain files and directories
+### update 'versions.yaml' to track timestamp of certain files and directories
 ###
 
-versions_path='versions'
+versions_path='versions.yaml'
 versions_changed=0
 watch_list=(
     'hub/bbbased.lua'
     'hub/adopt5p.sh'
     'hub/'  # any file within; must end in a slash
 )
-[ -e "$versions_path" ] || touch "$versions_path"
+[ -e "$versions_path" ] || printf 'paths: []\n' > "$versions_path"
 staged_files="$(git diff --cached --name-only --diff-filter=ACMR)"
 # for b36datetime (Unix date in base 36), see also hub/net.py
 b36datetime="$(date '+%s' |perl -lne '$a="0123456789abcdefghijklmnopqrstuvwxyz";$s="";do{$s=substr($a,$_%36,1).$s;$_=int($_/36)}while$_;printf"%07s\n",$s')"
@@ -63,8 +84,16 @@ for watched_path in "${watch_list[@]}"; do
         fi
     fi
     tmp_versions="$(mktemp)"
-    awk -v target="$watched_path" '$2 != target { print }' "$versions_path" > "$tmp_versions"
-    printf '%s %s\n' "$b36datetime" "$watched_path" >> "$tmp_versions"
+    if ! yq --yaml-output \
+        --arg path "$watched_path" \
+        --arg version "$b36datetime" \
+        '.paths = ((.paths // []) | map(select(.path != $path))
+            + [{"path": $path, "version": $version}])' \
+        "$versions_path" > "$tmp_versions"; then
+        rm -f "$tmp_versions"
+        echo "Unable to update $versions_path; expected a top-level 'paths' list." >&2
+        exit 1
+    fi
     if ! cmp -s "$versions_path" "$tmp_versions"; then
         mv "$tmp_versions" "$versions_path"
         versions_changed=1
