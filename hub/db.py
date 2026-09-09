@@ -1151,6 +1151,13 @@ def update_bbbased_version() -> None:
     paths = util.read_versions_yaml()
     commit_date = paths[bbbased_path]['version']
     with Session(engine) as session:
+        path_version = f"{bbbased_path} version {commit_date}"
+        statement = select(BasedVer.commit_date).where(BasedVer.commit_date > commit_date).limit(1)
+        newer_commit_date = session.exec(statement).first()
+        if newer_commit_date is not None:
+            logger.error(f"B15828 ignoring {path_version} because newer {newer_commit_date} exists")
+            # would be rejected by base (Berror code 77812 "bad download (downgrade)")
+            return
         statement = select(BasedVer).where(BasedVer.commit_date == commit_date)
         if session.exec(statement).one_or_none() is not None:  # version already exists in DB
             return
@@ -1161,7 +1168,7 @@ def update_bbbased_version() -> None:
         except FileNotFoundError as e:
             logger.error(f"B57645 cannot open {file_path}")
             return
-        logger.info(f"B96927 indexing new {bbbased_path} version {commit_date}")
+        logger.info(f"B96927 indexing new {path_version}")
         other = {k: v for k, v in paths[bbbased_path].items() if k not in ('path', 'version')}
         session.add(BasedVer(commit_date=commit_date, code=code, other=other))
         session.commit()
