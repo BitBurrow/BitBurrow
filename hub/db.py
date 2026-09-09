@@ -1128,6 +1128,7 @@ class BasedVer(SQLModel, table=True):
     used_total: int = 0
     used_fails: int = 0
     code: str = ''  # actual Lua
+    other: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
 
     def test_level(self, platform: Platform) -> TestLevel:
         return getattr(self, f'test_level_{platform.value}')
@@ -1147,8 +1148,8 @@ class BasedVer(SQLModel, table=True):
 
 def update_bbbased_version() -> None:
     """Add bbbased_path from disk to DB if not yet indexed."""
-    commit_dates = util.read_versions_file()
-    commit_date = commit_dates[bbbased_path]
+    paths = util.read_versions_yaml()
+    commit_date = paths[bbbased_path]['version']
     with Session(engine) as session:
         statement = select(BasedVer).where(BasedVer.commit_date == commit_date)
         if session.exec(statement).one_or_none() is not None:  # version already exists in DB
@@ -1161,7 +1162,8 @@ def update_bbbased_version() -> None:
             logger.error(f"B57645 cannot open {file_path}")
             return
         logger.info(f"B96927 indexing new {bbbased_path} version {commit_date}")
-        session.add(BasedVer(commit_date=commit_date, code=code))
+        other = {k: v for k, v in paths[bbbased_path].items() if k not in ('path', 'version')}
+        session.add(BasedVer(commit_date=commit_date, code=code, other=other))
         session.commit()
 
 

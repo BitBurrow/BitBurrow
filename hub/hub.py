@@ -391,7 +391,7 @@ def entry_point():
         sys.exit(1)
     try:
         version_details = f'{util.app_version()}:{migrate_db.db_schema_version}:{conf.config_fv}'
-        version_string = f'{util.read_versions_file()['hub/']} ({version_details})'
+        version_string = f'{util.read_versions_yaml()['hub/']['version']} ({version_details})'
         address_list = net.all_local_ips(conf.get('backend.ip'), ipv6_enclosure='[]')
         logger.info(f"❚ Starting BitBurrow hub")
         logger.info(f"❚   version string: {version_string}")
