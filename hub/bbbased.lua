@@ -159,9 +159,9 @@ local function run_command(command, merge_stderr, failure_ok)
     -- instead, use a command with file redirection and `&&` within { ... }
     log_debug("running command: " .. command)
     local wrapped = '{ '
-        .. command
-        .. (merge_stderr and ' 2>&1' or ' 2>/dev/null')
-        .. '; rc=$?; printf "\\n__EXIT__=%d\\n" "$rc"; }'
+            .. command
+            .. (merge_stderr and ' 2>&1' or ' 2>/dev/null')
+            .. '; rc=$?; printf "\\n__EXIT__=%d\\n" "$rc"; }'
     local pipe = io.popen(wrapped, 'r')
     if not pipe then
         log_error("B12747 cannot run: " .. command)
@@ -397,7 +397,10 @@ local function write_text_file(path, content, mode)
         return nil
     end
     if mode then
-        if not chmod(path, mode) then remove_path(path) return nil end
+        if not chmod(path, mode) then
+            remove_path(path)
+            return nil
+        end
         log_debug("set permissions on " .. path .. " to " .. mode)
     end
     return true
@@ -719,10 +722,9 @@ local function sleep(seconds)
     if not sleep_method then return nil end
     local ok, problem = sleep_using_method(sleep_method, seconds)
     if not ok then
-        log_error(
-            "B47295 " .. sleep_methods[sleep_method] .. " failed to sleep for "
+        local message = "B47295 " .. sleep_methods[sleep_method] .. " failed to sleep for "
                 .. tostring(seconds) .. " seconds: " .. tostring(problem)
-        )
+        log_error(message)
         return nil
     end
     return true
@@ -802,7 +804,7 @@ local function cleanup_and_exit(exit_code)
         remove_path(lock_dir_pid_path, true)
     else
         log_warning("B00765 our pid (" .. tostring(pid) .. ") and lock pid ("
-            .. tostring(lock_pid) ..") differ; not removing")
+            .. tostring(lock_pid) .. ") differ; not removing")
     end
     close_log()
     os.exit(exit_code)
@@ -954,10 +956,9 @@ local function sleep_with_jitter(base_seconds, jitter_fraction)
         max_seconds = min_seconds
     end
     local secs = math.random(min_seconds, max_seconds)
-    log_debug(
-        "sleeping for " .. tostring(secs) .. " seconds (base="
+    local message = "sleeping for " .. tostring(secs) .. " seconds (base="
             .. tostring(base_seconds) .. ", jitter=" .. tostring(jitter_fraction) .. ")"
-    )
+    log_debug(message)
     while secs > 0 do
         if is_readable(lock_dir_stop_request_path) then
             log_warning("B72755 stop_request")
@@ -1009,7 +1010,7 @@ if not file_version or file_version == '' then
     log_error("B62917 " .. base_config_path .. " is missing file_version")
     file_version = commit_date .. "-aaaa"
 end
-if file_version:sub(1,7) ~= commit_date then
+if file_version:sub(1, 7) ~= commit_date then
     log_error("B50795 version mismatch: '" .. commit_date .. "' not in '" .. file_version .. "'")
     file_version = commit_date .. "-aaaa"
 end
@@ -1505,8 +1506,8 @@ local function delete_adopt5c_code(path)
     local temp_path = make_temp_path(tmp_dir)
     if not temp_path then return nil end
     local replaced = write_text_file(temp_path, new_content)
-        and chmod(temp_path, mode)
-        and run_command('mv ' .. shell_quote(temp_path) .. ' ' .. shell_quote(path), true)
+            and chmod(temp_path, mode)
+            and run_command('mv ' .. shell_quote(temp_path) .. ' ' .. shell_quote(path), true)
     if not replaced then
         remove_path(temp_path)
         return nil
@@ -1543,7 +1544,7 @@ local function ensure_auth_keys()
     -- note: OpenSSL 1.1.1 found on test routers can't sign with Ed25519 keys
     local output = run_command_with_umask_077(
         'openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out '
-            .. shell_quote(auth_privkey_path)
+        .. shell_quote(auth_privkey_path)
     )
     if not output then
         remove_paths(auth_privkey_path, auth_pubkey_path)
@@ -1551,11 +1552,14 @@ local function ensure_auth_keys()
     end
     output = run_command_with_umask_077(
         'openssl pkey -in '
-            .. shell_quote(auth_privkey_path)
-            .. ' -pubout -out '
-            .. shell_quote(auth_pubkey_path)
+        .. shell_quote(auth_privkey_path)
+        .. ' -pubout -out '
+        .. shell_quote(auth_pubkey_path)
     )
-    if not output then remove_paths(auth_privkey_path, auth_pubkey_path) return nil end
+    if not output then
+        remove_paths(auth_privkey_path, auth_pubkey_path)
+        return nil
+    end
     return true
 end
 
@@ -1569,10 +1573,13 @@ local function ensure_wg_keys()
     remove_path(wg_pubkey_path)
     local output = run_command_with_umask_077(
         'wg genkey >' .. shell_quote(wg_privkey_path)
-            .. ' && wg pubkey <' .. shell_quote(wg_privkey_path)
-            .. ' >' .. shell_quote(wg_pubkey_path)
+        .. ' && wg pubkey <' .. shell_quote(wg_privkey_path)
+        .. ' >' .. shell_quote(wg_pubkey_path)
     )
-    if not output then remove_paths(wg_privkey_path, wg_pubkey_path) return nil end
+    if not output then
+        remove_paths(wg_privkey_path, wg_pubkey_path)
+        return nil
+    end
     return true
 end
 
@@ -1614,16 +1621,16 @@ local function do_adopt6c()
     end
     log_info("public keys need upload to " .. api_url)
     while true do
-        if (os.time() - token_mtime) >= 45*60 then
+        if (os.time() - token_mtime) >= 45 * 60 then
             -- if changing max time above, search: tag_ott_valid_for
             log_error("B31143 token " .. ott_path .. " is expired")  -- enforced on server too
             return nil
         end
         log_debug(
             "attempting adopt6c public key upload; retry_wait="
-                .. tostring(retry_wait)
-                .. ", retries_left="
-                .. tostring(retries_left)
+            .. tostring(retry_wait)
+            .. ", retries_left="
+            .. tostring(retries_left)
         )
         local request_path = make_temp_path()
         local response_path = make_temp_path()
@@ -1633,15 +1640,15 @@ local function do_adopt6c()
             return nil
         end
         local request_body = '{'
-            .. '"jsonrpc":"2.0",'
-            .. '"id":1,'
-            .. '"method":"adopt6c",'
-            .. '"params":{'
+                .. '"jsonrpc":"2.0",'
+                .. '"id":1,'
+                .. '"method":"adopt6c",'
+                .. '"params":{'
                 .. '"subd":"' .. json_escape(subd) .. '",'
                 .. '"token":"' .. json_escape(token) .. '",'
                 .. '"auth_pubkey":"' .. json_escape(auth_pubkey) .. '"'
                 .. '}'
-            .. '}'
+                .. '}'
         local write_ok = write_text_file(request_path, request_body, '0600')
         if not write_ok then
             -- log_error() already called from write_text_file()
@@ -1649,14 +1656,14 @@ local function do_adopt6c()
             return nil
         end
         local curl_command = 'curl -sS --connect-timeout 20 --max-time 90 '
-            .. '-X POST '
-            .. shell_quote(api_url)
-            .. ' -H '
-            .. shell_quote('Content-Type: application/json')
-            .. ' --data-binary @'
-            .. shell_quote(request_path)
-            .. ' -o '
-            .. shell_quote(response_path)
+                .. '-X POST '
+                .. shell_quote(api_url)
+                .. ' -H '
+                .. shell_quote('Content-Type: application/json')
+                .. ' --data-binary @'
+                .. shell_quote(request_path)
+                .. ' -o '
+                .. shell_quote(response_path)
         local curl_output = run_command(curl_command, true)
         local response_body = read_text_file(response_path, true)
         remove_paths(request_path, response_path)
@@ -1689,19 +1696,19 @@ end
 
 local function collect_telemetry()
     local telemetry = '{'
-        .. '"proc_uptime":"' .. json_escape(read_text_file('/proc/uptime', true, false)) .. '",'
-        .. '"proc_loadavg":"' .. json_escape(read_text_file('/proc/loadavg', true, false)) .. '",'
-        .. '"proc_meminfo":"' .. json_escape(read_text_file('/proc/meminfo', true, false)) .. '",'
-        .. '"proc_net_dev":"' .. json_escape(read_text_file('/proc/net/dev', true, false)) .. '",'
-        .. '"proc_net_route":"' .. json_escape(read_text_file('/proc/net/route', true, false)) .. '",'
-        -- maybe add: df or /proc/mounts + stat
-        -- maybe add: ip addr, /proc/net/fib_trie
-        -- maybe add: wg
-        .. '"etc_os_release":"' .. json_escape(read_text_file('/etc/os-release', true, false)) .. '",'
-        .. '"platform":"' .. platform .. '",'
-        -- don't need file_version every time, but it's low-cost and needed if hub or we restart
-        .. '"file_version":"' .. json_escape(file_version) .. '",'
-        .. '"telemetry_version": 1'
+            .. '"proc_uptime":"' .. json_escape(read_text_file('/proc/uptime', true, false)) .. '",'
+            .. '"proc_loadavg":"' .. json_escape(read_text_file('/proc/loadavg', true, false)) .. '",'
+            .. '"proc_meminfo":"' .. json_escape(read_text_file('/proc/meminfo', true, false)) .. '",'
+            .. '"proc_net_dev":"' .. json_escape(read_text_file('/proc/net/dev', true, false)) .. '",'
+            .. '"proc_net_route":"' .. json_escape(read_text_file('/proc/net/route', true, false)) .. '",'
+            -- maybe add: df or /proc/mounts + stat
+            -- maybe add: ip addr, /proc/net/fib_trie
+            -- maybe add: wg
+            .. '"etc_os_release":"' .. json_escape(read_text_file('/etc/os-release', true, false)) .. '",'
+            .. '"platform":"' .. platform .. '",'
+            -- don't need file_version every time, but it's low-cost and needed if hub or we restart
+            .. '"file_version":"' .. json_escape(file_version) .. '",'
+            .. '"telemetry_version": 1'
     return telemetry .. '}'
 end
 
@@ -1715,16 +1722,16 @@ local function build_ping_request()
         return nil
     end
     local request_body = '{'
-        .. '"jsonrpc":"2.0",'
-        .. '"id":1,'
-        .. '"method":"ping",'
-        .. '"params":{'
+            .. '"jsonrpc":"2.0",'
+            .. '"id":1,'
+            .. '"method":"ping",'
+            .. '"params":{'
             .. '"subd":"' .. json_escape(subd) .. '",'
             .. '"time":"' .. json_escape(utc_time) .. '",'
             .. '"telemetry":' .. collect_telemetry() .. ','
             .. '"request_id":"' .. json_escape(request_id) .. '"'
             .. '}'
-        .. '}'
+            .. '}'
     log_debug("built ping request body (" .. tostring(#request_body) .. " bytes)")
     return request_body
 end
@@ -1758,15 +1765,15 @@ local function choose_signature_algorithm()
     end
     local ok = run_command(
         'openssl dgst -sha512 '
-            .. '-sigopt rsa_padding_mode:pss '
-            .. '-sigopt rsa_mgf1_md:sha512 '
-            .. '-sigopt rsa_pss_saltlen:64 '
-            .. '-sign '
-            .. shell_quote(auth_privkey_path)
-            .. ' -binary -out '
-            .. shell_quote(sig_path)
-            .. ' '
-            .. shell_quote(probe_path),
+        .. '-sigopt rsa_padding_mode:pss '
+        .. '-sigopt rsa_mgf1_md:sha512 '
+        .. '-sigopt rsa_pss_saltlen:64 '
+        .. '-sign '
+        .. shell_quote(auth_privkey_path)
+        .. ' -binary -out '
+        .. shell_quote(sig_path)
+        .. ' '
+        .. shell_quote(probe_path),
         true,
         true
     )
@@ -1797,11 +1804,11 @@ local function send_signed_jsonrpc(request_body)
         if not write_ok then break end
         local content_digest_value = run_command(
             '{ '
-                .. 'openssl dgst -sha256 -binary -out ' .. shell_quote(sig_bin_path) .. ' '
-                .. shell_quote(body_path)
-                .. ' && '
-                .. 'openssl base64 -A -in ' .. shell_quote(sig_bin_path)
-                .. '; }',
+            .. 'openssl dgst -sha256 -binary -out ' .. shell_quote(sig_bin_path) .. ' '
+            .. shell_quote(body_path)
+            .. ' && '
+            .. 'openssl base64 -A -in ' .. shell_quote(sig_bin_path)
+            .. '; }',
             true
         )
         if not content_digest_value then break end
@@ -1824,35 +1831,35 @@ local function send_signed_jsonrpc(request_body)
         local nonce_param_value = http_quoted_string_escape(nonce_value)
         local sigalg = choose_signature_algorithm()
         local signature_params = '("@method" "@authority" "@target-uri" "content-type" '
-            .. '"content-digest" "date");created='
-            .. created_value
-            .. ';keyid="'
-            .. keyid_value
-            .. '";nonce="'
-            .. nonce_param_value
-            .. '";alg="'
-            .. sigalg.name
-            .. '"'
+                .. '"content-digest" "date");created='
+                .. created_value
+                .. ';keyid="'
+                .. keyid_value
+                .. '";nonce="'
+                .. nonce_param_value
+                .. '";alg="'
+                .. sigalg.name
+                .. '"'
         local signature_input_value = 'sig1=' .. signature_params
         signature_base = '"@method": POST\n'
-            .. '"@authority": ' .. authority .. '\n'
-            .. '"@target-uri": ' .. api_url .. '\n'
-            .. '"content-type": application/json\n'
-            .. '"content-digest": ' .. content_digest_header .. '\n'
-            .. '"date": ' .. date_header .. '\n'
-            .. '"@signature-params": '
-            .. signature_params
+                .. '"@authority": ' .. authority .. '\n'
+                .. '"@target-uri": ' .. api_url .. '\n'
+                .. '"content-type": application/json\n'
+                .. '"content-digest": ' .. content_digest_header .. '\n'
+                .. '"date": ' .. date_header .. '\n'
+                .. '"@signature-params": '
+                .. signature_params
         write_ok = write_text_file(sig_base_path, signature_base, '0600')
         if not write_ok then break end
         local sign_output = run_command(
             'openssl dgst -'
-                .. sigalg.digest
-                .. ' -sigopt rsa_padding_mode:pss '
-                .. '-sigopt rsa_mgf1_md:' .. sigalg.mgf1
-                .. ' -sigopt rsa_pss_saltlen:' .. sigalg.saltlen
-                .. ' -sign ' .. shell_quote(auth_privkey_path)
-                .. ' -binary -out ' .. shell_quote(sig_bin_path)
-                .. ' ' .. shell_quote(sig_base_path),
+            .. sigalg.digest
+            .. ' -sigopt rsa_padding_mode:pss '
+            .. '-sigopt rsa_mgf1_md:' .. sigalg.mgf1
+            .. ' -sigopt rsa_pss_saltlen:' .. sigalg.saltlen
+            .. ' -sign ' .. shell_quote(auth_privkey_path)
+            .. ' -binary -out ' .. shell_quote(sig_bin_path)
+            .. ' ' .. shell_quote(sig_base_path),
             true
         )
         if not sign_output then break end
@@ -1868,22 +1875,22 @@ local function send_signed_jsonrpc(request_body)
         log_debug("sending signed JSON-RPC request to " .. api_url)
         -- hub max timeout is 90 seconds; see clamp_wait_seconds() and others
         local curl_command = 'curl -sS --connect-timeout 20 --max-time 100 '
-            .. '-X POST '
-            .. shell_quote(api_url)
-            .. ' -H '
-            .. shell_quote('Content-Type: application/json')
-            .. ' -H '
-            .. shell_quote('Date: ' .. date_header)
-            .. ' -H '
-            .. shell_quote('Content-Digest: ' .. content_digest_header)
-            .. ' -H '
-            .. shell_quote('Signature-Input: ' .. signature_input_value)
-            .. ' -H '
-            .. shell_quote('Signature: sig1=:' .. signature_b64 .. ':')
-            .. ' --data-binary @'
-            .. shell_quote(body_path)
-            .. ' -o '
-            .. shell_quote(response_path)
+                .. '-X POST '
+                .. shell_quote(api_url)
+                .. ' -H '
+                .. shell_quote('Content-Type: application/json')
+                .. ' -H '
+                .. shell_quote('Date: ' .. date_header)
+                .. ' -H '
+                .. shell_quote('Content-Digest: ' .. content_digest_header)
+                .. ' -H '
+                .. shell_quote('Signature-Input: ' .. signature_input_value)
+                .. ' -H '
+                .. shell_quote('Signature: sig1=:' .. signature_b64 .. ':')
+                .. ' --data-binary @'
+                .. shell_quote(body_path)
+                .. ' -o '
+                .. shell_quote(response_path)
         local curl_output = run_command(curl_command, true)
         if not curl_output then break end
         local response_body = read_text_file(response_path, true)
@@ -1906,17 +1913,17 @@ local function send_task_result(task_id, task_method, ok, output)
         output = output:sub(1, 18000) .. '\n...truncated...'
     end
     local request_body = '{'
-        .. '"jsonrpc":"2.0",'
-        .. '"id":1,'
-        .. '"method":"task_result",'
-        .. '"params":{'
+            .. '"jsonrpc":"2.0",'
+            .. '"id":1,'
+            .. '"method":"task_result",'
+            .. '"params":{'
             .. '"subd":"' .. json_escape(subd) .. '",'
             .. '"task_id":"' .. json_escape(task_id) .. '",'
             .. '"task_method":"' .. json_escape(task_method) .. '",'
             .. '"ok":' .. (ok and 'true' or 'false') .. ','
             .. '"output":"' .. json_escape(output) .. '"'
             .. '}'
-        .. '}'
+            .. '}'
     local response_body = send_signed_jsonrpc(request_body)
     if not response_body then
         log_warning("task_result failed without a usable response")
@@ -2022,9 +2029,9 @@ local function upnp_control_url(xml, location)
                 '<serviceType[^>]*>%s*(.-)%s*</serviceType%s*>'
             )
             if service_type and service_type:find(
-                    'urn:schemas%-upnp%-org:service:' .. service_name .. ':%d+',
-                    1
-                ) then
+                        'urn:schemas%-upnp%-org:service:' .. service_name .. ':%d+',
+                        1
+                    ) then
                 local control_url = service:match(
                     '<controlURL[^>]*>%s*(.-)%s*</controlURL%s*>'
                 )
@@ -2096,7 +2103,7 @@ local function ipv4_in_subnet(address, subnet_address, prefix_length)
     end
     local subnet_size = 2 ^ (32 - prefix_length)
     return math.floor(address_number / subnet_size)
-        == math.floor(subnet_number / subnet_size)
+            == math.floor(subnet_number / subnet_size)
 end
 
 local function get_upnp_route_info()
@@ -2115,7 +2122,10 @@ local function get_upnp_route_info()
     local ip_output = run_command('ip -4 address show dev ' .. shell_quote(info.wan_if), true, true)
     for address, prefix in tostring(ip_output or ''):gmatch('%sinet%s+(%d+%.%d+%.%d+%.%d+)/(%d+)') do
         if not info.source_ip then info.source_ip = address end
-        if address == info.source_ip then info.source_prefix = tonumber(prefix) break end
+        if address == info.source_ip then
+            info.source_prefix = tonumber(prefix)
+            break
+        end
     end
     if not info.source_ip then return info, "B60571 cannot determine UPnP source IP" end
     if not info.source_prefix then return info, "B35288 cannot determine UPnP source subnet" end
@@ -2156,9 +2166,7 @@ local function upnp_url_policy(url, gateway, source_ip, source_prefix)
     return matches_gateway or matches_subnet, matches_gateway, host
 end
 
-local function filter_upnp_locations(
-        candidates, gateway, source_ip, source_prefix
-    )
+local function filter_upnp_locations(candidates, gateway, source_ip, source_prefix)
     -- enforce the common URL, gateway/subnet, uniqueness, ordering, and count limits
     local locations = {}
     local fallback_locations = {}
@@ -2179,13 +2187,9 @@ local function filter_upnp_locations(
             if not allowed then
                 rejected_location_count = rejected_location_count + 1
                 if rejected_location_count <= 8 then
-                    log_info(
-                        "B14803 dropping UPnP LOCATION outside gateway/LAN subnet; "
-                            .. "host=" .. displayable(
-                                json_escape(location_host or '(invalid)'),
-                                100
-                            )
-                    )
+                    local message = "B14803 dropping UPnP LOCATION outside gateway/LAN subnet; " .. "host="
+                            .. displayable(json_escape(location_host or '(invalid)'), 100)
+                    log_info(message)
                 elseif rejected_location_count == 9 then
                     log_warning("B92150 additional rejected UPnP LOCATION warnings omitted")
                 end
@@ -2217,10 +2221,10 @@ local function read_upnp_control_url(location, seconds_left, gateway, source_ip,
     local request_timeout = math.max(1, math.min(3, seconds_left or 3))
     local connect_timeout = math.min(2, request_timeout)
     local curl_command = 'curl -fsS --globoff --connect-timeout '
-        .. tostring(connect_timeout) .. ' --max-time '
-        .. tostring(request_timeout) .. ' '
-        .. '--max-filesize 1048576 -o '
-        .. shell_quote(xml_path) .. ' ' .. shell_quote(location)
+            .. tostring(connect_timeout) .. ' --max-time '
+            .. tostring(request_timeout) .. ' '
+            .. '--max-filesize 1048576 -o '
+            .. shell_quote(xml_path) .. ' ' .. shell_quote(location)
     local control_url = nil
     local description_read = false
     if run_command(curl_command, true, true) then
@@ -2236,11 +2240,10 @@ local function read_upnp_control_url(location, seconds_left, gateway, source_ip,
                     source_prefix
                 )
                 if not allowed then
-                    log_info(
-                        "B24547 dropping UPnP control URL outside "
+                    local message = "B24547 dropping UPnP control URL outside "
                             .. "gateway/LAN subnet or with invalid authority; host="
                             .. displayable(json_escape(control_host or '(invalid)'), 100)
-                    )
+                    log_info(message)
                     control_url = nil
                 end
             end
@@ -2280,7 +2283,7 @@ local function read_upnp_igds(locations, gateway, source_ip, source_prefix)
         local found_gateway_igd = false
         if control_url and not seen_control_urls[control_url] then
             seen_control_urls[control_url] = true
-            igds[#igds + 1] = {location = location, control_url = control_url, }
+            igds[#igds + 1] = {location = location, control_url = control_url,}
             local _, matches_gateway = upnp_url_policy(location, gateway, source_ip, source_prefix)
             found_gateway_igd = matches_gateway
         end
@@ -2291,17 +2294,17 @@ end
 
 local function upnp_result_json(gateway, method, response_count, igds)
     local result_prefix = '{'
-        .. '"gateway":"' .. json_escape(gateway) .. '",'
-        .. '"method":"' .. json_escape(method) .. '",'
-        .. '"response_count":' .. tostring(response_count) .. ','
-        .. '"igds":['
+            .. '"gateway":"' .. json_escape(gateway) .. '",'
+            .. '"method":"' .. json_escape(method) .. '",'
+            .. '"response_count":' .. tostring(response_count) .. ','
+            .. '"igds":['
     local igd_json = {}
     local result_bytes = #result_prefix + 2  -- closing ]}
     for _, igd in ipairs(igds) do
         local entry = '{'
-            .. '"location":"' .. json_escape(igd.location) .. '",'
-            .. '"control_url":"' .. json_escape(igd.control_url) .. '"'
-            .. '}'
+                .. '"location":"' .. json_escape(igd.location) .. '",'
+                .. '"control_url":"' .. json_escape(igd.control_url) .. '"'
+                .. '}'
         local separator_bytes = #igd_json > 0 and 1 or 0
         if result_bytes + separator_bytes + #entry > max_upnp_result_bytes then
             log_warning("B75089 UPnP discovery result size limit reached; ignoring additional IGDs")
@@ -2326,11 +2329,11 @@ local function pcap_header_info(data)
     if not data or #data < 24 then return nil, 'short header' end
     local magic = {data:byte(1, 4)}
     local little_endian =
-        (magic[1] == 212 and magic[2] == 195 and magic[3] == 178 and magic[4] == 161)
-        or (magic[1] == 77 and magic[2] == 60 and magic[3] == 178 and magic[4] == 161)
+            (magic[1] == 212 and magic[2] == 195 and magic[3] == 178 and magic[4] == 161)
+            or (magic[1] == 77 and magic[2] == 60 and magic[3] == 178 and magic[4] == 161)
     local big_endian =
-        (magic[1] == 161 and magic[2] == 178 and magic[3] == 195 and magic[4] == 212)
-        or (magic[1] == 161 and magic[2] == 178 and magic[3] == 60 and magic[4] == 77)
+            (magic[1] == 161 and magic[2] == 178 and magic[3] == 195 and magic[4] == 212)
+            or (magic[1] == 161 and magic[2] == 178 and magic[3] == 60 and magic[4] == 77)
     if not little_endian and not big_endian then
         return nil, string.format(
             'unrecognized magic %02x%02x%02x%02x', magic[1], magic[2], magic[3], magic[4]
@@ -2339,7 +2342,7 @@ local function pcap_header_info(data)
     local nanosecond = (magic[1] == 77 and magic[2] == 60) or (magic[3] == 60 and magic[4] == 77)
     local network = uint32_at(data, 21, little_endian)
     if not network then return nil, 'short network field' end
-    return {little_endian = little_endian, nanosecond = nanosecond, linktype = network % 65536, }
+    return {little_endian = little_endian, nanosecond = nanosecond, linktype = network % 65536,}
 end
 
 local function extract_upnp_msearch_payload(packet_data)
@@ -2413,8 +2416,8 @@ local function extract_upnp_msearches(pcap_data)
                 return nil, 'record ' .. tostring(record_count) .. ': ' .. tostring(problem)
             end
             local fraction_us = header.nanosecond
-                and math.floor(timestamp_fraction / 1000)
-                or timestamp_fraction
+                    and math.floor(timestamp_fraction / 1000)
+                    or timestamp_fraction
             if not first_sec then
                 first_sec = timestamp_sec
                 first_fraction_us = fraction_us
@@ -2450,57 +2453,57 @@ local function write_upnp_replay_pcap(path, probes, source_ip, source_mac, sourc
     local destination_ip_bytes = string.char(239, 255, 255, 250)
     local destination_mac_bytes = string.char(1, 0, 94, 127, 255, 250)
     local pcap_parts = {string.char(212, 195, 178, 161)
-        .. uint16_le(2)
-        .. uint16_le(4)
-        .. uint32_le(0)
-        .. uint32_le(0)
-        .. uint32_le(65535)
-        .. uint32_le(1)}  -- LINKTYPE_ETHERNET
+    .. uint16_le(2)
+    .. uint16_le(4)
+    .. uint32_le(0)
+    .. uint32_le(0)
+    .. uint32_le(65535)
+    .. uint32_le(1)}  -- LINKTYPE_ETHERNET
     local replay_start_sec = os.time()
     for packet_number, probe in ipairs(probes) do
         local payload = probe.payload
         if not payload or #payload > 1472 then return nil, 'M-SEARCH payload is too large' end
         local udp_length = 8 + #payload
         local udp_without_checksum = uint16_be(source_port)
-            .. uint16_be(1900)
-            .. uint16_be(udp_length)
-            .. uint16_be(0)
+                .. uint16_be(1900)
+                .. uint16_be(udp_length)
+                .. uint16_be(0)
         local pseudo_header = source_ip_bytes
-            .. destination_ip_bytes
-            .. string.char(0, 17)
-            .. uint16_be(udp_length)
+                .. destination_ip_bytes
+                .. string.char(0, 17)
+                .. uint16_be(udp_length)
         local udp_checksum = internet_checksum(pseudo_header .. udp_without_checksum .. payload)
         if udp_checksum == 0 then udp_checksum = 65535 end
         local udp_header = uint16_be(source_port)
-            .. uint16_be(1900)
-            .. uint16_be(udp_length)
-            .. uint16_be(udp_checksum)
+                .. uint16_be(1900)
+                .. uint16_be(udp_length)
+                .. uint16_be(udp_checksum)
         local ip_total_length = 20 + udp_length
         local ip_id_offset = probe.ip_id_offset or packet_number
         local ip_prefix = string.char(69, 0)
-            .. uint16_be(ip_total_length)
-            .. uint16_be((replay_start_sec + ip_id_offset - 1) % 65536)
-            .. uint16_be(16384)
-            .. string.char(2, 17)
-            .. uint16_be(0)
-            .. source_ip_bytes
-            .. destination_ip_bytes
+                .. uint16_be(ip_total_length)
+                .. uint16_be((replay_start_sec + ip_id_offset - 1) % 65536)
+                .. uint16_be(16384)
+                .. string.char(2, 17)
+                .. uint16_be(0)
+                .. source_ip_bytes
+                .. destination_ip_bytes
         local ip_checksum = internet_checksum(ip_prefix)
         local ip_header = ip_prefix:sub(1, 10) .. uint16_be(ip_checksum) .. ip_prefix:sub(13)
         local ethernet_frame = destination_mac_bytes
-            .. source_mac_bytes
-            .. uint16_be(2048)
-            .. ip_header
-            .. udp_header
-            .. payload
+                .. source_mac_bytes
+                .. uint16_be(2048)
+                .. ip_header
+                .. udp_header
+                .. payload
         local delay_us = math.floor(probe.delay_us or 0)
         local timestamp_sec = replay_start_sec + math.floor(delay_us / 1000000)
         local timestamp_us = delay_us % 1000000
         pcap_parts[#pcap_parts + 1] = uint32_le(timestamp_sec)
-            .. uint32_le(timestamp_us)
-            .. uint32_le(#ethernet_frame)
-            .. uint32_le(#ethernet_frame)
-            .. ethernet_frame
+                .. uint32_le(timestamp_us)
+                .. uint32_le(#ethernet_frame)
+                .. uint32_le(#ethernet_frame)
+                .. ethernet_frame
     end
     if not write_text_file(path, table.concat(pcap_parts), '0600') then
         return nil, 'cannot write replay PCAP'
@@ -2528,26 +2531,26 @@ end
 
 local function start_upnp_capture(interface, capture_path, status_path, filter)
     local command = 'tcpdump -nn -U -s4096 -c ' .. tostring(max_upnp_capture_packets)
-        .. ' -i ' .. shell_quote(interface)
-        .. ' -w -'
-        .. ' ' .. shell_quote(filter)
-        .. ' </dev/null >' .. shell_quote(capture_path)
-        .. ' 2>>' .. shell_quote(status_path)
-        .. ' & echo $!'
+            .. ' -i ' .. shell_quote(interface)
+            .. ' -w -'
+            .. ' ' .. shell_quote(filter)
+            .. ' </dev/null >' .. shell_quote(capture_path)
+            .. ' 2>>' .. shell_quote(status_path)
+            .. ' & echo $!'
     local pid = normalize_pid(run_command(command, true, true))
     if not pid then return nil, 'cannot start tcpdump: ' .. display_text_file(status_path) end
     -- use only POSIX shell built-ins plus sleep/kill so this also works on small
     -- router distributions without a separate timeout utility; rechecking the
     -- process start time prevents the watchdog from signaling a reused PID
     local watchdog_command = '(IFS= read -r upnp_original_stat < /proc/'
-        .. pid .. '/stat || exit 0; set -- $upnp_original_stat; shift 21; '
-        .. 'upnp_original_start=$1; sleep ' .. tostring(max_upnp_capture_seconds) .. '; '
-        .. 'IFS= read -r upnp_current_stat < /proc/' .. pid
-        .. '/stat || exit 0; set -- $upnp_current_stat; shift 21; '
-        .. 'if [ "$1" = "$upnp_original_start" ]; then printf "%s\\n" '
-        .. shell_quote('bbbased: UPnP capture time limit reached')
-        .. ' >>' .. shell_quote(status_path) .. '; kill -TERM ' .. pid
-        .. ' 2>/dev/null; fi) </dev/null >/dev/null 2>&1 & echo $!'
+            .. pid .. '/stat || exit 0; set -- $upnp_original_stat; shift 21; '
+            .. 'upnp_original_start=$1; sleep ' .. tostring(max_upnp_capture_seconds) .. '; '
+            .. 'IFS= read -r upnp_current_stat < /proc/' .. pid
+            .. '/stat || exit 0; set -- $upnp_current_stat; shift 21; '
+            .. 'if [ "$1" = "$upnp_original_start" ]; then printf "%s\\n" '
+            .. shell_quote('bbbased: UPnP capture time limit reached')
+            .. ' >>' .. shell_quote(status_path) .. '; kill -TERM ' .. pid
+            .. ' 2>/dev/null; fi) </dev/null >/dev/null 2>&1 & echo $!'
     local watchdog_pid = normalize_pid(run_command(watchdog_command, true, true))
     if not watchdog_pid then
         kill_process(pid)
@@ -2555,8 +2558,8 @@ local function start_upnp_capture(interface, capture_path, status_path, filter)
     end
     for _ = 1, 100 do
         local grep_command = 'grep -Eq '
-            .. shell_quote('^(tcpdump: )?listening on ')
-            .. ' ' .. shell_quote(status_path)
+                .. shell_quote('^(tcpdump: )?listening on ')
+                .. ' ' .. shell_quote(status_path)
         if run_command(grep_command, true, true) then return pid end
         if not is_running(pid) then break end
         sleep(0.1)
@@ -2602,10 +2605,10 @@ local function upnp_probe_summary(probes, record_count)
     end
     local span_us = probes and #probes > 0 and probes[#probes].delay_us or 0
     return tostring(#(probes or {})) .. ' M-SEARCH packets from '
-        .. tostring(record_count or 0) .. ' PCAP records over '
-        .. string.format('%.6f', span_us / 1000000) .. ' seconds; gaps(us)='
-        .. (#gaps > 0 and table.concat(gaps, ',') or '(none)')
-        .. '; ST=' .. table.concat(targets, ' | ')
+            .. tostring(record_count or 0) .. ' PCAP records over '
+            .. string.format('%.6f', span_us / 1000000) .. ' seconds; gaps(us)='
+            .. (#gaps > 0 and table.concat(gaps, ',') or '(none)')
+            .. '; ST=' .. table.concat(targets, ' | ')
 end
 
 local function discover_upnp_pcap(pcap_base64)
@@ -2641,7 +2644,10 @@ local function discover_upnp_pcap(pcap_base64)
     local success = false
     local result = "B04382 discover_upnp failed"
     repeat
-        if not pcap_base64 or pcap_base64 == '' then result = "B86322 missing pcap data" break end
+        if not pcap_base64 or pcap_base64 == '' then
+            result = "B86322 missing pcap data"
+            break
+        end
         pcap_base64 = pcap_base64:gsub('%s', '')
         if #pcap_base64 > 20000 or #pcap_base64 < 20 or #pcap_base64 % 4 ~= 0 then
             result = string.format("B64087 invalid pcap data size (%d bytes)", #pcap_base64)
@@ -2668,24 +2674,27 @@ local function discover_upnp_pcap(pcap_base64)
             break
         end
         local decode_command = 'openssl base64 -d -A -in ' .. shell_quote(encoded_path)
-            .. ' -out ' .. shell_quote(pcap_path)
+                .. ' -out ' .. shell_quote(pcap_path)
         if not run_command(decode_command, true, true) then
             result = "B24079 invalid base64 pcap data"
             break
         end
         local pcap_data = read_text_file(pcap_path, false, true)
-        if not pcap_data then result = "B60578 cannot read decoded UPnP probe PCAP" break end
+        if not pcap_data then
+            result = "B60578 cannot read decoded UPnP probe PCAP"
+            break
+        end
         local extract_problem
         probe_packets, extract_problem, probe_mx, probe_record_count =
-            extract_upnp_msearches(pcap_data)
+                extract_upnp_msearches(pcap_data)
         if not probe_packets then
             result = "B60573 invalid UPnP probe PCAP: " .. tostring(extract_problem)
             break
         end
         if #probe_packets < min_upnp_probe_packets or #probe_packets > max_upnp_probe_packets then
             result = "B16473 invalid UPnP probe PCAP: expected 2 through 11 "
-                .. 'M-SEARCH packets, found '
-                .. tostring(#probe_packets)
+                    .. 'M-SEARCH packets, found '
+                    .. tostring(#probe_packets)
             break
         end
         if not install_one_of('iproute2 iproute ip-tiny ip-full', 'ip')
@@ -2695,7 +2704,10 @@ local function discover_upnp_pcap(pcap_base64)
             break
         end
         local route_info, route_problem = get_upnp_route_info()
-        if route_problem then result = route_problem break end
+        if route_problem then
+            result = route_problem
+            break
+        end
         wan_route = route_info.wan_route
         wan_if = route_info.wan_if
         gateway = route_info.gateway
@@ -2750,10 +2762,10 @@ local function discover_upnp_pcap(pcap_base64)
         )
         -- match replies by destination, not by an assumed responder source port
         local capture_filter = 'udp and ((src host ' .. source_ip .. ' and src port '
-            .. tostring(source_port)
-            .. ' and dst host 239.255.255.250 and dst port 1900)'
-            .. ' or (dst host ' .. source_ip .. ' and dst port '
-            .. tostring(source_port) .. '))'
+                .. tostring(source_port)
+                .. ' and dst host 239.255.255.250 and dst port 1900)'
+                .. ' or (dst host ' .. source_ip .. ' and dst port '
+                .. tostring(source_port) .. '))'
         local capture_problem
         capture_deadline = os.time() + max_upnp_capture_seconds
         tcpdump_pid, capture_problem = start_upnp_capture(
@@ -2762,7 +2774,10 @@ local function discover_upnp_pcap(pcap_base64)
             capture_status_path,
             capture_filter
         )
-        if not tcpdump_pid then result = "B26445 " .. tostring(capture_problem) break end
+        if not tcpdump_pid then
+            result = "B26445 " .. tostring(capture_problem)
+            break
+        end
         capture_started = true
         sleep(0.1)
         -- some older tcpreplay builds ignore the first inter-packet delay in a
@@ -2785,16 +2800,16 @@ local function discover_upnp_pcap(pcap_base64)
                 end
             end
             local tcpreplay_command = '(tcpreplay '
-                .. shell_quote('-i' .. wan_if)
-                .. ' ' .. shell_quote(packet_path)
-                .. ' >' .. shell_quote(tcpreplay_output_path) .. ' 2>&1)'
+                    .. shell_quote('-i' .. wan_if)
+                    .. ' ' .. shell_quote(packet_path)
+                    .. ' >' .. shell_quote(tcpreplay_output_path) .. ' 2>&1)'
             local tcpreplay_ok = run_command(tcpreplay_command, true, true) ~= nil
             local packet_output = read_text_file(tcpreplay_output_path, true, true) or ''
             replay_outputs[#replay_outputs + 1] = 'packet ' .. tostring(index) .. ':\n' .. packet_output
             if not tcpreplay_ok then
                 replay_failure = "B92999 tcpreplay packet "
-                    .. tostring(index) .. " failed: "
-                    .. displayable(packet_output, 300)
+                        .. tostring(index) .. " failed: "
+                        .. displayable(packet_output, 300)
                 break
             end
             local replay_output_lower = packet_output:lower()
@@ -2811,14 +2826,17 @@ local function discover_upnp_pcap(pcap_base64)
                     or (actual_packets and actual_packets ~= 1)
                     or (successful_packets and successful_packets ~= 1) then
                 replay_failure = "B60575 tcpreplay packet "
-                    .. tostring(index) .. " was unsafe: "
-                    .. displayable(packet_output, 300)
+                        .. tostring(index) .. " was unsafe: "
+                        .. displayable(packet_output, 300)
                 break
             end
         end
         tcpreplay_output = table.concat(replay_outputs, '\n')
         write_text_file(tcpreplay_output_path, tcpreplay_output, '0600')
-        if replay_failure then result = replay_failure break end
+        if replay_failure then
+            result = replay_failure
+            break
+        end
         -- a device may delay a unicast response for any time from zero through
         -- the requested MX value; the payload parser clamps MX to UPnP's 1..5
         response_wait_seconds = math.max(0, math.min(wait_seconds, capture_deadline - os.time()))
@@ -2853,7 +2871,7 @@ local function discover_upnp_pcap(pcap_base64)
         -- verify every transmitted payload and the timing produced by the one-packet tcpreplay calls
         local capture_data = read_text_file(capture_path, true, true)
         local observed_probes, observed_problem, _, observed_record_count =
-            extract_upnp_msearches(capture_data)
+                extract_upnp_msearches(capture_data)
         if not observed_probes then
             result = "B21948 cannot inspect captured UPnP replay: " .. tostring(observed_problem)
             break
@@ -2891,11 +2909,11 @@ local function discover_upnp_pcap(pcap_base64)
                 local observed_gap = observed.delay_us - observed_probes[index - 1].delay_us
                 if math.abs(observed_gap - expected_gap) > 500000 then
                     timing_differences[#timing_differences + 1] = 'packet '
-                        .. tostring(index) .. ' gap was '
-                        .. string.format('%.6f', observed_gap / 1000000)
-                        .. ' seconds; expected '
-                        .. string.format('%.6f', expected_gap / 1000000)
-                        .. ' seconds'
+                            .. tostring(index) .. ' gap was '
+                            .. string.format('%.6f', observed_gap / 1000000)
+                            .. ' seconds; expected '
+                            .. string.format('%.6f', expected_gap / 1000000)
+                            .. ' seconds'
                 end
             end
         end
@@ -2905,7 +2923,7 @@ local function discover_upnp_pcap(pcap_base64)
         end
         if #timing_differences > 0 then
             replay_timing_problem = 'captured replay timing differed: '
-                .. table.concat(timing_differences, '; ')
+                    .. table.concat(timing_differences, '; ')
         end
         local location_candidates = {}
         for line in captured_packets:gmatch('[^\r\n]+') do
@@ -2934,7 +2952,7 @@ local function discover_upnp_pcap(pcap_base64)
             local wan_capture_drops = capture_interface_drops(capture_status)
             if wan_capture_drops > 0 then
                 diagnostic_reason = "no SSDP LOCATION response; WAN capture reported "
-                    .. tostring(wan_capture_drops) .. " interface drops"
+                        .. tostring(wan_capture_drops) .. " interface drops"
                 result = "B74816 " .. diagnostic_reason
                 break
             end
@@ -2942,15 +2960,15 @@ local function discover_upnp_pcap(pcap_base64)
                 diagnostic_reason = "no UPnP LOCATION response matched the gateway/LAN subnet"
             else
                 diagnostic_reason = "no SSDP LOCATION response was captured after "
-                    .. tostring(#probe_packets) .. " timed M-SEARCH packets"
+                        .. tostring(#probe_packets) .. " timed M-SEARCH packets"
             end
         elseif #igds == 0 then
             diagnostic_reason = "no WANIPConnection/WANPPPConnection service in SSDP responses"
         end
         if replay_timing_problem then
             diagnostic_reason = diagnostic_reason
-                and (diagnostic_reason .. "; " .. replay_timing_problem)
-                or replay_timing_problem
+                    and (diagnostic_reason .. "; " .. replay_timing_problem)
+                    or replay_timing_problem
         end
         success = true
         result = upnp_result_json(gateway, 'pcap', upnp_response_count, igds)
@@ -2973,7 +2991,7 @@ local function discover_upnp_pcap(pcap_base64)
         if probe_packets then
             log_info(
                 'UPnP diagnostic received probe packets: '
-                    .. upnp_probe_summary(probe_packets, probe_record_count)
+                .. upnp_probe_summary(probe_packets, probe_record_count)
             )
         end
         log_upnp_diagnostic('default route', wan_route)
@@ -2981,20 +2999,20 @@ local function discover_upnp_pcap(pcap_base64)
         if source_ip or source_mac or source_port then
             log_info(
                 'UPnP diagnostic selected source: '
-                    .. tostring(source_mac or '(unknown MAC)') .. ' '
-                    .. tostring(source_ip or '(unknown IP)') .. ':'
-                    .. tostring(source_port or '(unknown port)')
-                    .. ' on ' .. tostring(wan_if or '(unknown interface)')
+                .. tostring(source_mac or '(unknown MAC)') .. ' '
+                .. tostring(source_ip or '(unknown IP)') .. ':'
+                .. tostring(source_port or '(unknown port)')
+                .. ' on ' .. tostring(wan_if or '(unknown interface)')
             )
         end
         if wait_seconds then
             log_info(
                 'UPnP diagnostic response wait: ' .. tostring(wait_seconds)
-                    .. ' seconds (captured MX=' .. tostring(probe_mx) .. ')'
+                .. ' seconds (captured MX=' .. tostring(probe_mx) .. ')'
             )
         end
         if replay_capture_summary then
-            log_info( 'UPnP diagnostic observed replay packets: ' .. replay_capture_summary)
+            log_info('UPnP diagnostic observed replay packets: ' .. replay_capture_summary)
         end
         if tcpreplay_output ~= nil then
             log_upnp_diagnostic(
@@ -3069,9 +3087,9 @@ local function parse_miniupnpc_output(output)
     end
     if control_url and #locations == 0 then
         return nil,
-            "B73862 invalid miniupnpc output: valid IGD has no description URL"
+                "B73862 invalid miniupnpc output: valid IGD has no description URL"
     end
-    return { locations = locations, control_url = control_url, no_valid_igd = no_valid_igd, }
+    return {locations = locations, control_url = control_url, no_valid_igd = no_valid_igd,}
 end
 
 local function discover_upnp_miniupnpc()
@@ -3093,9 +3111,9 @@ local function discover_upnp_miniupnpc()
     -- some platforms that have 'upnpc' do not have 'upnp-listdevices'
     local status_marker = '__BBBASED_UPNPC_EXIT__='
     local command = '(LC_ALL=C upnpc -m ' .. shell_quote(source_ip)
-        .. ' -P; upnpc_status=$?; '
-        .. 'printf "\\n' .. status_marker .. '%s\\n" '
-        .. '"$upnpc_status"; exit 0)'
+            .. ' -P; upnpc_status=$?; '
+            .. 'printf "\\n' .. status_marker .. '%s\\n" '
+            .. '"$upnpc_status"; exit 0)'
     local output = run_command(command, true, true)
     if output == nil then
         return nil, "B37602 cannot run upnpc -P"
@@ -3109,7 +3127,7 @@ local function discover_upnp_miniupnpc()
     if not parsed then return nil, problem end
     if exit_code ~= 0 and not parsed.no_valid_igd then
         return nil, "B56290 upnpc -P exited with status "
-            .. tostring(exit_code)
+                .. tostring(exit_code)
     end
     local locations, response_count = filter_upnp_locations(
         parsed.locations,
@@ -3194,9 +3212,9 @@ local function handle_task(task_id, task_method, task_args)
             return send_task_result(task_id, task_method, false, "B89951 cannot create temp file")
         end
         local command = 'curl -f --max-time 120 --dump-header '
-            .. shell_quote(header_path) .. ' --output '
-            .. shell_quote(staged_path) .. ' '
-            .. shell_quote(download_url)
+                .. shell_quote(header_path) .. ' --output '
+                .. shell_quote(staged_path) .. ' '
+                .. shell_quote(download_url)
         if not run_command(command) then
             remove_paths(staged_path, header_path)
             return send_task_result(task_id, task_method, false, "B18136 download failed")
@@ -3204,31 +3222,31 @@ local function handle_task(task_id, task_method, task_args)
         local response_headers = read_text_file(header_path, false, true)
         remove_path(header_path)
         local new_file_version = response_headers
-            and http_header_value(response_headers, 'x-bitburrow-file-version') or nil
+                and http_header_value(response_headers, 'x-bitburrow-file-version') or nil
         local downloaded_signature = response_headers
-            and http_header_value(response_headers, 'x-bitburrow-signature') or nil
+                and http_header_value(response_headers, 'x-bitburrow-signature') or nil
         local staged_code = read_text_file(staged_path, false, true)
         local new_commit_date = staged_code
-            and staged_code:match("\nlocal[ \t]+commit_date[ \t]*=[ \t]*'([^']+)'") or nil
+                and staged_code:match("\nlocal[ \t]+commit_date[ \t]*=[ \t]*'([^']+)'") or nil
         local invalid_reason =
-            not response_headers and 'unreadable response headers'
-            or not new_file_version and 'missing file-version header'
-            or new_file_version == '' and 'empty file-version header'
-            or not downloaded_signature and 'missing signature header'
-            or downloaded_signature == '' and 'empty signature header'
-            or not staged_code and 'unreadable'
-            or #staged_code < 1000 and 'too short'
-            or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
-            or not new_commit_date and 'missing commit_date'
-            or new_commit_date < commit_date and 'downgrade'
+                not response_headers and 'unreadable response headers'
+                or not new_file_version and 'missing file-version header'
+                or new_file_version == '' and 'empty file-version header'
+                or not downloaded_signature and 'missing signature header'
+                or downloaded_signature == '' and 'empty signature header'
+                or not staged_code and 'unreadable'
+                or #staged_code < 1000 and 'too short'
+                or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
+                or not new_commit_date and 'missing commit_date'
+                or new_commit_date < commit_date and 'downgrade'
         if not invalid_reason then
             local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' /usr/bin/lua -e '
-                .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
+                    .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
             local parse_ok, parse_output, parse_exit_code = run_command(parse_attempt, true, true)
             if not parse_ok then
                 local parse_error = parse_output and parse_output ~= '' and parse_output
-                    or parse_exit_code and 'exit code ' .. tostring(parse_exit_code)
-                    or 'no error output'
+                        or parse_exit_code and 'exit code ' .. tostring(parse_exit_code)
+                        or 'no error output'
                 invalid_reason = 'parse failed: ' .. displayable(parse_error, 170)
             end
         end
@@ -3302,10 +3320,10 @@ local function do_ping()
             task_args = json_get_object(response_body, 'task_args')
         end
         if not handle_task(
-            json_get_string(response_body, 'task_id'),
-            json_get_string(response_body, 'task_method'),
-            task_args
-        ) then
+                    json_get_string(response_body, 'task_id'),
+                    json_get_string(response_body, 'task_method'),
+                    task_args
+                ) then
             return nil
         end
         return status
@@ -3325,7 +3343,10 @@ if get_uid() ~= 0 then
     os.exit(2)
 end
 if cli_verb == 'install' then
-    if not set_sleep_method() then close_log() os.exit(13) end
+    if not set_sleep_method() then
+        close_log()
+        os.exit(13)
+    end
     -- flock is the only 'install' prerequisite, but it's probably already installed
     install_one_of('flock util-linux', 'flock')  -- ignore errors and hope it works anyhow
     local install_dir = find_install_dir()
@@ -3341,7 +3362,10 @@ if cli_verb == 'install' then
     close_log()
     os.exit(exit_code)
 end
-if cli_verb ~= 'daemonize' then log_error("B38333 cli_verb == " .. cli_verb) os.exit(1) end
+if cli_verb ~= 'daemonize' then
+    log_error("B38333 cli_verb == " .. cli_verb)
+    os.exit(1)
+end
 
 --
 -- make sure prerequisites are installed
@@ -3397,9 +3421,9 @@ while true do
     else
         log_info(
             "ping failed; sleeping before retry with retry_wait="
-                .. tostring(retry_wait)
-                .. ", retries_left="
-                .. tostring(retries_left)
+            .. tostring(retry_wait)
+            .. ", retries_left="
+            .. tostring(retries_left)
         )
         sleep_with_jitter(retry_wait, 0.5)
         retry_wait, retries_left = next_retry_state(retry_wait, retries_left, 'ping')

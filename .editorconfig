@@ -1,0 +1,6 @@
+[*.lua]
+align_continuous_inline_comment = false
+space_before_inline_comment = 2
+space_around_table_field_list = false
+continuation_indent = 8
+align_array_table = false
