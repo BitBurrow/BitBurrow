@@ -2,17 +2,42 @@
 
 -- BitBurrow base daemon
 -- note: strings use single quotes unless they are user-visible English, e.g. logging
+-- note: generate a new key pair via touch ~/.config/openssl/bitburrow/rotate_keys_after_signing
 
-local function fail_early(message)
-    io.stderr:write(message .. '\n')
-    os.exit(1)
-end
+--
+-- public keys to verify subsequent software updates
+--
+
+local file_pubkeys = {  -- key_id is commit_date which first included this pubkey
+    {
+        key_id = '0tlfc1c',
+        pubkey = table.concat({
+            '-----BEGIN PUBLIC KEY-----',
+            'MIIB1jBBBgkqhkiG9w0BAQowNKAPMA0GCWCGSAFlAwQCAwUAoRwwGgYJKoZIhvcN',
+            'AQEIMA0GCWCGSAFlAwQCAwUAogMCAUADggGPADCCAYoCggGBAN4UDVHNHhgGgjFU',
+            'eX+6K1NFyIwrvZmjgey5flpsWJoQAjdrlRbCeNtqsBETTElcquYycA987KyKK6wD',
+            'P7hNkUNELVGAJeDCQWsCT9h7NhUBlSmJN0oB1equGCdqqUkSguplq6ynByfxzr2b',
+            'q7R5sNcyJVwiimRCepFrApbelr31NHelx5iwmXsZXixRDqJrtBAnAC87n0EIopqR',
+            '8Pp89vgKIOE1uI3XA9JkCQ3xAcvOKA2Z4Lt5WTb50T41FukM2jxkbMLXE36FBDE6',
+            'G2zYfQLlNOnCEiUqlCgupBnTZOk77ml2lxPap2m5yGvBDfc56qLeC60ON0yjOyQI',
+            'Bzqf7yvyHlglC14vEaU/wcXBB8s4WyJiaA3LSIZaD8hniV91gY7Mpy4l37Q1X60Y',
+            'BIJF2QnC8KyBzCupQSOU9nDicjJ1CumiIao0FZeTF7uIkg7G7mmqegexlGXM9xu/',
+            'pbvXWXw7xBx3j7EL7d9KS9VH5bDuW9tg8BwE2TUU5+Z2O7RQuQIDAQAB',
+            '-----END PUBLIC KEY-----',
+        }, '\n'),
+    },
+}
 
 --
 -- globals
 --
 
 local hubconf = os.getenv('HUBCONF') or ''
+
+local function fail_early(message)
+    io.stderr:write(message .. '\n')
+    os.exit(1)
+end
 
 local function hub_config(key)
     for k, v in hubconf:gmatch('([^\r\n=]+)=([^\r\n]*)') do
@@ -26,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tkwnij'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tlfe4s'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -3179,6 +3204,56 @@ local function http_header_value(headers, wanted_name)
     return result
 end
 
+local function verify_file_signature(staged_path, signature, key_id)
+    -- return true iff successful, string error message otherwise
+    if not key_id or key_id == '' then return "missing key-id header" end
+    if not signature or signature == '' then return "missing signature header" end
+    -- trust only running program's keys because only their signature was verified with a prior pubkey
+    local pubkey = nil
+    for _, entry in ipairs(file_pubkeys) do
+        if entry.key_id == key_id then
+            pubkey = entry.pubkey
+            break
+        end
+    end
+    if not pubkey then return "missing pubkey for key_id " .. key_id end
+    if #signature % 4 ~= 0 or signature:find('[^A-Za-z0-9+/=]') then return "signature not base64" end
+    local pubkey_path = make_temp_path(nil, true)
+    local signature_path = make_temp_path(nil, true)
+    local raw_signature_path = make_temp_path(nil, true)
+    if not pubkey_path or not signature_path or not raw_signature_path then
+        remove_paths(pubkey_path, signature_path, raw_signature_path)
+        return "cannot create temp files"
+    end
+    local verified = false
+    local failure = nil
+    repeat
+        if not write_text_file(pubkey_path, pubkey .. '\n', '0600')
+                or not write_text_file(signature_path, signature, '0600') then
+            failure = "cannot write verification files"
+            break
+        end
+        if not run_command('openssl base64 -d -A -in ' .. shell_quote(signature_path)
+                    .. ' -out ' .. shell_quote(raw_signature_path), true, true) then
+            failure = "could not decode the signature"
+            break
+        end
+        local ok, output = run_command('openssl dgst -sha512 -verify ' .. shell_quote(pubkey_path)
+            .. ' -signature ' .. shell_quote(raw_signature_path)
+            .. ' -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:64'
+            .. ' -sigopt rsa_mgf1_md:sha512 ' .. shell_quote(staged_path), true, true)
+        if not ok then
+            failure = "'openssl -verify' failed"
+            if output and output ~= '' then failure = failure .. ': ' .. displayable(output, 170) end
+            break
+        end
+        verified = true
+    until true
+    remove_paths(pubkey_path, signature_path, raw_signature_path)
+    if not verified then return failure end
+    return true
+end
+
 local function handle_task(task_id, task_method, task_args)
     -- return true iff task was handled or no task was present
     if not task_id or not task_method then return true end
@@ -3223,8 +3298,10 @@ local function handle_task(task_id, task_method, task_args)
         remove_path(header_path)
         local new_file_version = response_headers
                 and http_header_value(response_headers, 'x-bitburrow-file-version') or nil
-        local downloaded_signature = response_headers
+        local signature = response_headers
                 and http_header_value(response_headers, 'x-bitburrow-signature') or nil
+        local key_id = response_headers
+                and http_header_value(response_headers, 'x-bitburrow-key-id') or nil
         local staged_code = read_text_file(staged_path, false, true)
         local new_commit_date = staged_code
                 and staged_code:match("\nlocal[ \t]+commit_date[ \t]*=[ \t]*'([^']+)'") or nil
@@ -3232,8 +3309,10 @@ local function handle_task(task_id, task_method, task_args)
                 not response_headers and 'unreadable response headers'
                 or not new_file_version and 'missing file-version header'
                 or new_file_version == '' and 'empty file-version header'
-                or not downloaded_signature and 'missing signature header'
-                or downloaded_signature == '' and 'empty signature header'
+                -- or not signature and 'missing signature header'
+                -- or signature == '' and 'empty signature header'
+                -- or not key_id and 'missing key-id header'
+                -- or key_id == '' and 'empty key-id header'
                 or not staged_code and 'unreadable'
                 or #staged_code < 1000 and 'too short'
                 or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
@@ -3254,6 +3333,12 @@ local function handle_task(task_id, task_method, task_args)
             remove_path(staged_path)
             return send_task_result(task_id, task_method, false,
                 "B77812 bad download (" .. invalid_reason .. ")")
+        end
+        local verified = verify_file_signature(staged_path, signature, key_id)
+        local key_id_disp = 'key_id=' .. (key_id or "(missing)")
+        if verified ~= true then
+            log_error("B47081 bad code signature (" .. key_id_disp .. '): ' .. verified)
+            -- for testing and bootstrap, go ahead and install code even though verification fails
         end
         local updated_config = copy_table(base_config)
         updated_config.pending_task_id = task_id
@@ -3371,8 +3456,7 @@ end
 -- make sure prerequisites are installed
 --
 
-log_warning("B20392 BitBurrow base daemon, log level " .. logging_level
-    .. ", version " .. file_version)
+log_warning("B20392 completed adopt5w, log level " .. logging_level .. " (bbbased " .. file_version .. ")")
 if not set_sleep_method() then cleanup_and_exit(13) end
 install_one_of('curl', 'curl')
 install_one_of('openssl openssl-util', 'openssl')

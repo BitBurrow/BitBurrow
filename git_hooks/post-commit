@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+devtool="$(git rev-parse --show-toplevel)/git_hooks/devtool.py"
+
+"$devtool" rotate-keys
+

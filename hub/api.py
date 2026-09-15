@@ -94,14 +94,14 @@ def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
         raise HTTPException(status_code=500, detail="Internal Server Error")
     fv = version.file_version()
     logger.info(f"B76218 base {subd} completed adopt5s from {ip_address} (bbbased {fv})")
+    headers = {'Cache-Control': 'no-store'}
+    headers['X-BitBurrow-File-Version'] = fv
+    if version.other and 'signature' in version.other:
+        headers['X-BitBurrow-Signature'] = re.sub(r'\s+', '', version.other['signature'])
+    if version.other and 'key_id' in version.other:
+        headers['X-BitBurrow-Key-Id'] = version.other['key_id']  # commit_date of key used to sign
     return PlainTextResponse(
-        content=version.code,
-        media_type='text/plain; charset=utf-8',
-        headers={
-            'Cache-Control': 'no-store',
-            'X-BitBurrow-File-Version': version.file_version(),
-            'X-BitBurrow-Signature': 'to-be-implemented',
-        },
+        content=version.code, media_type='text/plain; charset=utf-8', headers=headers
     )
 
 

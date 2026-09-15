@@ -2,6 +2,16 @@ paths:
   - path: hub/adopt5p.sh
     version: 0tkuo3w
   - path: hub/bbbased.lua
-    version: 0tkwnij
+    version: 0tlfe4s
+    signature: |-
+      UYzA/vzz918/RvOvpGVrQVFjN7L8gI457tZEmByxi2nAJ2bhTV9+910WRrTBgBZd
+      +TSTisnp9YwpjVy2o7OofcKcITwh0fgViDYDN3WZgFIvQVE4lwUTaekHZeo9LwLw
+      Na5pOo2ZzdSY39TdIbeBjebKlhRpSplVxZbVPnbGY0sDdGCwmaA//paGYRW4uwgq
+      Gofjc4JZXN8K8NN8NEh7tUCcD3CGgxY3yaXy/rxezuVs+22Fy33JAaj/R6tkrcdf
+      PiOP7d4BpEv+guYZXGTMWD8ouBPgmB/0QBdWvXrSU+xVzyTn5Df3+G+9Y/sSr8j9
+      GljXu/Eq+3cmZ7WlBBtxDKcxhKYhvClWtKR3E+YraKklZbpq5s39uD/Eu91AfDwy
+      OGoTWXwUSKR9Q0iyOvJnBOfRlRVA4dHCUOlNXOsijhcIwzZ+CsPENVvGkoI0m0TX
+      aAIps1qLnyQeDkUO6H2cYoT9dGdlolxtimCdJKkbY5dlG6oZ2JcGzvswoQmR2mJJ
+    key_id: 0tlfc1c
   - path: hub/
-    version: 0tl3ei2
+    version: 0tlfe4s
