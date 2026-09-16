@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tlgcrb'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tlghu0'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -96,6 +96,7 @@ local function open_log()
     local handle = io.open(log_path, 'w')
     if not handle then
         fail_early("B62762 cannot create: " .. log_path)
+        return  -- fail_early() never returns, but the Lua analyzer doesn't know this
     end
     handle:close()
     os.execute('chmod 0600 ' .. shell_quote(log_path))  -- chmod() is not yet defined
@@ -1404,7 +1405,8 @@ local packager_specs = {
     {'pacman', {update = {'pacman', '-Sy', '--noconfirm'}, install = {'pacman', '-S', '--noconfirm'}}},
     {'zypper', {update = {'zypper', '--non-interactive', 'refresh'}, install = {'zypper', '--non-interactive', 'install'}}},
 }
-local unpack_fn = table.unpack or unpack
+---@diagnostic disable-next-line: deprecated
+local unpack_fn = table.unpack or unpack  -- support Lua 5.1
 
 local function packager(action, arg)
     if not packager_cmds then  -- find first valid package manager and cache it for future calls
@@ -2330,14 +2332,12 @@ local function read_upnp_igds(locations, gateway, source_ip, source_prefix)
             source_prefix
         )
         if description_read then descriptions_read = descriptions_read + 1 end
-        local found_gateway_igd = false
         if control_url and not seen_control_urls[control_url] then
             seen_control_urls[control_url] = true
             igds[#igds + 1] = {location = location, control_url = control_url,}
             local _, matches_gateway = upnp_url_policy(location, gateway, source_ip, source_prefix)
-            found_gateway_igd = matches_gateway
+            if matches_gateway then break end  -- we found a gateway IGD
         end
-        if found_gateway_igd then break end
     end
     return igds, descriptions_read
 end
@@ -2469,8 +2469,9 @@ local function extract_upnp_msearches(pcap_data)
         local packet_data = pcap_data:sub(packet_start, packet_end)
         if packet_data:find('M-SEARCH * HTTP/1.1', 1, true) then
             local payload, problem, mx, st = extract_upnp_msearch_payload(packet_data)
-            if not payload then
-                return nil, 'record ' .. tostring(record_count) .. ': ' .. tostring(problem)
+            if not payload or mx == nil then
+                return nil, 'record ' .. tostring(record_count) .. ': '
+                        .. tostring(problem or 'missing MX value')
             end
             local fraction_us = header.nanosecond
                     and math.floor(timestamp_fraction / 1000)
