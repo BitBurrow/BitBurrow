@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tlfe4s'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tlg8c1'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -3337,8 +3337,9 @@ local function handle_task(task_id, task_method, task_args)
         local verified = verify_file_signature(staged_path, signature, key_id)
         local key_id_disp = 'key_id=' .. (key_id or "(missing)")
         if verified ~= true then
-            log_error("B47081 bad code signature (" .. key_id_disp .. '): ' .. verified)
-            -- for testing and bootstrap, go ahead and install code even though verification fails
+            remove_path(staged_path)
+            return send_task_result(task_id, task_method, false,
+                "B47081 bad code signature (" .. key_id_disp .. '): ' .. verified)
         end
         local updated_config = copy_table(base_config)
         updated_config.pending_task_id = task_id
