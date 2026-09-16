@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tlg8c1'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tlgcrb'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -429,6 +429,35 @@ local function write_text_file(path, content, mode)
         log_debug("set permissions on " .. path .. " to " .. mode)
     end
     return true
+end
+
+local function download_file(command, path)  -- limit download size to prevent DOS from a compromised hub
+    local status_path = make_temp_path()
+    local max_download_bytes = 654321  -- 0.6 MB
+    if not status_path then return nil end
+    -- read a bounded pipe; older curl versions ignore --max-filesize when Content-Length
+    -- is unknown; limits HTTP headers too
+    local wrapped = '(ulimit -c 0; ulimit -f 128 || exit 1; ' .. command
+            .. ' --max-filesize ' .. tostring(max_download_bytes) .. ' --output -'
+            .. '; download_status=$?; printf "%s\\n" "$download_status" >'
+            .. shell_quote(status_path) .. ') 2>/dev/null'
+    log_debug("running bounded download: " .. command)
+    local pipe = io.popen(wrapped, 'r')
+    if not pipe then
+        remove_path(status_path)
+        log_error("B39427 cannot start download")
+        return nil
+    end
+    local content, read_error = pipe:read(max_download_bytes + 1)
+    pipe:close()  -- Lua 5.1 does not reliably return the child's exit status here
+    local status = read_text_file(status_path, true)
+    remove_path(status_path)
+    content = content or ''
+    if read_error or #content > max_download_bytes or status ~= '0' then
+        log_error("B82691 download failed or exceeded " .. max_download_bytes .. " bytes")
+        return nil
+    end
+    return write_text_file(path, content)
 end
 
 local function copy_table(source)
@@ -1687,10 +1716,8 @@ local function do_adopt6c()
                 .. shell_quote('Content-Type: application/json')
                 .. ' --data-binary @'
                 .. shell_quote(request_path)
-                .. ' -o '
-                .. shell_quote(response_path)
-        local curl_output = run_command(curl_command, true)
-        local response_body = read_text_file(response_path, true)
+        local curl_output = download_file(curl_command, response_path)
+        local response_body = curl_output and read_text_file(response_path, true) or nil
         remove_paths(request_path, response_path)
         if curl_output and response_body then
             log_debug("adopt6c response body: " .. displayable(response_body, 60))
@@ -1914,9 +1941,7 @@ local function send_signed_jsonrpc(request_body)
                 .. shell_quote('Signature: sig1=:' .. signature_b64 .. ':')
                 .. ' --data-binary @'
                 .. shell_quote(body_path)
-                .. ' -o '
-                .. shell_quote(response_path)
-        local curl_output = run_command(curl_command, true)
+        local curl_output = download_file(curl_command, response_path)
         if not curl_output then break end
         local response_body = read_text_file(response_path, true)
         if not response_body then break end
@@ -2392,11 +2417,18 @@ local function extract_upnp_msearch_payload(packet_data)
             local upper = payload:upper()
             local expected_host = upper:find('[\r\n]HOST:%s*239%.255%.255%.250:1900')
             local expected_man = upper:find('[\r\n]MAN:%s*"SSDP:DISCOVER"')
-            local st = upper:match('[\r\n]ST:%s*([^\r\n]+)')
-            if expected_host and expected_man and st and #st <= 256 then
-                st = st:gsub('%s+$', '')
+            local st = payload:match('[\r\n][Ss][Tt]:[ \t]*([^\r\n]+)')
+            st = st and st:gsub('[ \t]+$', '')
+            if expected_host and expected_man and st and #st <= 256
+                    and st:match('^[%w:._%-]+$') then
                 local mx = tonumber(upper:match('[\r\n]MX:%s*(%d+)')) or 3
                 mx = math.max(1, math.min(mx, 5))
+                -- to limit what a compromised hub is able to do, don't replay extra hub-supplied
+                -- headers, such as LOCATION, or an unbounded MX
+                payload = table.concat({
+                    marker, 'HOST: 239.255.255.250:1900', 'MAN: "ssdp:discover"',
+                    'MX: ' .. tostring(mx), 'ST: ' .. st, '', '',
+                }, '\r\n')
                 return payload, nil, mx, st
             end
             last_problem = 'M-SEARCH request has unexpected HOST, MAN, or ST headers'
@@ -2599,8 +2631,9 @@ local function start_upnp_capture(interface, capture_path, status_path, filter)
     return nil, problem
 end
 
-local function decode_upnp_capture(path)
-    return run_command('tcpdump -nn -e -vv -s0 -A -r ' .. shell_quote(path), true, true)
+local function decode_upnp_capture(path, filter)
+    return run_command('tcpdump -nn -e -vv -s0 -A -r ' .. shell_quote(path)
+        .. (filter and ' ' .. shell_quote(filter) or ''), true, true)
 end
 
 local function capture_interface_drops(status)
@@ -2950,8 +2983,19 @@ local function discover_upnp_pcap(pcap_base64)
             replay_timing_problem = 'captured replay timing differed: '
                     .. table.concat(timing_differences, '; ')
         end
+        -- only inbound replies to our probe port may supply LOCATION; outgoing probes cannot;
+        -- the UDP payload must start with "HTTP/1.1 200 " or "HTTP/1.0 200 "
+        local response_filter = 'udp and dst host ' .. source_ip .. ' and dst port '
+                .. tostring(source_port) .. ' and udp[8:4] = 0x48545450'
+                .. ' and (udp[12:4] = 0x2f312e31 or udp[12:4] = 0x2f312e30)'
+                .. ' and udp[16:4] = 0x20323030 and udp[20] = 32'
+        local response_packets = decode_upnp_capture(capture_path, response_filter)
+        if not response_packets then
+            result = "B62384 cannot decode UPnP replies"
+            break
+        end
         local location_candidates = {}
-        for line in captured_packets:gmatch('[^\r\n]+') do
+        for line in response_packets:gmatch('[^\r\n]+') do
             local location = line:match('^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]:%s*(%S+)')
             if location then
                 location_candidates[#location_candidates + 1] = location
@@ -3287,10 +3331,9 @@ local function handle_task(task_id, task_method, task_args)
             return send_task_result(task_id, task_method, false, "B89951 cannot create temp file")
         end
         local command = 'curl -f --max-time 120 --dump-header '
-                .. shell_quote(header_path) .. ' --output '
-                .. shell_quote(staged_path) .. ' '
+                .. shell_quote(header_path) .. ' '
                 .. shell_quote(download_url)
-        if not run_command(command) then
+        if not download_file(command, staged_path) then
             remove_paths(staged_path, header_path)
             return send_task_result(task_id, task_method, false, "B18136 download failed")
         end
@@ -3302,6 +3345,14 @@ local function handle_task(task_id, task_method, task_args)
                 and http_header_value(response_headers, 'x-bitburrow-signature') or nil
         local key_id = response_headers
                 and http_header_value(response_headers, 'x-bitburrow-key-id') or nil
+        -- authenticate the downloaded file *before* exposing its contents to Lua's parser
+        local verified = verify_file_signature(staged_path, signature, key_id)
+        local key_id_disp = 'key_id=' .. (key_id or "(missing)")
+        if verified ~= true then
+            remove_path(staged_path)
+            return send_task_result(task_id, task_method, false,
+                "B47081 bad code signature (" .. key_id_disp .. '): ' .. verified)
+        end
         local staged_code = read_text_file(staged_path, false, true)
         local new_commit_date = staged_code
                 and staged_code:match("\nlocal[ \t]+commit_date[ \t]*=[ \t]*'([^']+)'") or nil
@@ -3333,13 +3384,6 @@ local function handle_task(task_id, task_method, task_args)
             remove_path(staged_path)
             return send_task_result(task_id, task_method, false,
                 "B77812 bad download (" .. invalid_reason .. ")")
-        end
-        local verified = verify_file_signature(staged_path, signature, key_id)
-        local key_id_disp = 'key_id=' .. (key_id or "(missing)")
-        if verified ~= true then
-            remove_path(staged_path)
-            return send_task_result(task_id, task_method, false,
-                "B47081 bad code signature (" .. key_id_disp .. '): ' .. verified)
         end
         local updated_config = copy_table(base_config)
         updated_config.pending_task_id = task_id
