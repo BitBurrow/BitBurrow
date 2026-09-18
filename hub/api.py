@@ -655,7 +655,7 @@ async def wg(
     subd: str = Body(...),
     pubkey: str = Body(...),
 ) -> BaseResult:
-    """Store WireGuard pubkey and return assigned WireGuard wg_shape."""
+    """Store the base's WireGuard key and return its interface and peer configuration."""
     ip = request.client.host if request.client else '(unknown)'
     with db.device_by_subd(subd) as device:
         try:
@@ -669,8 +669,11 @@ async def wg(
                 raise Berror(f"B71924 subd mismatch: {params.get('subd')} != {subd}")
             if params.get('pubkey') != pubkey:
                 raise Berror("B21788 pubkey mismatch")
-            wg_shape = db.store_wg_pubkey(device.id, pubkey)
+            interface, peers = db.store_wg_pubkey(device.id, pubkey)
+            interface.pop('PrivateKey', None)  # never used on base, and causes Berror 27754 if sent
+            wg_conf = {'Interface': interface, 'Peers': peers}
+            print(f">>>>> sending {wg_conf}")
         except (Berror, db.CredentialsError) as e:
             logger.warning(f"{e} (base {subd} at {ip})")
             raise BaseError("B80541 invalid wg request")
-    return BaseResult(subd=subd, status='ok', wg_shape=wg_shape)
+    return BaseResult(subd=subd, status='ok', task_args=wg_conf)

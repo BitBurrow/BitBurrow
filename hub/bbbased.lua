@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tlghu0'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tlkguj'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -2007,6 +2007,505 @@ local function send_pending_task_result()
     return clear_pending_task_result()
 end
 
+--
+-- configure WireGuard
+--
+
+local enable_wg, request_wg_config, restore_wg
+
+do
+    local json_null = {}
+    local next_restore = 0
+    local wg_status = nil
+    local function decode_wg_json(body)
+        -- parse containers as well as scalars: regex extraction cannot validate a peer list
+        if type(body) ~= 'string' or #body > 262144 then return nil end
+        local pos, tokens = 1, {}
+        local function skip_space()
+            local _, last = body:find('^[ \t\r\n]*', pos)
+            pos = last + 1
+        end
+        local function take(token)
+            if body:sub(pos, pos + #token - 1) ~= token then error('invalid JSON', 0) end
+            tokens[#tokens + 1] = token
+            pos = pos + #token
+        end
+        local function read_string()
+            local start = pos
+            pos = pos + 1
+            while pos <= #body do
+                local char = body:sub(pos, pos)
+                if char == '"' then
+                    local raw = body:sub(start, pos)
+                    tokens[#tokens + 1] = raw
+                    pos = pos + 1
+                    return json_unescape(raw:sub(2, -2))
+                end
+                if char:byte() < 32 then error('control character in JSON', 0) end
+                if char == '\\' then
+                    pos = pos + 1
+                    char = body:sub(pos, pos)
+                    if char == 'u' then
+                        if not body:sub(pos + 1, pos + 4):match('^%x%x%x%x$') then
+                            error('invalid JSON escape', 0)
+                        end
+                        pos = pos + 4
+                    elseif not json_simple_escapes[char] then
+                        error('invalid JSON escape', 0)
+                    end
+                end
+                pos = pos + 1
+            end
+            error('unterminated JSON string', 0)
+        end
+        local parse
+        parse = function(depth)
+            if depth > 12 then error('JSON nesting too deep', 0) end
+            skip_space()
+            local char = body:sub(pos, pos)
+            if char == '"' then return read_string() end
+            if char == '{' or char == '[' then
+                local first_token = #tokens + 1
+                local is_object = char == '{'
+                local close = is_object and '}' or ']'
+                local value = {}
+                take(char)
+                skip_space()
+                if body:sub(pos, pos) ~= close then
+                    while true do
+                        local key = #value + 1
+                        if is_object then
+                            if body:sub(pos, pos) ~= '"' then error('invalid JSON key', 0) end
+                            key = read_string()
+                            if value[key] ~= nil then error('duplicate JSON key', 0) end
+                            skip_space()
+                            take(':')
+                        end
+                        value[key] = parse(depth + 1)
+                        skip_space()
+                        if body:sub(pos, pos) == close then break end
+                        take(',')
+                        skip_space()
+                    end
+                end
+                take(close)
+                return setmetatable(value, {
+                    kind = is_object and 'object' or 'array',
+                    json = table.concat(tokens, '', first_token, #tokens),
+                })
+            end
+            for literal, value in pairs({['null'] = json_null, ['true'] = true, ['false'] = false}) do
+                if body:sub(pos, pos + #literal - 1) == literal then
+                    take(literal)
+                    return value
+                end
+            end
+            local number = body:match('^-?%d+', pos)
+            if not number or number:match('^-?0%d') then error('invalid JSON value', 0) end
+            take(number)
+            -- get_conf() uses integer numbers; reject floats rather than truncate them.
+            local value = tonumber(number)
+            if not value or math.abs(value) == math.huge then error('invalid JSON number', 0) end
+            return value
+        end
+        local ok, value = pcall(function()
+            local result = parse(0)
+            skip_space()
+            if pos <= #body then error('trailing JSON data', 0) end
+            return result
+        end)
+        if ok then return value end
+        return nil
+    end
+    local function container(value, kind)
+        local meta = type(value) == 'table' and getmetatable(value)
+        return meta and meta.kind == kind
+    end
+    local function integer(value, minimum, maximum)
+        if type(value) ~= 'number' and type(value) ~= 'string' then return nil end
+        if not tostring(value):match('^%d+$') then return nil end
+        local number = tonumber(value)
+        if number and number >= minimum and number <= maximum then return number end
+        return nil
+    end
+    local function public_key(value)
+        return type(value) == 'string' and #value == 44
+                and value:match('^[A-Za-z0-9+/]+=$')
+                and value:sub(43, 43):match('^[AEIMQUYcgkosw048]$')
+                and value ~= string.rep('A', 43) .. '='
+    end
+    local function ip_words(value)
+        if type(value) ~= 'string' or #value > 45 then return nil end
+        if not value:find(':', 1, true) then
+            local a, b, c, d = value:match('^(%d+)%.(%d+)%.(%d+)%.(%d+)$')
+            if not a then return nil end
+            local words = {a, b, c, d}
+            for index, word in ipairs(words) do
+                if #word > 3 or (#word > 1 and word:sub(1, 1) == '0') then return nil end
+                words[index] = tonumber(word)
+                if words[index] > 255 then return nil end
+            end
+            return 4, words
+        end
+        local left, right = value:match('^(.-)::(.-)$')
+        local compressed = left ~= nil
+        if not compressed then left, right = value, '' end
+        local words, tail = {}, {}
+        for index, part in ipairs({left, right}) do
+            local target = index == 1 and words or tail
+            if part ~= '' then
+                for word in (part .. ':'):gmatch('(.-):') do
+                    if #word < 1 or #word > 4 or not word:match('^%x+$') then return nil end
+                    target[#target + 1] = tonumber(word, 16)
+                end
+            end
+        end
+        if compressed then
+            if #words + #tail >= 8 then return nil end
+            while #words + #tail < 8 do words[#words + 1] = 0 end
+        elseif #words ~= 8 then
+            return nil
+        end
+        for _, word in ipairs(tail) do words[#words + 1] = word end
+        return 6, words
+    end
+    local function cidr(value, route)
+        if type(value) ~= 'string' then return nil end
+        local address, prefix = value:match('^([^/]+)/(%d+)$')
+        local family, words = ip_words(address)
+        if not family then return nil end
+        local bits = family == 4 and 32 or 128
+        prefix = integer(prefix, 1, bits)
+        if not prefix then return nil end
+        local width, formatted = family == 4 and 8 or 16, {}
+        for index, word in ipairs(words) do
+            local host_bits = math.min(width, math.max(0, bits - prefix - width * (#words - index)))
+            if route and word % 2 ^ host_bits ~= 0 then return nil end
+            formatted[index] = string.format(family == 4 and '%d' or '%x', word)
+        end
+        return {
+            family = family,
+            cidr = table.concat(formatted, family == 4 and '.' or ':') .. '/' .. tostring(prefix),
+        }
+    end
+    local function cidrs(value, route)
+        if type(value) ~= 'string' or #value > 8192 then return nil end
+        local entries = {}
+        for part in (value .. ','):gmatch('(.-),') do
+            local entry = cidr(part:match('^%s*(.-)%s*$'), route)
+            if not entry or #entries >= 128 then return nil end
+            entries[#entries + 1] = entry
+        end
+        return entries
+    end
+    local function endpoint(value)
+        if type(value) ~= 'string' then return nil end
+        local address, port = value:match('^%[([^%]]+)%]:(%d+)$')
+        local wanted_family = 6
+        if not address then
+            address, port = value:match('^([^:]+):(%d+)$')
+            wanted_family = 4
+        end
+        -- get_conf() supplies a public IP; numeric endpoints avoid DNS blocking HTTPS work.
+        return ip_words(address) == wanted_family and #port <= 5 and integer(port, 1, 65535)
+    end
+    local function validate_conf(text)
+        local conf = decode_wg_json(text)
+        if not container(conf, 'object') or not container(conf.Interface, 'object')
+                or not container(conf.Peers, 'array') then
+            return nil, "B37080 invalid WireGuard configuration object"
+        end
+        local intf = conf.Interface
+        if intf.Name ~= 'wgbb1' then return nil, "B58264 unmanaged WireGuard interface" end
+        if intf.PrivateKey ~= nil and intf.PrivateKey ~= json_null then
+            return nil, "B27754 WireGuard private keys must remain local"
+        end
+        local fields = {
+            Name = true,
+            PrivateKey = true,
+            Address = true,
+            ListenPort = true,
+            MTU = true,
+            FwMark = true,
+            Table = true,
+            DNS = true,
+        }
+        for name in pairs(intf) do
+            if not fields[name] then return nil, "B39148 unsupported field " .. name end
+        end
+        local addresses = cidrs(intf.Address, false)
+        local mtu = integer(intf.MTU == nil and 1420 or intf.MTU, 1280, 9000)
+        local mark = integer(intf.FwMark == nil and 0 or intf.FwMark, 0, 4294967295)
+        if not addresses or not mtu or not mark
+                or (intf.ListenPort ~= nil and not integer(intf.ListenPort, 0, 65535)) then
+            return nil, "B42267 invalid WireGuard interface settings"
+        end
+        local ipv4, ipv6 = false, false
+        for _, address in ipairs(addresses) do
+            if address.family == 4 then ipv4 = true else ipv6 = true end
+        end
+        if not ipv4 then return nil, "B83484 WireGuard requires an IPv4 interface address" end
+        if #conf.Peers < 1 or #conf.Peers > 128 then
+            return nil, "B93680 invalid WireGuard peer count"
+        end
+        local routes, keys, ipv4_keys = {}, {}, {}
+        local peer_fields = {
+            PublicKey = true,
+            AllowedIPs = true,
+            Endpoint = true,
+            PersistentKeepalive = true
+        }
+        for _, peer in ipairs(conf.Peers) do
+            if not container(peer, 'object') or not public_key(peer.PublicKey)
+                    or keys[peer.PublicKey] then
+                return nil, "B97715 invalid or duplicate WireGuard peer"
+            end
+            for name in pairs(peer) do
+                if not peer_fields[name] then return nil, "B43677 unsupported WireGuard peer field" end
+            end
+            keys[peer.PublicKey] = true
+            local allowed = cidrs(peer.AllowedIPs, true)
+            local keepalive = peer.PersistentKeepalive
+            if keepalive == nil then keepalive = 0 end
+            if not allowed or not integer(keepalive, 0, 65535)
+                    or (peer.Endpoint ~= nil and not endpoint(peer.Endpoint)) then
+                return nil, "B46583 invalid peer settings (default routes are unsupported)"
+            end
+            local peer_ips, peer_ipv4 = {}, {}
+            for _, entry in ipairs(allowed) do
+                if routes[entry.cidr] then return nil, "B45639 duplicate WireGuard route" end
+                routes[entry.cidr] = entry
+                peer_ips[#peer_ips + 1] = entry.cidr
+                if entry.family == 4 then
+                    peer_ipv4[#peer_ipv4 + 1] = entry.cidr
+                else
+                    ipv6 = true
+                end
+            end
+            keys[peer.PublicKey] = table.concat(peer_ips, ',')
+            ipv4_keys[peer.PublicKey] = table.concat(peer_ipv4, ',')
+        end
+        -- table and DNS fields are metadata here; no policy routing changes
+        return conf, {
+            addresses = addresses,
+            routes = routes,
+            keys = keys,
+            ipv4_keys = ipv4_keys,
+            ipv6 = ipv6,
+            mtu = mtu,
+            mark = mark
+        }
+    end
+    enable_wg = function(text)
+        if platform ~= 'init' and platform ~= 'sysd' then
+            return nil, "B85937 WireGuard activation requires Linux"
+        end
+        local conf, settings = validate_conf(text)
+        if not conf then return nil, settings end
+        local saved_json = getmetatable(conf).json
+        if base_config.wg_conf ~= saved_json or base_config.wg_enabled ~= '1'
+                or base_config.wg_ipv6_policy ~= 'optional' then
+            local updated = copy_table(base_config)
+            updated.wg_conf, updated.wg_enabled = saved_json, '1'
+            updated.wg_ipv6_policy = 'optional'
+            -- persist desired state first, so an interrupted apply can resume after restart;
+            -- keep IPv6 in the saved JSON; availability is checked again on every restore
+            if not save_base_config(updated) then
+                return nil, "B39841 cannot save WireGuard settings"
+            end
+            base_config = updated
+        end
+        -- restoration never installs packages or regenerates a missing private key
+        if not run_command('command -v ip', true, true)
+                or not run_command('command -v wg', true, true)
+                or not is_readable(wg_privkey_path) then
+            return nil, "B63659 WireGuard tools or private key unavailable"
+        end
+        local name = shell_quote(conf.Interface.Name)
+        local function command(text)
+            local output, problem, exit_code = run_command(text, true, true)
+            if not output then
+                if not problem or problem == '' then
+                    problem = exit_code and "exit code " .. tostring(exit_code) or "no error output"
+                end
+                error("B78313 WireGuard command failed: " .. displayable(text, 1024)
+                    .. ": " .. displayable(problem, 512), 0)
+            end
+            return output
+        end
+        local wanted = {}
+        for _, address in ipairs(settings.addresses) do wanted[address.cidr] = true end
+        local ipv6_inspected = false
+        local function configure_family(family, clear)
+            local ip = 'ip -' .. tostring(family)
+            -- inspect both before changing anything, including when testing IPv6 support in ip
+            local addresses = command(ip .. ' -o address show dev ' .. name .. ' scope global')
+            local routes = command(ip .. ' route show dev ' .. name .. ' proto static')
+            if family == 6 then ipv6_inspected = true end
+            local cleanup_problem
+            local function remove(text)
+                if not clear then
+                    command(text); return
+                end
+                -- one failed cleanup must not prevent attempts to remove the other IPv6 state
+                local ok, problem = pcall(command, text)
+                if not ok then cleanup_problem = cleanup_problem or problem end
+            end
+            for address in addresses:gmatch('inet6?%s+(%S+)') do
+                local existing = cidr(address, false)
+                if existing and (clear or not wanted[existing.cidr]) then
+                    remove(ip .. ' address del ' .. shell_quote(address) .. ' dev ' .. name)
+                end
+            end
+            for line in routes:gmatch('[^\r\n]+') do
+                local address = line:match('^(%S+)')
+                if address and not address:find('/', 1, true) then
+                    address = address .. (family == 4 and '/32' or '/128')
+                end
+                local existing = cidr(address, true)
+                if existing and (clear or not settings.routes[existing.cidr]) then
+                    remove(ip .. ' route del ' .. shell_quote(address) .. ' dev ' .. name
+                        .. ' proto static')
+                end
+            end
+            if clear then
+                if cleanup_problem then error(cleanup_problem, 0) end
+                return
+            end
+            for _, address in ipairs(settings.addresses) do
+                if address.family == family then
+                    command(ip .. ' address replace ' .. shell_quote(address.cidr) .. ' dev ' .. name)
+                end
+            end
+            if family == 4 then
+                command('ip link set dev ' .. name .. ' mtu ' .. tostring(settings.mtu) .. ' up')
+            end
+            for _, route in pairs(settings.routes) do
+                if route.family == family then
+                    command(ip .. ' route replace ' .. shell_quote(route.cidr) .. ' dev ' .. name
+                        .. ' proto static')
+                end
+            end
+        end
+        local function peer_allowed_ips(peer, ipv6)
+            local keys = ipv6 and settings.keys or settings.ipv4_keys
+            return 'wg set ' .. name .. ' peer ' .. shell_quote(peer.PublicKey)
+                    .. ' allowed-ips ' .. shell_quote(keys[peer.PublicKey])
+        end
+        local ok, problem = pcall(function()
+            if not run_command('ip link show dev ' .. name, true, true) then
+                command('ip link add dev ' .. name .. ' type wireguard')
+            end
+            -- this also refuses an existing non-WireGuard interface with the same name
+            local peers = command('wg show ' .. name .. ' peers')
+            command('wg set ' .. name .. ' private-key ' .. shell_quote(wg_privkey_path)
+                .. ' fwmark ' .. tostring(settings.mark))
+            if conf.Interface.ListenPort ~= nil then
+                local port = integer(conf.Interface.ListenPort, 0, 65535)
+                command('wg set ' .. name .. ' listen-port ' .. tostring(port))
+            end
+            for key in peers:gmatch('%S+') do
+                if not settings.keys[key] then
+                    command('wg set ' .. name .. ' peer ' .. shell_quote(key) .. ' remove')
+                end
+            end
+            for _, peer in ipairs(conf.Peers) do
+                -- an empty IPv4 list clears AllowedIPs for an IPv6-only peer until IPv6 is ready
+                local cmd = peer_allowed_ips(peer, false) .. ' persistent-keepalive '
+                        .. tostring(integer(peer.PersistentKeepalive or 0, 0, 65535))
+                if peer.Endpoint then cmd = cmd .. ' endpoint ' .. shell_quote(peer.Endpoint) end
+                command(cmd)
+            end
+            configure_family(4)
+        end)
+        if not ok then
+            wg_status = nil; return nil, problem
+        end
+        -- IPv4 is now configured and up; respect the interface's IPv6 setting, without changing
+        -- global/default/LAN/WAN sysctls. The value of all.disable_ipv6 is not a capability test.
+        local disabled = read_text_file('/proc/sys/net/ipv6/conf/' .. conf.Interface.Name
+            .. '/disable_ipv6', true)
+        local ipv6_problem
+        if disabled == '1' then
+            ipv6_problem = "disabled on " .. conf.Interface.Name
+        elseif disabled ~= '0' then
+            ipv6_problem = "interface IPv6 support unavailable"
+        else
+            ok, problem = pcall(function()
+                configure_family(6)
+                for _, peer in ipairs(conf.Peers) do
+                    if settings.keys[peer.PublicKey] ~= settings.ipv4_keys[peer.PublicKey] then
+                        command(peer_allowed_ips(peer, true))
+                    end
+                end
+            end)
+            if not ok then
+                ipv6_problem = tostring(problem)
+                local cleanup_problem
+                for _, peer in ipairs(conf.Peers) do
+                    if settings.keys[peer.PublicKey] ~= settings.ipv4_keys[peer.PublicKey] then
+                        local removed, err = pcall(command, peer_allowed_ips(peer, false))
+                        if not removed then cleanup_problem = cleanup_problem or err end
+                    end
+                end
+                -- a failed capability probe made no changes; do not try unsupported IPv6 cleanup
+                if ipv6_inspected then
+                    local removed, err = pcall(configure_family, 6, true)
+                    if not removed then cleanup_problem = cleanup_problem or err end
+                end
+                if cleanup_problem then
+                    ipv6_problem = ipv6_problem .. "; IPv6 cleanup incomplete: " .. cleanup_problem
+                end
+            end
+        end
+        local status = "B84526 on wgbb1, IPv4 configured"
+        if ipv6_problem and (settings.ipv6 or ipv6_inspected) then
+            status = status .. ", IPv6 skipped: " .. ipv6_problem .. "; will retry"
+        elseif settings.ipv6 then
+            status = status .. ", IPv6 configured"
+        else
+            status = status .. ", IPv6 not requested"
+        end
+        if status ~= wg_status then
+            if ipv6_problem and (settings.ipv6 or ipv6_inspected) then
+                log_warning(status)
+            else
+                log_info(status)
+            end
+        end
+        wg_status = status
+        return true, status
+    end
+    request_wg_config = function()
+        if not ensure_wg_keys() or not install_one_of('ip-full iproute2 iproute', 'ip') then
+            return nil, "B29081 cannot prepare WireGuard tools and keys"
+        end
+        local key = read_text_file(wg_pubkey_path, true)
+        if not public_key(key) then return nil, "B78910 invalid local WireGuard public key" end
+        local body = '{"jsonrpc":"2.0","id":1,"method":"wg","params":{"subd":"'
+                .. json_escape(subd) .. '","pubkey":"' .. json_escape(key) .. '"}}'
+        local response = decode_wg_json(send_signed_jsonrpc(body))
+        if not container(response, 'object') or response.jsonrpc ~= '2.0' or response.id ~= 1
+                or response.error ~= nil or not container(response.result, 'object')
+                or response.result.status ~= 'ok' or response.result.subd ~= subd
+                or not container(response.result.task_args, 'object') then
+            return nil, "B57314 invalid wg API response"
+        end
+        return getmetatable(response.result.task_args).json
+    end
+    restore_wg = function()
+        local now = uptime_seconds() or os.time()
+        if base_config.wg_enabled ~= '1' or now < next_restore then return end
+        next_restore = now + 60
+        -- reconcile periodically too, in case an OpenWrt network reload removed the interface
+        local call_ok, ok, problem = pcall(enable_wg, base_config.wg_conf)
+        if not call_ok then problem, ok = ok, nil end
+        if not ok then
+            log_error("B33482 WireGuard restoration failed; will retry: " .. tostring(problem))
+        end
+    end
+end
+
 local function xml_unescape(value)
     if not value then return nil end
     value = value:gsub('&#x([0-9A-Fa-f]+);', function(n)
@@ -3306,6 +3805,12 @@ local function handle_task(task_id, task_method, task_args)
     if task_method == 'no_op' then
         return send_task_result(task_id, task_method, true, 'ok')
     end
+    if task_method == 'enable_wg' then
+        local wg_conf, problem = request_wg_config()
+        if not wg_conf then return send_task_result(task_id, task_method, false, problem) end
+        local ok, output = enable_wg(wg_conf)
+        return send_task_result(task_id, task_method, ok, output)
+    end
     if task_method == 'update' then
         local requested_path = task_args and json_get_string(task_args, 'path') or nil
         if requested_path ~= 'hub/bbbased.lua' then
@@ -3512,6 +4017,7 @@ install_one_of('openssl openssl-util', 'openssl')
 --
 
 mkdir(config_dir, '0700')
+restore_wg()  -- use saved settings before any hub API call
 if not ensure_auth_keys() then
     log_error("B60585 cannot continue without key files; exiting")
     cleanup_and_exit(5)
@@ -3539,6 +4045,7 @@ local retry_wait = 7
 local retries_left = 2
 log_info("entering main ping loop")
 while true do
+    restore_wg()
     if not send_pending_task_result() then
         log_error("B91867 cannot send pending task result")
     end

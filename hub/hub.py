@@ -101,6 +101,11 @@ def cli(return_help_text=False):
         "create-invite-code",
         help="Create a new invite and display it. KEEP THIS SAFE!",
     )
+    p_enable_wg = subparsers.add_parser(
+        'enable-wg',
+        help="Queue WireGuard activation for an adopted base router",
+    )
+    p_enable_wg.add_argument('subd', metavar='SUBD')
     p_port_forward_script = subparsers.add_parser(
         "port-forward-script",
         help="Print a Bash script for forwarding ports to LXC container",
@@ -327,6 +332,21 @@ def entry_point():
             login_key = db.new_account(db.AccountKind.INVITE)
             print(f"Your new {db.AccountKind.INVITE} (KEEP IT SAFE): {login_key}")
             del login_key  # do not store!
+            sys.exit(0)
+        elif args.command == 'enable-wg':
+            if db.engine.url.database in (None, '', ':memory:'):
+                raise Berror("B31782 enable-wg requires the daemon's persistent database")
+            with db.device_by_subd(args.subd) as device:
+                intf_id = db.hub_peer_id(device.id)
+                if not device.auth_pubkey or intf_id is None:
+                    raise Berror(f"B45396 {args.subd} is not an adopted, managed base")
+                if device.platform not in (db.Platform.INIT, db.Platform.SYSTEMD):
+                    raise Berror(f"B19358 {args.subd} must report an init or sysd platform")
+                device_id = device.id
+            # the daemon polls the same database; do not call db.on_startup() here
+            db.enqueue_task(device_id, 'enable_wg', dedupe=3)
+            addresses = db.get_conf(intf_id)[0]['Address']
+            print(f"WireGuard activation queued for {args.subd}; connect via {addresses}")
             sys.exit(0)
         elif args.command == 'port-forward-script':
             util.port_forward_script()

@@ -1434,7 +1434,9 @@ def get_conf(intf_id) -> tuple:
     peers = list()
     # WireGuard config file docs: https://git.zx2c4.com/wireguard-tools/about/src/man/wg-quick.8
     with Session(engine) as session:
-        intf = session.exec(select(Intf).where(Intf.id == intf_id)).one()  # may raise NoResultFound
+        intf: Intf = session.exec(
+            select(Intf).where(Intf.id == intf_id)
+        ).one()  # may raise NoResultFound
         if intf.backend_port:
             interface['ListenPort'] = str(intf.backend_port)
         interface['PrivateKey'] = intf.wg_privkey
@@ -1454,7 +1456,10 @@ def get_conf(intf_id) -> tuple:
             aip4 = ipaddress.ip_network(f"{base.ipv4()}/{intf.allowed_ipv4_subnet}", strict=False)
             aip6 = ipaddress.ip_network(f"{base.ipv6()}/{intf.allowed_ipv6_subnet}", strict=False)
             # p['PresharedKey'] = ...
-            p['Endpoint'] = f'{conf.get('frontend.ips')[0]}:{base.frontend_ports[0]}'
+            endpoint_ip = str(conf.get('frontend.ips')[0])
+            if ':' in endpoint_ip and not endpoint_ip.startswith('['):
+                endpoint_ip = f'[{endpoint_ip}]'
+            p['Endpoint'] = f'{endpoint_ip}:{base.frontend_ports[0]}'
             if intf.keepalive:
                 p['PersistentKeepalive'] = intf.keepalive
             p['AllowedIPs'] = f'{aip4},{aip6}'
@@ -1620,11 +1625,12 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
     if platform_l2 == 'local.linux':
         method = IntfMethod.LOCAL
         apply_conf()
-        do(f'''iptables --append FORWARD --in-interface {wgif} --jump ACCEPT''')
-        do(
-            '''iptables --table nat --append POSTROUTING --out-interface'''
-            + f''' {net.default_route_interface()} --jump MASQUERADE'''
-        )
+        if i.get('Address'):  # interface-wide rules do not belong in peer activation
+            do(f'''iptables --append FORWARD --in-interface {wgif} --jump ACCEPT''')
+            do(
+                '''iptables --table nat --append POSTROUTING --out-interface'''
+                + f''' {net.default_route_interface()} --jump MASQUERADE'''
+            )
     elif platform_l2 == 'linux.openwrt':
         for line in util.fix_lan_overlap_shell_code().splitlines():
             do(line)
@@ -1894,8 +1900,14 @@ def store_adopt6c_pubkey(device_id, auth_pubkey: str):
         session.commit()
 
 
-def store_wg_pubkey(device_id, wg_pubkey: str) -> str:
-    """Configure WireGuard for a new client; return an IPv4,IPv6 address pair"""
+def store_wg_pubkey(device_id, wg_pubkey: str) -> tuple[dict, list[dict]]:
+    """Activate the base's hub peer and return get_conf() for its local interface."""
+    try:
+        key = base64.b64decode(wg_pubkey, validate=True)
+    except (ValueError, TypeError):
+        raise Berror("B63891 invalid WireGuard public key") from None
+    if len(key) != 32 or not any(key) or base64.b64encode(key).decode() != wg_pubkey:
+        raise Berror("B63892 invalid WireGuard public key")
     with Session(engine) as session:
         try:
             device: Device = session.exec(select(Device).where(Device.id == device_id)).one()
@@ -1908,12 +1920,14 @@ def store_wg_pubkey(device_id, wg_pubkey: str) -> str:
             raise Berror(f"B92660 wgbb1 not found for subd {device.subd}")
         except sqlalchemy.exc.MultipleResultsFound:
             raise Berror(f"B59694 multiple wgbb1 found for subd {device.subd}")
+        if intf.wg_pubkey and intf.wg_pubkey != wg_pubkey:
+            net.sudo_wg(['set', intf.iface(), 'peer', intf.wg_pubkey, 'remove'])  # remove old key
         intf.wg_pubkey = wg_pubkey
         session.add(intf)
         session.commit()
         hub_peer_conf = get_conf_activate_peer(intf.id)
         methodize(hub_peer_conf, 'local.linux')  # runs 'wg set wgbb1 peer ... allowed-ips ...'
-        return f'{intf.ipv4cidr()},{intf.ipv6cidr()}'
+        return get_conf(intf.id)
 
 
 def hub_peer_id(device_id) -> int | None:
