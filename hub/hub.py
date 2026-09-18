@@ -101,16 +101,6 @@ def cli(return_help_text=False):
         "create-invite-code",
         help="Create a new invite and display it. KEEP THIS SAFE!",
     )
-    p_shell = subparsers.add_parser(
-        "shell-to-device",
-        help="Launch an ssh shell to DEVICE_ID",
-    )
-    p_shell.add_argument(
-        "device_id",
-        type=int,
-        metavar="DEVICE_ID",
-        help="ID from '/home' page as an admin",
-    )
     p_port_forward_script = subparsers.add_parser(
         "port-forward-script",
         help="Print a Bash script for forwarding ports to LXC container",
@@ -337,9 +327,6 @@ def entry_point():
             login_key = db.new_account(db.AccountKind.INVITE)
             print(f"Your new {db.AccountKind.INVITE} (KEEP IT SAFE): {login_key}")
             del login_key  # do not store!
-            sys.exit(0)
-        elif args.command == 'shell-to-device':
-            db.shell_to_device(args.device_id)
             sys.exit(0)
         elif args.command == 'port-forward-script':
             util.port_forward_script()

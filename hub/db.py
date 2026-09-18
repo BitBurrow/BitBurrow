@@ -566,8 +566,6 @@ class Intf(SQLModel, table=True):
     other: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
     last_endpoint: str | None = None
     last_handshake: int | None = None  # seconds past Unix epoch
-    ssh_privkey: str | None = None
-    ssh_pubkey: str | None = None
     comment: str = ""
     default_method: IntfMethod = IntfMethod.NONE
     model_config = ConfigDict(arbitrary_types_allowed=True)  # for Column(JSON)
@@ -651,8 +649,6 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
         intf.default_method = IntfMethod.UCI
     if intf.base_intf_id == hub_id:  # a managed router
         intf.keepalive = 25  # so hub can track IP and initiate a connection to router
-        # ed25519 keys may not be supported: https://www.dwarmstrong.org/remote-unlock-dropbear/
-        intf.ssh_privkey, intf.ssh_pubkey = net.ssh_keygen(key_type='rsa')
     host_id_min = 39
     host_id_limit = 2**intf.host_bits - 1
     with Session(engine) as session:
@@ -1463,9 +1459,6 @@ def get_conf(intf_id) -> tuple:
                 p['PersistentKeepalive'] = intf.keepalive
             p['AllowedIPs'] = f'{aip4},{aip6}'
             peers.append(p)
-            if intf.base_intf_id == hub_id:  # a managed router
-                interface['SshPrivateKey'] = intf.ssh_privkey  # non-standard conf
-                interface['SshPublicKey'] = intf.ssh_pubkey  # non-standard conf
         else:  # for multi-peer, loop through them
             statement = select(Intf).where(Intf.base_intf_id == intf.id)
             for peer in session.exec(statement):
@@ -1647,16 +1640,6 @@ def methodize(conf: tuple[dict, list[dict]], platform: str) -> str:
             for ip_net in p['AllowedIPs'].split(','):
                 do(f"""ip route add {ip_net} dev {wgif}""")
         do(f"""# DISCONNECT: ip link del dev {wgif}""")
-        if ssh_pubkey := i['SshPublicKey']:  # a managed router
-            do(f"""AK=/etc/dropbear/authorized_keys""")
-            do(f"""if ! grep -q ' {wgif}$' $AK; then""")  # our ssh pubkey is not in the file yet
-            # OpenWrt seems to limit lines to 510 characters; use 51 to avoid 76 max line width
-            for p in range(0, len(ssh_pubkey), 51):
-                do(f"""    printf '%s' "{ssh_pubkey[p:p+51]}" >>$AK""")
-            do(f"""    printf ' {wgif}\\n' >>$AK""")
-            do(f"""    chmod 600 $AK""")
-            do(f"""    /etc/init.d/dropbear restart""")
-            do(f"""fi""")
     elif platform_l1 == 'linux':
         method = IntfMethod.BASH
         # from https://www.wireguard.com/netns/#improved-rule-based-routing
@@ -1733,37 +1716,6 @@ def new_device(account_id, is_base: bool, name: str) -> str:
         else:
             logger.debug(f"B04560 device {device.id} created")
         return device.name_slug
-
-
-def shell_to_device(device_id: int):
-    with Session(engine) as session:
-        to_delete = list()
-        r = -1
-        try:
-            device = session.exec(select(Device).where(Device.id == device_id)).one()
-            intf = session.exec(select(Intf).where(Intf.device_id == device_id)).one()
-            temp_key_file = tempfile.NamedTemporaryFile(delete=False, mode='w')
-            os.chmod(temp_key_file.name, 0o600)
-            temp_key_file.write(intf.ssh_privkey + '\n')
-            temp_key_file.close()
-            to_delete.append(temp_key_file.name)
-            args = (
-                f'ssh -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa'
-                + f' -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no'
-                + f' -i {temp_key_file.name} root@{intf.ipv4()}'
-            ).split(' ')
-            net.prepend_path_to_prog(args)
-            logger.info(f"connecting to \"{device.name}\"")
-            logger.debug(f"running: {net.arg_string(args)}")
-            # DEVNULL hides known hosts warning (WireGuard makes StrictHostKeyChecking=no safe-ish)
-            r = subprocess.run(args, stderr=subprocess.DEVNULL).returncode
-        except Exception as e:
-            logger.error(f"B75819 {e}")
-        finally:
-            for f in to_delete:
-                os.unlink(f)
-        print(f"Exiting device shell.")
-        return r
 
 
 def get_device_by_slug(device_slug: str, account_id: int) -> Device | None:
