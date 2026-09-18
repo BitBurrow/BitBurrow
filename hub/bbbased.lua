@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tlkguj'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tlklwh'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -2216,7 +2216,6 @@ do
             return nil, "B37080 invalid WireGuard configuration object"
         end
         local intf = conf.Interface
-        if intf.Name ~= 'wgbb1' then return nil, "B58264 unmanaged WireGuard interface" end
         if intf.PrivateKey ~= nil and intf.PrivateKey ~= json_null then
             return nil, "B27754 WireGuard private keys must remain local"
         end
@@ -2458,7 +2457,7 @@ do
                 end
             end
         end
-        local status = "B84526 on wgbb1, IPv4 configured"
+        local status = "B84526 on " .. conf.Interface.Name .. ", IPv4 configured"
         if ipv6_problem and (settings.ipv6 or ipv6_inspected) then
             status = status .. ", IPv6 skipped: " .. ipv6_problem .. "; will retry"
         elseif settings.ipv6 then

@@ -672,7 +672,6 @@ async def wg(
             interface, peers = db.store_wg_pubkey(device.id, pubkey)
             interface.pop('PrivateKey', None)  # never used on base, and causes Berror 27754 if sent
             wg_conf = {'Interface': interface, 'Peers': peers}
-            print(f">>>>> sending {wg_conf}")
         except (Berror, db.CredentialsError) as e:
             logger.warning(f"{e} (base {subd} at {ip})")
             raise BaseError("B80541 invalid wg request")

@@ -548,6 +548,7 @@ class IntfMethod(enum.Enum):  # method used to configure Wireguard
 class Intf(SQLModel, table=True):
     id: int | None = Field(primary_key=True, default=None)
     device_id: int = Field(index=True, foreign_key='device.id')  # device this intf is on
+    name: str = ''  # e.g. wgbbt9wb80 if subd is t9wb
     ipv4_base: str = ''  # ipaddress.ip_network() but without the subnet prefix
     ipv6_base: str = ''
     host_id: int = 0  # host portion of IP address, e.g. 1 for muti-peer; applies to IPv4 and IPv6
@@ -569,12 +570,6 @@ class Intf(SQLModel, table=True):
     comment: str = ""
     default_method: IntfMethod = IntfMethod.NONE
     model_config = ConfigDict(arbitrary_types_allowed=True)  # for Column(JSON)
-
-    def iface(self):
-        if self.base_intf_id:  # single-peer, i.e. 'client'
-            return f'{wgif_prefix}{self.base_intf_id}'  # match remote's interface name
-        else:  # multi-peer
-            return f'{wgif_prefix}{self.id}'  # interface name and Intf.id match
 
     def ipv4(self) -> str:  # e.g. 192.168.1.101
         return str(ipaddress.ip_address(self.ipv4_base) + self.host_id)
@@ -598,60 +593,65 @@ class Intf(SQLModel, table=True):
 def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> int:
     """Create a new intf and return its id. For clients, set base_intf_id."""
     intf = Intf(device_id=device_id)
-    if base_intf_id:  # single-peer, i.e. new 'client'
-        assert base_is_hub == False
-        with Session(engine) as session:  # copy 'client' network details from base_intf
+    with Session(engine) as session:
+        device: Device = session.exec(select(Device).where(Device.id == device_id)).one_or_none()
+        if not device:
+            raise Berror(f"B48159 cannot find device {device_id}")
+        if base_intf_id:  # single-peer, i.e. new 'client': copy network details from base_intf
+            assert base_is_hub == False
             statement = select(Intf).where(Intf.id == base_intf_id)
             base_intf = session.exec(statement).one_or_none()
             intf.ipv4_base = base_intf.ipv4_base
             intf.ipv6_base = base_intf.ipv6_base
             intf.host_bits = base_intf.host_bits
-        intf.allowed_ipv4_subnet = 32  # for now, don't allow client-to-client
-        intf.allowed_ipv6_subnet = 128
-    else:  # multi-peer
-        intf.host_bits = 12  # default for new Intf rows; FIXME: use conf.get('wireguard.host_bits')
-        if base_is_hub:  # this Intf is the very first one, used for the base connections to the hub
-            intf.ipv4_base = str(  # 172. address will never conflict with 10. used on bases
-                ipaddress.ip_network(
-                    f'172.22.199.111/{32-intf.host_bits}', strict=False
-                ).network_address
-            )
-            intf.ipv6_base = str(  # fc00:: address will never conflict with fd00:: used on bases
-                ipaddress.ip_network(
-                    f'fcbb:ac16:c76f::0/{128-intf.host_bits}', strict=False
-                ).network_address
-            )
+            intf.allowed_ipv4_subnet = 32  # for now, don't allow client-to-client
+            intf.allowed_ipv6_subnet = 128
+        else:  # multi-peer
+            intf.host_bits = 12  # default for new Intf; FIXME: use conf.get('wireguard.host_bits')
+            if base_is_hub:  # this Intf is very first one, used for the base connections to the hub
+                intf.ipv4_base = str(  # 172. address will never conflict with 10. used on bases
+                    ipaddress.ip_network(
+                        f'172.22.199.111/{32-intf.host_bits}', strict=False
+                    ).network_address
+                )
+                intf.ipv6_base = str(  # fc00:: will never conflict with fd00:: used on bases
+                    ipaddress.ip_network(
+                        f'fcbb:ac16:c76f::0/{128-intf.host_bits}', strict=False
+                    ).network_address
+                )
+            else:
+                # Reserved IP addresses docs: https://en.wikipedia.org/wiki/Reserved_IP_addresses
+                intf.ipv4_base = str(
+                    ipaddress.ip_address('10.0.0.0')
+                    + secrets.randbelow(2 ** (32 - 8 - intf.host_bits)) * 2**intf.host_bits
+                )
+                intf.ipv6_base = str(
+                    ipaddress.ip_address('fd00::')
+                    + secrets.randbelow(2 ** (128 - 96 - 8 - intf.host_bits))
+                    * 2 ** (intf.host_bits + 96)
+                )
+            intf.allowed_ipv4_subnet = 0
+            intf.allowed_ipv6_subnet = 0
+        intf.base_intf_id = base_intf_id
+        if base_is_hub:
+            intf.wg_privkey = net.sudo_wg(['genkey'])  # all managed devices generate own privkey
+            intf.wg_pubkey = net.sudo_wg(['pubkey'], input=intf.wg_privkey)
+            # on the hub, use ports from config file
+            intf.backend_port = conf.get('backend.wg_port')
+            intf.frontend_ports = [conf.get('frontend.wg_port')]
+            intf.default_method = IntfMethod.LOCAL
         else:
-            # Reserved IP addresses docs: https://en.wikipedia.org/wiki/Reserved_IP_addresses
-            intf.ipv4_base = str(
-                ipaddress.ip_address('10.0.0.0')
-                + secrets.randbelow(2 ** (32 - 8 - intf.host_bits)) * 2**intf.host_bits
-            )
-            intf.ipv6_base = str(
-                ipaddress.ip_address('fd00::')
-                + secrets.randbelow(2 ** (128 - 96 - 8 - intf.host_bits))
-                * 2 ** (intf.host_bits + 96)
-            )
-        intf.allowed_ipv4_subnet = 0
-        intf.allowed_ipv6_subnet = 0
-    intf.base_intf_id = base_intf_id
-    if base_is_hub:
-        intf.wg_privkey = net.sudo_wg(['genkey'])  # all managed devices generate own privkey
-        intf.wg_pubkey = net.sudo_wg(['pubkey'], input=intf.wg_privkey)
-        # on the hub, use ports from config file
-        intf.backend_port = conf.get('backend.wg_port')
-        intf.frontend_ports = [conf.get('frontend.wg_port')]
-        intf.default_method = IntfMethod.LOCAL
-    else:
-        if not base_intf_id:  # in-bound port needed only on multi-peer interfaces
-            intf.backend_port = 123
-            intf.frontend_ports = [123]
-        intf.default_method = IntfMethod.UCI
-    if intf.base_intf_id == hub_id:  # a managed router
-        intf.keepalive = 25  # so hub can track IP and initiate a connection to router
-    host_id_min = 39
-    host_id_limit = 2**intf.host_bits - 1
-    with Session(engine) as session:
+            if not base_intf_id:  # in-bound port needed only on multi-peer interfaces
+                intf.backend_port = 123
+                intf.frontend_ports = [123]
+            intf.default_method = IntfMethod.UCI
+        if intf.base_intf_id == hub_id:  # a managed router
+            intf.keepalive = 25  # so hub can track IP and initiate a connection to router
+        session.add(intf)
+        session.flush()  # assign intf.id before using it
+        intf.name = f'{wgif_prefix}{device.subd}{intf.id}'  # unique name on the device
+        host_id_min = 39
+        host_id_limit = 2**intf.host_bits - 1
         if base_intf_id:  # single-peer, i.e. new 'client'
             statement = select(Intf.host_id).where(
                 Intf.host_id >= host_id_min,
@@ -1408,9 +1408,10 @@ def update_wg_show():
         return
     update_wg_show.last_update = now
     with Session(engine) as session:
-        if not hub_intf_exists(session):  # WireGuard is not yet configured
+        hub_intf = session.get(Intf, hub_id)
+        if hub_intf is None:  # WireGuard is not yet configured
             return
-        lines = net.sudo_wg(['show', f'{wgif_prefix}{hub_id}', 'dump'])
+        lines = net.sudo_wg(['show', hub_intf.name, 'dump'])
         for line in lines.splitlines()[1:]:
             elements = line.split('\t')
             intf = session.exec(select(Intf).where(Intf.wg_pubkey == elements[0])).one_or_none()
@@ -1448,7 +1449,7 @@ def get_conf(intf_id) -> tuple:
             interface['DNS'] = intf.other['DNS']
         interface['FwMark'] = str(intf.id + 24274090)
         interface['Table'] = str(intf.id + 83726675)
-        interface['Name'] = intf.iface()  # non-standard conf
+        interface['Name'] = intf.name  # non-standard conf
         if intf.base_intf_id:  # single-peer
             base = session.exec(select(Intf).where(Intf.id == intf.base_intf_id)).one()
             p = dict()
@@ -1483,10 +1484,10 @@ def get_conf_activate_peer(intf_id) -> tuple:
     interface = dict()
     peers = list()
     with Session(engine) as session:
-        intf = session.exec(select(Intf).where(Intf.id == intf_id)).one()
+        intf: Intf = session.exec(select(Intf).where(Intf.id == intf_id)).one()
         assert intf.base_intf_id is not None
         base = session.exec(select(Intf).where(Intf.id == intf.base_intf_id)).one()
-        interface['Name'] = base.iface()
+        interface['Name'] = base.name
         p = dict()
         p['PublicKey'] = intf.wg_pubkey
         p['AllowedIPs'] = f'{intf.ipv4allowed()},{intf.ipv6allowed()}'
@@ -1917,16 +1918,17 @@ def store_wg_pubkey(device_id, wg_pubkey: str) -> tuple[dict, list[dict]]:
         try:
             intf: Intf = session.exec(statement).one()
         except sqlalchemy.exc.NoResultFound:
-            raise Berror(f"B92660 wgbb1 not found for subd {device.subd}")
+            raise Berror(f"B92660 wgbb{device.subd}1 not found")
         except sqlalchemy.exc.MultipleResultsFound:
-            raise Berror(f"B59694 multiple wgbb1 found for subd {device.subd}")
+            raise Berror(f"B59694 multiple wgbb{device.subd}1 found")
         if intf.wg_pubkey and intf.wg_pubkey != wg_pubkey:
-            net.sudo_wg(['set', intf.iface(), 'peer', intf.wg_pubkey, 'remove'])  # remove old key
+            hub_intf = session.get(Intf, intf.base_intf_id)
+            net.sudo_wg(['set', hub_intf.name, 'peer', intf.wg_pubkey, 'remove'])  # removed old key
         intf.wg_pubkey = wg_pubkey
         session.add(intf)
         session.commit()
         hub_peer_conf = get_conf_activate_peer(intf.id)
-        methodize(hub_peer_conf, 'local.linux')  # runs 'wg set wgbb1 peer ... allowed-ips ...'
+        methodize(hub_peer_conf, 'local.linux')  # runs 'wg set wgbbt9wb1 peer ... allowed-ips ...'
         return get_conf(intf.id)
 
 
