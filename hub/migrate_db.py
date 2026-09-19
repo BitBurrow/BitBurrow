@@ -5,6 +5,7 @@ import tempfile
 from contextlib import contextmanager
 from sqlalchemy import update
 from sqlmodel import SQLModel, create_engine, Session, select
+import hub.config as conf
 import hub.db as db
 import hub.login_key as lk
 import hub.util as util
@@ -20,7 +21,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 43
+db_schema_version = 44
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -174,6 +175,44 @@ def migrate(db_path: str) -> None:
                 intf.name = f'{db.wgif_prefix}{subd}{intf.id}'
             session.commit()
         current_version = 43
+    if current_version < 44:  # version 43 → 44: recalculate all Intf address fields
+        import ipaddress
+        import secrets
+
+        engine = create_engine(f"sqlite:///{db_path}")
+        with Session(engine) as session:
+            intfs = {intf.id: intf for intf in session.exec(select(db.Intf))}
+            # calculate each multi-peer network once, before updating its clients
+            for intf in intfs.values():
+                if intf.base_intf_id is not None:
+                    continue
+                random40 = f'{(h := secrets.token_hex(5))[:2]}:{h[2:6]}:{h[6:]}'
+                if intf.id == db.hub_id:
+                    intf.host_bits = 16
+                    intf.ipv4_base = str(
+                        ipaddress.ip_address('172.16.0.0') + conf.get('backend.hub_bloc') * 2**16
+                    )
+                    intf.ipv6_base = str(
+                        ipaddress.ip_address(f'fc{random40}::0')
+                        + conf.get('backend.hub_bloc') * 2**16
+                    )
+                else:
+                    intf.host_bits = conf.get('backend.host_bits')
+                    intf.ipv4_base = str(
+                        ipaddress.ip_address('10.0.0.0')
+                        + secrets.randbelow(2 ** (32 - 8 - intf.host_bits)) * 2**intf.host_bits
+                    )
+                    intf.ipv6_base = str(ipaddress.ip_address(f'fd{random40}::0'))
+            # keep each client's host_id; only its network details change
+            for intf in intfs.values():
+                if intf.base_intf_id is None:
+                    continue
+                base_intf = intfs[intf.base_intf_id]
+                intf.ipv4_base = base_intf.ipv4_base
+                intf.ipv6_base = base_intf.ipv6_base
+                intf.host_bits = base_intf.host_bits
+            session.commit()
+        current_version = 44
     # if current_version < ...
     #     ...
     #     current_version = ...

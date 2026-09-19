@@ -548,11 +548,12 @@ class IntfMethod(enum.Enum):  # method used to configure Wireguard
 class Intf(SQLModel, table=True):
     id: int | None = Field(primary_key=True, default=None)
     device_id: int = Field(index=True, foreign_key='device.id')  # device this intf is on
-    name: str = ''  # e.g. wgbbt9wb80 if subd is t9wb
-    ipv4_base: str = ''  # ipaddress.ip_network() but without the subnet prefix
+    name: str = ''  # e.g. wgbby99g80 if subd is y99g
+    ipv4_base: str = ''  # ipaddress.ip_network() but without a prefix length
     ipv6_base: str = ''
-    host_id: int = 0  # host portion of IP address, e.g. 1 for muti-peer; applies to IPv4 and IPv6
-    host_bits: int = 0  # network size in bits; for IPv4, host_bits = 32 - subnet_prefix
+    host_id: int = 0  # host offset for both IPv4 and IPv6; 1 for muti-peer; if host_id is greater
+    # ... than 2**host_bits, IPv4 is broken
+    host_bits: int = 0  # IPv4 network size in bits (32 - subnet_prefix); always 16 for IPv6
     allowed_ipv4_subnet: int = 32  # our allowed IPs, i.e. AllowedIPs in Peer section of our peer
     allowed_ipv6_subnet: int = 128
     # 'base_intf_id' is our peer (server) on single-peer interfaces; otherwise None
@@ -581,7 +582,7 @@ class Intf(SQLModel, table=True):
         return str(ipaddress.ip_address(self.ipv6_base) + self.host_id)
 
     def ipv6cidr(self) -> str:
-        return f'{self.ipv6()}/{128-self.host_bits}'
+        return f'{self.ipv6()}/{128-16}'
 
     def ipv4allowed(self) -> str:
         return f'{self.ipv4()}/{self.allowed_ipv4_subnet}'
@@ -607,29 +608,30 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
             intf.allowed_ipv4_subnet = 32  # for now, don't allow client-to-client
             intf.allowed_ipv6_subnet = 128
         else:  # multi-peer
-            intf.host_bits = 12  # default for new Intf; FIXME: use conf.get('wireguard.host_bits')
+            random40 = f'{(h := secrets.token_hex(5))[:2]}:{h[2:6]}:{h[6:]}'  # 40 random bits
+            # reserved IP addresses docs: https://en.wikipedia.org/wiki/Reserved_IP_addresses
             if base_is_hub:  # this Intf is very first one, used for the base connections to the hub
-                intf.ipv4_base = str(  # 172. address will never conflict with 10. used on bases
-                    ipaddress.ip_network(
-                        f'172.22.199.111/{32-intf.host_bits}', strict=False
-                    ).network_address
+                intf.host_bits = 16  # base→hub connections are all /16
+                # bits of address: 12 RFC 1918 + 4 hub_bloc + 16 host_id
+                intf.ipv4_base = str(
+                    ipaddress.ip_address('172.16.0.0')  # will never conflict with 10. used on bases
+                    + conf.get('backend.hub_bloc') * 2**16
                 )
-                intf.ipv6_base = str(  # fc00:: will never conflict with fd00:: used on bases
-                    ipaddress.ip_network(
-                        f'fcbb:ac16:c76f::0/{128-intf.host_bits}', strict=False
-                    ).network_address
+                # bits of address: 8 RFC 4193 + 40 random + 60 zeros + 4 hub_bloc + 16 host_id
+                intf.ipv6_base = str(
+                    ipaddress.ip_address(f'fc{random40}::0')  # will never conflict with fdxx::
+                    + conf.get('backend.hub_bloc') * 2**16
                 )
             else:
-                # Reserved IP addresses docs: https://en.wikipedia.org/wiki/Reserved_IP_addresses
+                intf.host_bits = conf.get('backend.host_bits')  # default 12
+                # bits of address (host_bits==12): 8 RFC 1918 + 12 random + 12 host_id
+                # bits of address (host_bits==14): 8 RFC 1918 + 10 random + 14 host_id
                 intf.ipv4_base = str(
                     ipaddress.ip_address('10.0.0.0')
                     + secrets.randbelow(2 ** (32 - 8 - intf.host_bits)) * 2**intf.host_bits
                 )
-                intf.ipv6_base = str(
-                    ipaddress.ip_address('fd00::')
-                    + secrets.randbelow(2 ** (128 - 96 - 8 - intf.host_bits))
-                    * 2 ** (intf.host_bits + 96)
-                )
+                # bits of address: 8 RFC 4193 + 40 random + 64 zeros + 16 host_id
+                intf.ipv6_base = str(ipaddress.ip_address(f'fd{random40}::0'))
             intf.allowed_ipv4_subnet = 0
             intf.allowed_ipv6_subnet = 0
         intf.base_intf_id = base_intf_id
@@ -650,7 +652,7 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
         session.add(intf)
         session.flush()  # assign intf.id before using it
         intf.name = f'{wgif_prefix}{device.subd}{intf.id}'  # unique name on the device
-        host_id_min = 39
+        host_id_min = 39  # reserved 0..38
         host_id_limit = 2**intf.host_bits - 1
         if base_intf_id:  # single-peer, i.e. new 'client'
             statement = select(Intf.host_id).where(
@@ -1928,7 +1930,7 @@ def store_wg_pubkey(device_id, wg_pubkey: str) -> tuple[dict, list[dict]]:
         session.add(intf)
         session.commit()
         hub_peer_conf = get_conf_activate_peer(intf.id)
-        methodize(hub_peer_conf, 'local.linux')  # runs 'wg set wgbbt9wb1 peer ... allowed-ips ...'
+        methodize(hub_peer_conf, 'local.linux')  # runs 'wg set wgbby99g1 peer ... allowed-ips ...'
         return get_conf(intf.id)
 
 

@@ -17,7 +17,7 @@ config = None
 #        the section with the 2 lines `cfv += 1` and `set('programmatic_use_only', cfv)`.
 # 2. increment config_fv below
 # 3. test
-config_fv = 5079  # version of the config file key structure
+config_fv = 5080  # version of the config file key structure
 
 
 def get(cpath: str):  # parse config path, e.g. get('frontend.ips')[0]
@@ -125,7 +125,7 @@ def migrate(domain='', public_ip=''):  # update config data to current format
                         of BitBurrow hubs more difficult.
                       web_port: Public-facing TCP port, normally 443.
                       web_proto: Must be 'http' or 'https'.
-                      wg_port: Frontend Wireguard UDP port. Don't change this once a base router
+                      wg_port: Frontend WireGuard UDP port. Don't change this once a base router
                         has been created because the DB and router endpoint and won't get updated.
                       ips: List of IPv4 and IPv6 addresses that 'domain' should point to.
                     backend:
@@ -186,7 +186,27 @@ def migrate(domain='', public_ip=''):  # update config data to current format
         insert_item_before('programmatic_use_only', 'path', new_branch)
         cfv += 1
         set('programmatic_use_only', cfv)
-    # if cfv == 5079:  # migrate in-memory to next version
+    if cfv == 5079:  # migrate in-memory to next version
+        # new config: hub_bloc
+        hub_bloc = secrets.randbelow(16)  # could use: random.randint(0, 15)
+        new_branch = yaml.safe_load(textwrap.dedent(f'''
+                    Integer 0-15 used to calculate base router wg addresses. If you manage multiple
+                    hubs, each hub should have a unique hub_bloc to permit multiple bbbased.lua
+                    instances on one base router.
+                ''').lstrip())
+        insert_item_after('help.backend.ip', 'hub_bloc', new_branch)
+        insert_item_after('backend.ip', 'hub_bloc', hub_bloc)
+        # new config: host_bits
+        host_bits = 12
+        new_branch = yaml.safe_load(textwrap.dedent(f'''
+                    Number of address bits reserved for the host for IPv4. Only 12 has been tested
+                    (e.g. 172.18.0.0/20). For IPv6, 16 (a /112 network) is always used.
+                ''').lstrip())
+        insert_item_after('help.backend.ip', 'host_bits', new_branch)
+        insert_item_after('backend.ip', 'host_bits', host_bits)
+        cfv += 1
+        set('programmatic_use_only', cfv)
+    # if cfv == 5080:  # migrate in-memory to next version
     #     ...
     #     cfv += 1
     #     set('programmatic_use_only', cfv)
