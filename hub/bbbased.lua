@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tlmm90'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tlmnin'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -1579,9 +1579,10 @@ end
 math.randomseed(os.time() + tonumber(get_pid() or '0'))
 local auth_privkey_path = config_dir .. 'client_rsapss.pem'
 local auth_pubkey_path = config_dir .. 'client_rsapss_pub.pem'
-local wg_privkey_path = config_dir .. 'wgbb1_private.key'
-local wg_pubkey_path = config_dir .. 'wgbb1_public.key'
 local pubkeys_uploaded_path = config_dir .. 'pubkeys_uploaded'
+-- on some systems, AppArmor needs wg keys in /etc/wireguard/; see https://www.mail-archive.com/ubuntu-bugs%40lists.ubuntu.com/msg6274314.html
+local wg_privkey_path = '/etc/wireguard/' .. bbsubd .. '_private.key'
+local wg_pubkey_path = '/etc/wireguard/' .. bbsubd .. '_public.key'
 
 local function run_command_with_umask_077(command)
     local wrapped = 'if umask 077; then ' .. command .. '; else false; fi'
@@ -1625,7 +1626,10 @@ local function ensure_wg_keys()
         log_debug("wg_privkey and wg_pubkey both already exist")
         return true
     end
-    log_info("WireGuard keys are missing; generating new keypair")
+    log_info("generating new WireGuard keys")
+    if not is_directory('/etc/wireguard/') then
+        mkdir('/etc/wireguard/', '0700')
+    end
     remove_path(wg_pubkey_path)
     local output = run_command_with_umask_077(
         'wg genkey >' .. shell_quote(wg_privkey_path)
@@ -2327,8 +2331,8 @@ do
                 if not problem or problem == '' then
                     problem = exit_code and "exit code " .. tostring(exit_code) or "no error output"
                 end
-                error("B78313 WireGuard command failed: " .. displayable(text, 1024)
-                    .. ": " .. displayable(problem, 512), 0)
+                error("B78313 error '" .. displayable(problem, 512) .. "' running: "
+                    .. displayable(text, 1024), 0)
             end
             return output
         end
