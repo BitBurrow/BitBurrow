@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tlklwh'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tlmixu'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -2017,6 +2017,116 @@ do
     local json_null = {}
     local next_restore = 0
     local wg_status = nil
+    local next_key_diagnostic = 0
+    local function diagnose_wg_key()
+        local now = uptime_seconds() or os.time()
+        if now < next_key_diagnostic then return end
+        next_key_diagnostic = now + 300  -- restoration can fail once a minute
+        local details = {}
+        local function add(label, value)
+            details[#details + 1] = label .. '=' .. displayable(tostring(value), 700)
+        end
+        local function probe(label, text)
+            local output, problem, code = run_command(text, true, true)
+            add(label, output and ('ok: ' .. output)
+                or ('failed (' .. tostring(code) .. '): ' .. tostring(problem)))
+            return output
+        end
+        local function metadata(path, fields)
+            local handle, problem = io.open(path, 'r')
+            if not handle then return tostring(problem) end
+            local lines = {}
+            for line in handle:lines() do
+                if not fields or fields[line:match('^(%w+):')] then
+                    lines[#lines + 1] = line
+                end
+            end
+            handle:close()
+            return table.concat(lines, '; ')
+        end
+        local key = shell_quote(wg_privkey_path)
+        add('key path', wg_privkey_path)
+        probe('test -r', 'test -r ' .. key)
+        -- Only open and close the key; never read or log its contents.
+        local handle, problem, code = io.open(wg_privkey_path, 'r')
+        add('Lua open', handle and 'ok' or (tostring(problem) .. ' errno=' .. tostring(code)))
+        if handle then handle:close() end
+        probe('shell open', '( : < ' .. key .. ' )')
+        -- The shell opens stdin here. Discard both streams, including malformed-key errors.
+        -- Keep redirects inside a group so run_command's stderr redirect cannot override them.
+        probe('wg pubkey via stdin', '{ wg pubkey >/dev/null 2>&1 < ' .. key .. '; }')
+        probe('path permissions', 'ls -ldn / /etc ' .. shell_quote(trim_trailing_slashes(config_dir))
+            .. ' ' .. key)
+        probe('key target permissions', 'ls -ldLn ' .. key)
+        probe('key resolved path', 'readlink -f ' .. key)
+        if run_command('command -v namei', true, true) then
+            probe('path components', 'namei -l ' .. key)
+        end
+        if run_command('command -v getfacl', true, true) then
+            probe('key and directory ACLs', 'getfacl -p ' .. shell_quote(config_dir) .. ' ' .. key)
+        end
+        local wg_path = probe('wg executable', 'command -v wg')
+        if wg_path and wg_path:sub(1, 1) == '/' then
+            probe('wg permissions', 'ls -ldn ' .. shell_quote(wg_path))
+            probe('wg resolved path', 'readlink -f ' .. shell_quote(wg_path))
+            if run_command('command -v getcap', true, true) then
+                probe('wg capabilities', 'getcap ' .. shell_quote(wg_path))
+            end
+        end
+        probe('wg version', 'wg --version')
+        probe('shell executable', 'readlink /proc/$$/exe')
+        probe('shell identity', 'id')
+        local fields = {
+            Uid = true,
+            Gid = true,
+            Groups = true,
+            CapInh = true,
+            CapPrm = true,
+            CapEff = true,
+            CapBnd = true,
+            CapAmb = true,
+            NoNewPrivs = true,
+            Seccomp = true,
+        }
+        add('Lua credentials', metadata('/proc/self/status', fields))
+        add('Lua security context', metadata('/proc/self/attr/current'))
+        probe('shell credentials', 'sed -n '
+            .. shell_quote('/^Uid:/p; /^Gid:/p; /^Groups:/p; /^Cap/p; /^NoNewPrivs:/p; /^Seccomp:/p')
+            .. ' /proc/$$/status')
+        probe('shell security context', 'cat /proc/$$/attr/current')
+        add('AppArmor enabled', metadata('/sys/module/apparmor/parameters/enabled'))
+        add('SELinux enforcing', metadata('/sys/fs/selinux/enforce'))
+        if run_command('command -v getenforce', true, true) then
+            probe('SELinux file labels', 'ls -Zd ' .. shell_quote(config_dir) .. ' ' .. key)
+        end
+        -- Keep only relevant denial records; do not upload unrelated kernel messages.
+        local denied = {}
+        local pipe = io.popen('dmesg 2>/dev/null', 'r')
+        if pipe then
+            for line in pipe:lines() do
+                local lower = line:lower()
+                if lower:find('denied', 1, true)
+                        and (line:find(wg_privkey_path, 1, true) or lower:find('wg', 1, true)) then
+                    denied[#denied + 1] = line
+                    if #denied > 3 then table.remove(denied, 1) end
+                end
+            end
+            pipe:close()
+        end
+        if #denied == 0 then add('kernel denials', 'none found or dmesg unavailable') end
+        for i, line in ipairs(denied) do add('kernel denial ' .. tostring(i), line) end
+        -- Bound each log entry for syslog and send the same diagnostics to the hub.
+        local chunk = ''
+        local function flush()
+            if chunk ~= '' then log_warning("B73780 WireGuard key diagnostics: " .. chunk) end
+            chunk = ''
+        end
+        for _, detail in ipairs(details) do
+            if #chunk + #detail + 2 > 850 then flush() end
+            chunk = chunk .. (chunk == '' and '' or '; ') .. detail
+        end
+        flush()
+    end
     local function decode_wg_json(body)
         -- parse containers as well as scalars: regex extraction cannot validate a peer list
         if type(body) ~= 'string' or #body > 262144 then return nil end
@@ -2321,9 +2431,17 @@ do
             return nil, "B63659 WireGuard tools or private key unavailable"
         end
         local name = shell_quote(conf.Interface.Name)
-        local function command(text)
+        local function command(text, uses_private_key)
             local output, problem, exit_code = run_command(text, true, true)
             if not output then
+                if uses_private_key then
+                    -- Diagnostics must not replace the original command failure.
+                    local ok, diagnostic_problem = pcall(diagnose_wg_key)
+                    if not ok then
+                        log_warning("B60473 WireGuard key diagnostics failed: "
+                            .. displayable(tostring(diagnostic_problem), 512))
+                    end
+                end
                 if not problem or problem == '' then
                     problem = exit_code and "exit code " .. tostring(exit_code) or "no error output"
                 end
@@ -2398,7 +2516,7 @@ do
             -- this also refuses an existing non-WireGuard interface with the same name
             local peers = command('wg show ' .. name .. ' peers')
             command('wg set ' .. name .. ' private-key ' .. shell_quote(wg_privkey_path)
-                .. ' fwmark ' .. tostring(settings.mark))
+                .. ' fwmark ' .. tostring(settings.mark), true)
             if conf.Interface.ListenPort ~= nil then
                 local port = integer(conf.Interface.ListenPort, 0, 65535)
                 command('wg set ' .. name .. ' listen-port ' .. tostring(port))
