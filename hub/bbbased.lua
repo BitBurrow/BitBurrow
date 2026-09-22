@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tlmnin'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tls03o'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -77,7 +77,6 @@ local base_config = nil
 local log_path = nil  -- to enable, use: log_path = bbsubd_tmp_dir .. 'log'
 local log_handle = nil
 local logging_level = 30  -- by default, show warnings, errors
-logging_level = 20  -- for dev, use level info
 
 local function shell_quote(value)
     return "'" .. tostring(value):gsub("'", "'\"'\"'") .. "'"
@@ -2398,6 +2397,10 @@ do
         local ok, problem = pcall(function()
             if not run_command('ip link show dev ' .. name, true, true) then
                 command('ip link add dev ' .. name .. ' type wireguard')
+                -- tell NetworkManager to ignore interface (hides 'VPN' icon in system status area)
+                -- best effort only (ignore failures); requires that the device exist;
+                -- no need to set up persistence in /etc/NetworkManager/conf.d/
+                run_command('nmcli device set ' .. name .. ' managed no', true, true)
             end
             -- this also refuses an existing non-WireGuard interface with the same name
             local peers = command('wg show ' .. name .. ' peers')
