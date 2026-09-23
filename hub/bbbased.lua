@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tls03o'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tltrps'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -453,10 +453,10 @@ local function download_file(command, path)  -- limit download size to prevent D
     local status = read_text_file(status_path, true)
     remove_path(status_path)
     content = content or ''
-    if read_error or #content > max_download_bytes or status ~= '0' then
-        log_error("B82691 download failed or exceeded " .. max_download_bytes .. " bytes")
-        return nil
-    end
+    if read_error then log_error("B76932 curl failed; read_error=" .. tostring(read_error)) end
+    if #content > max_download_bytes then log_error("B42170 curl failed; bytes=" .. tostring(#content)) end
+    if status ~= '0' then log_error("B82691 curl failed; rc=" .. (status ~= '' and status or '(missing)')) end
+    if read_error or #content > max_download_bytes or status ~= '0' then return nil end
     return write_text_file(path, content)
 end
 
@@ -2018,7 +2018,6 @@ local enable_wg, request_wg_config, restore_wg
 
 do
     local json_null = {}
-    local next_restore = 0
     local wg_status = nil
     local function decode_wg_json(body)
         -- parse containers as well as scalars: regex extraction cannot validate a peer list
@@ -2318,11 +2317,9 @@ do
             base_config = updated
         end
         -- restoration never installs packages or regenerates a missing private key
-        if not run_command('command -v ip', true, true)
-                or not run_command('command -v wg', true, true)
-                or not is_readable(wg_privkey_path) then
-            return nil, "B63659 WireGuard tools or private key unavailable"
-        end
+        if not run_command('command -v ip', true, true) then return nil, "B71149 'ip' not found" end
+        if not run_command('command -v wg', true, true) then return nil, "B67793 'wg' not found" end
+        if not is_readable(wg_privkey_path) then return nil, "B63659 unreadable wg private key" end
         local name = shell_quote(conf.Interface.Name)
         local function command(text)
             local output, problem, exit_code = run_command(text, true, true)
@@ -2466,7 +2463,7 @@ do
         end
         local status = "B84526 on " .. conf.Interface.Name .. ", IPv4 configured"
         if ipv6_problem and (settings.ipv6 or ipv6_inspected) then
-            status = status .. ", IPv6 skipped: " .. ipv6_problem .. "; will retry"
+            status = status .. ", IPv6 skipped: " .. ipv6_problem
         elseif settings.ipv6 then
             status = status .. ", IPv6 configured"
         else
@@ -2500,15 +2497,10 @@ do
         return getmetatable(response.result.task_args).json
     end
     restore_wg = function()
-        local now = uptime_seconds() or os.time()
-        if base_config.wg_enabled ~= '1' or now < next_restore then return end
-        next_restore = now + 60
-        -- reconcile periodically too, in case an OpenWrt network reload removed the interface
+        if base_config.wg_enabled ~= '1' then return end
         local call_ok, ok, problem = pcall(enable_wg, base_config.wg_conf)
         if not call_ok then problem, ok = ok, nil end
-        if not ok then
-            log_error("B33482 WireGuard restoration failed; will retry: " .. tostring(problem))
-        end
+        if not ok then log_error(tostring(problem)) end
     end
 end
 
@@ -4051,7 +4043,6 @@ local retry_wait = 7
 local retries_left = 2
 log_info("entering main ping loop")
 while true do
-    restore_wg()
     if not send_pending_task_result() then
         log_error("B91867 cannot send pending task result")
     end
