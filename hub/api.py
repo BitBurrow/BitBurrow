@@ -1,9 +1,12 @@
 import asyncio
 import base64
+import contextlib
+import contextvars
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from fastapi import APIRouter, Request, HTTPException, status, Body
 from fastapi.responses import Response, PlainTextResponse
 from pydantic import BaseModel
+import nicegui
 import fastapi_jsonrpc as jsonrpc
 import hashlib
 import ipaddress
@@ -43,6 +46,18 @@ router = APIRouter()
 def sanitize_subd(subd):
     """Return a safer version of subd, but still unverified"""
     return re.sub(r'[^a-zA-Z0-9]', '', subd)[:8]
+
+
+@nicegui.app.exception_handler(Berror)
+async def handle_berror(request: Request, exc: Berror) -> Response:
+    subd = request.path_params.get('subd') or request.query_params.get('subd')
+    subd = sanitize_subd(subd) if subd else '(unknown)'
+    ip_address = request.client.host if request.client else '(unknown)'
+    logger.error(util.front_berror_code(exc, subd, ip_address))
+    return Response(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        headers={'Cache-Control': 'no-store'},
+    )
 
 
 def get_file(
@@ -87,11 +102,7 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
 def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
     subd = sanitize_subd(subd)  # unverified; 'bbbased.lua' does not contain any secrets
     ip_address = request.client.host if request.client else '(unknown)'
-    try:
-        version = db.get_adopt5s_version(subd)
-    except Berror as e:
-        logger.error(util.front_berror_code(e, subd, ip_address))
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+    version = db.get_adopt5s_version(subd)
     fv = version.file_version()
     logger.info(f"B76218 base {subd} completed adopt5s from {ip_address} (bbbased {fv})")
     headers = {'Cache-Control': 'no-store'}
@@ -127,7 +138,7 @@ async def log_error(subd: str, request: Request) -> Response:
             return  # already logged above; don't log the "ping rejected: ..."
     else:
         message = f"base {subd} {disp}"
-    if message[0] == 'B' and message[1:6] == '20392':  # bypass Berror code dup detection
+    if message[0] == 'B' and message[1:6] == '20392':  # avoid git_hooks/ Berror code dup detection
         logger.info(message)  # use logger.info() for base daemon startup message
     else:
         logger.warning(message)  # other client errors are warnings here
@@ -254,7 +265,37 @@ class UpnpDiscoveryTaskResult:
 ### JSON-RPC set-up
 ###
 
-jsonrpc_entrypoint = jsonrpc.Entrypoint(jsonrpc_route)
+rpc_error_context = contextvars.ContextVar('rpc_error_context')
+
+
+@contextlib.asynccontextmanager
+async def preserve_rpc_error_context(context):
+    # fastapi-jsonrpc clears its own context before calling the exception handler
+    token = rpc_error_context.set(context)
+    try:
+        yield
+    finally:
+        rpc_error_context.reset(token)
+
+
+class BitBurrowEntrypoint(jsonrpc.Entrypoint):
+    async def handle_exception(self, exc: Exception) -> dict:
+        if isinstance(exc, Berror):
+            context = rpc_error_context.get()
+            request = context.http_request
+            params = context.raw_request.get('params', {})
+            subd = params.get('subd') if isinstance(params, dict) else None
+            subd = sanitize_subd(subd) if isinstance(subd, str) else '(unknown)'
+            ip_address = request.client.host if request.client else '(unknown)'
+            logger.error(util.front_berror_code(exc, subd, ip_address))
+            # keep the JSON-RPC error envelope while marking the HTTP request as failed
+            context.http_response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            context.http_response.headers['Cache-Control'] = 'no-store'
+            return jsonrpc.InternalError().get_resp()
+        return await super().handle_exception(exc)
+
+
+jsonrpc_entrypoint = BitBurrowEntrypoint(jsonrpc_route, middlewares=[preserve_rpc_error_context])
 task_result_processors = {'discover_upnp': UpnpDiscoveryTaskResult}
 
 
