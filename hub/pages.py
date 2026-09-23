@@ -263,7 +263,8 @@ def home(client: Client):
             cards = build_rows()
             render_cards()
         finally:
-            button.enable()
+            if not button.is_deleted:  # re-rendering the cards deletes the original button
+                button.enable()
 
     async def on_add_item():
         base_name = idelem['base_name'].value[:70] or f'Base {lk.generate_login_key(3)}'

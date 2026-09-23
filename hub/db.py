@@ -1785,7 +1785,7 @@ def iter_get_device_by_account_id(aid: int | None):
 
 def delete_device(id: int) -> None:
     with Session(engine) as session:
-        device = session.get(Device, id)
+        device: Device = session.get(Device, id)
         if device is None:
             logger.error(f"B54609 cannot find device {id} in delete_device()")
             return
@@ -1801,7 +1801,7 @@ def delete_device(id: int) -> None:
                 .values(base_intf_id=None)  # clear 'pointer' to peer Intf we're about to delete
             )
             session.exec(delete(Intf).where(Intf.device_id == id))
-        logger.info(f"B74506 deleting Device {id}")
+        logger.info(f"B74506 deleting Device {device.subd} (id {id})")
         session.delete(device)
         if ott_id is not None:
             ott = session.get(LoginSession, ott_id)
