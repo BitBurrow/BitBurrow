@@ -137,6 +137,34 @@ def cli(return_help_text=False):
 ###
 
 
+def eat_engineio_stack_dump(record: logging.LogRecord) -> bool:
+    """ Avoid 191 lines of stack dump (KeyError: 'REQUEST_METHOD' in engineio/async_server.py,
+    line 238). Reproduce dump (where 1.2.3.4 is the BitBurrow hub behind a reverse proxy) via:
+        curl --http1.1 --verbose --max-time 3 --header 'Host: abc.example.org' \
+            --header 'Content-Length: 1' --data-binary '.' \
+            'http://1.2.3.4:8080/_nicegui_ws/socket.io/?EIO=4&transport=polling'
+    Dump can also be reproduced *through* the proxy.
+    """
+    if not record.exc_info:
+        return True
+    _, error, tb = record.exc_info
+    if not isinstance(error, KeyError) or error.args != ('REQUEST_METHOD',):
+        return True
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is None:
+        return True
+    frame = tb.tb_frame
+    if (  # match the failing Engine.IO lookup, including its empty request dictionary
+        frame.f_globals.get('__name__') != 'engineio.async_server'
+        or frame.f_code.co_name != 'handle_request'
+        or frame.f_locals.get('environ') != {}
+    ):
+        return True
+    logger.info("B16162 Engine.IO request failed: missing REQUEST_METHOD")
+    return False  # discard the original record and its traceback
+
+
 def set_logging(args):
     if args.verbose is None:  # no CLI args for log level, so use config setting
         log_index = conf.get('path.log_level')
@@ -165,6 +193,7 @@ def set_logging(args):
     args.create_engine_echo = log_index == 5
     args.log_level_uvicorn = log_level_uvicorn_map[conf.get('path.log_level_uvicorn')]
     logging.config.dictConfig(logs.logging_config(console_log_level=args.console_log_level))
+    logging.getLogger('uvicorn.error').addFilter(eat_engineio_stack_dump)
 
 
 def safe_kill_processes(original=nicegui_run._kill_processes):
