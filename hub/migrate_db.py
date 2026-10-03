@@ -1,3 +1,4 @@
+from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import logging
 import os
 import sqlite3
@@ -21,7 +22,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 44
+db_schema_version = 46
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -213,6 +214,29 @@ def migrate(db_path: str) -> None:
                 intf.host_bits = base_intf.host_bits
             session.commit()
         current_version = 44
+    if current_version < 46:  # version 45 → 46: add 3 Device columns
+        engine = create_engine(f"sqlite:///{db_path}")
+        with Session(engine) as session:
+            statement = update(db.Device).values(
+                file_version=db.default_fv,
+                update_to_basedver_id=None,
+                update_deadline=DateTime(1970, 1, 1, tzinfo=TimeZone.utc),
+            )
+            session.exec(statement)
+            session.commit()
+            # Manually fix DB to match update_bbbased_version() that now strips signature whitespace
+            #    bbadmin sqlite3 .config/bitburrow/data.sqlite <<'SQL'
+            #    UPDATE basedver
+            #    SET other = json_set(
+            #        other,
+            #        '$.signature',
+            #        replace(replace(replace(replace(
+            #            json_extract(other, '$.signature'),
+            #            char(10), ''), char(13), ''), char(9), ''), ' ', '')
+            #    )
+            #    WHERE json_type(other, '$.signature') = 'text';
+            #    SQL
+        current_version = 46
     # if current_version < ...
     #     ...
     #     current_version = ...

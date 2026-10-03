@@ -432,6 +432,9 @@ class Device(SQLModel, table=True):
     ott_id: int | None = Field(foreign_key='loginsession.id', default=None)  # one-time token
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='devices')
+    file_version: str = default_fv  # last confirmed bbbased.lua version
+    update_to_basedver_id: int | None = None  # set on adopt5s; None means no update in progress
+    update_deadline: DateTime = DateTime(1970, 1, 1, tzinfo=TimeZone.utc)
     platform: Platform | None = None
     setup_ui_path: str = ''  # path of last-active step in 'setup-adopt.yaml'; '' means root
     upnp_igd_url: str = 'untried'  # UPnP control URL or r'^(untried|disabled|unavailable|failed)$'
@@ -863,23 +866,6 @@ def finish_task(
     if result.rowcount != 1:
         session.rollback()
         raise Berror(f"B92551 task {task.id} was not assigned")
-    if task.method == 'update':
-        version = task.args.get('version')
-        if task.args.get('path') == bbbased_path:
-            statement = select(BasedVer).where(BasedVer.commit_date == version)
-            ver: BasedVer | None = session.exec(statement).one_or_none()
-            if ver is None:
-                session.rollback()
-                raise Berror(f"B51429 bbbased {version} for update task {task.id} not found")
-            ver.used_total += 1
-            if status == DeviceTaskStatus.FAILED:
-                ver.used_fails += 1
-                if ver.used_fails >= 7 and ver.used_fails * 2 >= ver.used_total:
-                    ratio = f"{ver.used_fails} of {ver.used_total} attempts"
-                    logger.error(f"B21382 bbbased {version} failed {ratio}; won't use")
-                    for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
-                        setattr(ver, f'test_level_{p.value}', TestLevel.FAILED)
-            session.add(ver)
     session.commit()
     return True
 
@@ -1167,7 +1153,13 @@ def update_bbbased_version() -> None:
             logger.error(f"B57645 cannot open {file_path}")
             return
         logger.info(f"B96927 indexing new {path_version}")
-        other = {k: v for k, v in paths[bbbased_path].items() if k not in ('path', 'version')}
+        other = {
+            k: v
+            for k, v in paths[bbbased_path].items()
+            if k not in ('path', 'version', 'signature')
+        }
+        if 'signature' in paths[bbbased_path]:  # strip whitespace so it can be sent in HTML header
+            other['signature'] = re.sub(r'\s+', '', paths[bbbased_path]['signature'])
         session.add(BasedVer(commit_date=commit_date, code=code, other=other))
         session.commit()
 
@@ -1219,18 +1211,55 @@ def newest_approved_ver(
 
 
 def get_adopt5s_version(subd: str) -> BasedVer:
-    with Session(engine) as session:
+    with Session(engine, expire_on_commit=False) as session:
+        # the `expire_on_commit=False` helps prevent: Instance ... is not bound to a Session
         device: Device = session.exec(select(Device).where(Device.subd == subd)).one_or_none()
         if device is None:
             raise Berror(f"B41474 cannot find subd {subd}")
+        now = DateTime.now(TimeZone.utc)
+        update_deadline = device.update_deadline.replace(tzinfo=TimeZone.utc)
+        if device.update_to_basedver_id and update_deadline > now:  # update is in progress
+            statement = select(BasedVer).where(BasedVer.id == device.update_to_basedver_id)
+            bv: BasedVer | None = session.exec(statement).one_or_none()
+            if not bv:
+                raise Berror(f"B63745 missing BasedVer id {device.update_to_basedver_id}")
+            return bv  # allow base to retry download, but don't give it any additional time
         bv = newest_approved_ver(device, session)
-        if bv is None:
-            raise Berror(f"B95159 no bbbased version approved ({device.min_test_level=})")
+        while True:  # run checks on newest_approved_ver() result until it doesn't change
+            if bv is None:
+                raise Berror(f"B95159 no bbbased version approved ({device.min_test_level=})")
+            statement = select(Device).where(Device.update_to_basedver_id == bv.id)
+            updating_devices = session.exec(statement).all()  # devices now updating to this version
+            for updating_device in updating_devices:
+                if updating_device.update_deadline.replace(tzinfo=TimeZone.utc) <= now:
+                    e = f"B10537 failed to update to {bv.file_version()} before the deadline"
+                    logger.info(util.front_berror_code(e, updating_device.subd))
+                    updating_device.update_to_basedver_id = None  # clear 'updating' status
+                    bv.used_total += 1
+                    bv.used_fails += 1
+                    if bv.used_fails >= 7 and bv.used_fails * 2 >= bv.used_total:
+                        ratio = f"{bv.used_fails} of {bv.used_total} attempts"
+                        logger.error(f"B21382 bbbased {bv.commit_date} failed {ratio}; won't use")
+                        for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
+                            setattr(bv, f'test_level_{p.value}', TestLevel.FAILED)
+                    session.add(bv)
+                    session.add(updating_device)
+            session.commit()
+            new_bv = newest_approved_ver(device, session)  # see if above triggered a "won't use"
+            if new_bv is not None and new_bv.id == bv.id:
+                break
+            bv = new_bv
+        device.update_to_basedver_id = bv.id  # targeting this bv (test levels might change)
+        device.update_deadline = DateTime.now(TimeZone.utc) + TimeDelta(minutes=11)
+        session.add(device)
+        session.commit()
         return bv
 
 
-def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
-    """This is long and complex. Handle with care."""
+def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
+    """This is long and complex. Handle with care. Note that, to reduce code complexity, versioning
+    logic for updates is intentionally imprecise in some low-impact places, e.g. a
+    past-deadline-update *may* count as successful."""
     uptime, idle = parse_proc_uptime(telem_data.get('proc_uptime'))
     load_01m, load_05m, load_15m = parse_proc_loadavg(telem_data.get('proc_loadavg'))
     meminfo = parse_proc_meminfo(telem_data.get('proc_meminfo'))
@@ -1240,6 +1269,7 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
     def_route_if = route.get('iface')
     def_route_stats = net_dev.get(def_route_if, dict()) if def_route_if else dict()
     with Session(engine) as session:
+        device: Device = session.exec(select(Device).where(Device.id == device_id)).one()
         ## 1. store telemetry; as of 2026-05-19, adds around 99 KB per base per day to DB size
         telemetry = Telemetry(
             device_id=device.id,
@@ -1279,30 +1309,50 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
                 e = f"B14954 platform changed from {device.platform} to {platform}"
                 logger.warning(util.front_berror_code(e, subd, ip))
             device.platform = platform
-        ## 3. safely extract and parse file_version provided by the base router
-        reported_fv = telem_data.get('file_version', default_fv)
-        if not isinstance(reported_fv, str):
-            reported_fv = default_fv
-        if len(reported_fv) == 7:
-            reported_fv = f'{reported_fv}-{default_fv[8:]}'  # support legacy versions
-        if len(reported_fv) != len(default_fv) or reported_fv[7] != '-':
-            reported_fv = default_fv
-        reported_commit = reported_fv[0:7]
-        tls = reported_fv[8:]  # test levels, (string of Platform values)
+        ## 3. process file_version provided by the base router
+        ping_fv = telem_data.get('file_version', None)  # full file_version reported by base router
+        if not ping_fv or not isinstance(ping_fv, str) or len(ping_fv) != len(default_fv):
+            e = f"B89068 invalid file_version: {ping_fv}"
+            logger.warning(util.front_berror_code(e, subd, ip))
+            ping_fv = default_fv
+        elif ping_fv != device.file_version:
+            if ping_fv > device.file_version:
+                e = f"B00672 updated from {device.file_version} to {ping_fv}"
+                logger.info(util.front_berror_code(e, subd, ip))
+            else:
+                e = f"B05553 unintended backport from {device.file_version} to {ping_fv}"
+                logger.warning(util.front_berror_code(e, subd, ip))
+            device.file_version = ping_fv
+            if device.update_to_basedver_id is not None:  # update was in progress
+                # ignore device.update_deadline here, i.e. still count as valid even if past due
+                statement = select(BasedVer).where(BasedVer.id == device.update_to_basedver_id)
+                bv: BasedVer | None = session.exec(statement).one_or_none()
+                if bv:
+                    if bv.commit_date == ping_fv[:7]:
+                        bv.used_total += 1
+                        session.add(bv)
+                    else:
+                        e = f"B97229 downloaded {bv.commit_date} but reports {ping_fv[:7]}"
+                        logger.warning(util.front_berror_code(e, subd, ip))
+                device.update_to_basedver_id = None
+        session.add(device)
+        session.commit()  # update for enqueue_task()
+        ping_commit = ping_fv[0:7]
+        tls = ping_fv[8:]  # test levels, (string of Platform values)
         try:
-            reported_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
+            ping_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
         except ValueError as e:
             tls = default_fv[8:]
-            reported_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
-        reported_tl = reported_tls[platform]
+            ping_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
+        ping_tl = ping_tls[platform]
         ## 4. promote bbbased.lua version if appropriate
         promote_to = None
         # for testing, resend same bbbased.lua file: prior → new-a, new-a → new-e, new-e → new-g
-        if reported_tl == TestLevel.CAN_PING.value:  # ping-after-update from this commit
+        if ping_tl == TestLevel.CAN_PING.value:  # ping-after-update from this commit
             promote_to = TestLevel.CAN_UPDATE
-        elif reported_tl < TestLevel.CAN_PING.value:  # ping-after-update from prior commit
+        elif ping_tl < TestLevel.CAN_PING.value:  # ping-after-update from prior commit
             promote_to = TestLevel.CAN_PING
-        statement = select(BasedVer).where(BasedVer.commit_date == reported_commit)
+        statement = select(BasedVer).where(BasedVer.commit_date == ping_commit)
         # commit_bv is commit_date from base router with test levels from DB
         commit_bv: BasedVer = session.exec(statement).one_or_none()
         if commit_bv is not None:
@@ -1320,7 +1370,7 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
                     e = f"B39596 promoted bbbased {before} to test level {after[8:]}"
                     logger.info(util.front_berror_code(e, subd, ip))
         else:  # unknown version
-            e = f"B12284 unknown version bbbased {reported_fv}"
+            e = f"B12284 unknown version bbbased {ping_fv}"
             logger.warning(util.front_berror_code(e, subd, ip))
         ## 5. enqueue bbbased update if ready
         approved_bv = newest_approved_ver(device, session)
@@ -1329,15 +1379,15 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
             logger.debug(util.front_berror_code(e, subd, ip))
         else:
             test_levels = ''.join(
-                reported_fv[i + 8] if p == platform else '.' for i, p in enumerate(Platform)
+                ping_fv[i + 8] if p == platform else '.' for i, p in enumerate(Platform)
             )
-            # reported_cv is file version from base router, but with '.' for irrelevant platforms
-            reported_cv = f'{reported_fv[0:7]}-{test_levels}'
+            # ping_cv is file version from base router, but with '.' for irrelevant platforms
+            ping_cv = f'{ping_fv[0:7]}-{test_levels}'
             approved_cv = approved_bv.compare_version(platform)
-            if reported_cv > approved_cv:  # string-compare, e.g. '0tf4ijm-.e..'
-                e = f"B16354 unapproved version {reported_cv} > {approved_cv}"
+            if ping_cv > approved_cv:  # string-compare, e.g. '0tf4ijm-.e..'
+                e = f"B16354 unapproved version {ping_cv} > {approved_cv}"
                 logger.warning(util.front_berror_code(e, subd, ip))
-            elif reported_cv < approved_cv:
+            elif ping_cv < approved_cv:
                 task_id = enqueue_task(
                     device_id=device.id,
                     method='update',
@@ -1345,7 +1395,7 @@ def process_ping(device: Device, ip: str, telem_data: dict, subd: str) -> None:
                     priority=5,
                     dedupe=3,
                 )
-                e = f"B90867 launched task {task_id} update from bbbased {reported_cv} to {approved_cv}"
+                e = f"B90867 launched task {task_id} update from bbbased {ping_cv} to {approved_cv}"
                 logger.debug(util.front_berror_code(e, subd, ip))
 
 

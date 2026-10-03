@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tltrps'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tmbz54'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -4005,7 +4005,7 @@ end
 -- make sure prerequisites are installed
 --
 
-log_warning("B20392 completed adopt5w, log level " .. logging_level .. " (bbbased " .. file_version .. ")")
+log_warning("B20392 completed adopt5w, log level " .. logging_level)
 if not set_sleep_method() then cleanup_and_exit(13) end
 install_one_of('curl', 'curl')
 install_one_of('openssl openssl-util', 'openssl')

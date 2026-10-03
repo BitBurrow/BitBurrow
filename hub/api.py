@@ -100,15 +100,14 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
 
 @router.get(adopt5s_route, response_class=PlainTextResponse)
 def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
-    subd = sanitize_subd(subd)  # unverified; 'bbbased.lua' does not contain any secrets
     ip_address = request.client.host if request.client else '(unknown)'
-    version = db.get_adopt5s_version(subd)
+    version: db.BasedVer = db.get_adopt5s_version(subd)  # raises Berror if subd not valid
     fv = version.file_version()
     logger.info(f"B76218 base {subd} completed adopt5s from {ip_address} (bbbased {fv})")
     headers = {'Cache-Control': 'no-store'}
     headers['X-BitBurrow-File-Version'] = fv
     if version.other and 'signature' in version.other:
-        headers['X-BitBurrow-Signature'] = re.sub(r'\s+', '', version.other['signature'])
+        headers['X-BitBurrow-Signature'] = version.other['signature']  # cryptographic signature
     if version.other and 'key_id' in version.other:
         headers['X-BitBurrow-Key-Id'] = version.other['key_id']  # commit_date of key used to sign
     return PlainTextResponse(
@@ -595,7 +594,7 @@ async def ping(
         device.last_endpoint = ip
         device.last_handshake = int(ping_now.timestamp())
         try:
-            db.process_ping(device=device, ip=ip, telem_data=telemetry, subd=subd)
+            db.process_ping(device_id=device.id, ip=ip, telem_data=telemetry, subd=subd)
         except Berror as e:
             logger.warning(util.front_berror_code(e, subd, ip))
         wait_seconds = device.long_poll_probe or device.long_poll_safe
