@@ -433,7 +433,7 @@ class Device(SQLModel, table=True):
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='devices')
     file_version: str = default_fv  # last confirmed bbbased.lua version
-    update_to_basedver_id: int | None = None  # set on adopt5s; None means no update in progress
+    next_file_version: str = ''  # set on adopt5s; '' means no update in progress
     update_deadline: DateTime = DateTime(1970, 1, 1, tzinfo=TimeZone.utc)
     platform: Platform | None = None
     setup_ui_path: str = ''  # path of last-active step in 'setup-adopt.yaml'; '' means root
@@ -1210,50 +1210,59 @@ def newest_approved_ver(
     return None
 
 
-def get_adopt5s_version(subd: str) -> BasedVer:
+def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
+    """Return the code and pinned full file version for this download attempt."""
+    # the `expire_on_commit=False` below helps prevent: Instance ... is not bound to a Session
     with Session(engine, expire_on_commit=False) as session:
-        # the `expire_on_commit=False` helps prevent: Instance ... is not bound to a Session
+        # use DB transactions to avoid inaccurate totals caused by overlapping requests
+        session.connection().exec_driver_sql('BEGIN IMMEDIATE')  # Sqlite transaction
         device: Device = session.exec(select(Device).where(Device.subd == subd)).one_or_none()
         if device is None:
             raise Berror(f"B41474 cannot find subd {subd}")
         now = DateTime.now(TimeZone.utc)
         update_deadline = device.update_deadline.replace(tzinfo=TimeZone.utc)
-        if device.update_to_basedver_id and update_deadline > now:  # update is in progress
-            statement = select(BasedVer).where(BasedVer.id == device.update_to_basedver_id)
+        if device.next_file_version and update_deadline > now:  # update is in progress
+            statement = select(BasedVer).where(BasedVer.commit_date == device.next_file_version[:7])
             bv: BasedVer | None = session.exec(statement).one_or_none()
-            if not bv:
-                raise Berror(f"B63745 missing BasedVer id {device.update_to_basedver_id}")
-            return bv  # allow base to retry download, but don't give it any additional time
-        bv = newest_approved_ver(device, session)
-        while True:  # run checks on newest_approved_ver() result until it doesn't change
             if bv is None:
-                raise Berror(f"B95159 no bbbased version approved ({device.min_test_level=})")
-            statement = select(Device).where(Device.update_to_basedver_id == bv.id)
-            updating_devices = session.exec(statement).all()  # devices now updating to this version
-            for updating_device in updating_devices:
-                if updating_device.update_deadline.replace(tzinfo=TimeZone.utc) <= now:
-                    e = f"B10537 failed to update to {bv.file_version()} before the deadline"
-                    logger.info(util.front_berror_code(e, updating_device.subd))
-                    updating_device.update_to_basedver_id = None  # clear 'updating' status
-                    bv.used_total += 1
-                    bv.used_fails += 1
-                    if bv.used_fails >= 7 and bv.used_fails * 2 >= bv.used_total:
-                        ratio = f"{bv.used_fails} of {bv.used_total} attempts"
-                        logger.error(f"B21382 bbbased {bv.commit_date} failed {ratio}; won't use")
-                        for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
-                            setattr(bv, f'test_level_{p.value}', TestLevel.FAILED)
-                    session.add(bv)
-                    session.add(updating_device)
+                raise Berror(f"B95637 missing BasedVer for {device.next_file_version}")
             session.commit()
-            new_bv = newest_approved_ver(device, session)  # see if above triggered a "won't use"
-            if new_bv is not None and new_bv.id == bv.id:
-                break
-            bv = new_bv
-        device.update_to_basedver_id = bv.id  # targeting this bv (test levels might change)
+            # test levels may have changed since the first download; keep its version and deadline
+            return bv, device.next_file_version
+        statement = select(Device).where(
+            Device.next_file_version != '', Device.update_deadline <= now
+        )
+        # account for expired attempts before replacing a target or choosing another commit
+        for updating_device in session.exec(statement).all():
+            next_fv = updating_device.next_file_version
+            statement = select(BasedVer).where(BasedVer.commit_date == next_fv[:7])
+            bv = session.exec(statement).one_or_none()
+            if bv is None:
+                e = f"B63745 missing BasedVer for {next_fv}"
+                logger.warning(util.front_berror_code(e, updating_device.subd))
+            else:
+                e = f"B10537 failed to update to {next_fv} before the deadline"
+                logger.info(util.front_berror_code(e, updating_device.subd))
+                bv.used_total += 1
+                bv.used_fails += 1
+                if bv.used_fails >= 7 and bv.used_fails * 2 >= bv.used_total:
+                    ratio = f"{bv.used_fails} of {bv.used_total} attempts"
+                    logger.error(f"B21382 bbbased {bv.commit_date} failed {ratio}; won't use")
+                    for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
+                        setattr(bv, f'test_level_{p.value}', TestLevel.FAILED)
+                session.add(bv)
+            updating_device.next_file_version = ''  # count this attempt only once
+            session.add(updating_device)
+        session.flush()  # keep the SQLite transaction active while choosing an approved version
+        bv = newest_approved_ver(device, session)
+        if bv is None:
+            session.commit()  # retain timeout accounting even if no approved version remains
+            raise Berror(f"B95159 no bbbased version approved ({device.min_test_level=})")
+        device.next_file_version = bv.file_version()  # freeze this download's test levels
         device.update_deadline = DateTime.now(TimeZone.utc) + TimeDelta(minutes=11)
         session.add(device)
         session.commit()
-        return bv
+        return bv, device.next_file_version
 
 
 def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
@@ -1268,8 +1277,12 @@ def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
     os_release = parse_os_release(telem_data.get('etc_os_release'))
     def_route_if = route.get('iface')
     def_route_stats = net_dev.get(def_route_if, dict()) if def_route_if else dict()
+    enqueue_update_task = False
     with Session(engine) as session:
-        device: Device = session.exec(select(Device).where(Device.id == device_id)).one()
+        session.connection().exec_driver_sql('BEGIN IMMEDIATE')  # Sqlite transaction
+        device: Device = session.get(Device, device_id)
+        if device is None:
+            raise Berror(f"B56665 cannot find device {device_id}")
         ## 1. store telemetry; as of 2026-05-19, adds around 99 KB per base per day to DB size
         telemetry = Telemetry(
             device_id=device.id,
@@ -1292,8 +1305,7 @@ def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
             os_id=os_release.get('ID', 'unknown'),
             os_version_id=os_release.get('VERSION_ID'),
         )
-        session.add(telemetry)
-        session.commit()
+        session.add(telemetry)  # don't session.commit() here (would end transaction)
         ## 2. set device.platform if needed
         try:
             platform = Platform(telem_data.get('platform'))
@@ -1323,20 +1335,21 @@ def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 e = f"B05553 unintended backport from {device.file_version} to {ping_fv}"
                 logger.warning(util.front_berror_code(e, subd, ip))
             device.file_version = ping_fv
-            if device.update_to_basedver_id is not None:  # update was in progress
-                # ignore device.update_deadline here, i.e. still count as valid even if past due
-                statement = select(BasedVer).where(BasedVer.id == device.update_to_basedver_id)
-                bv: BasedVer | None = session.exec(statement).one_or_none()
-                if bv:
-                    if bv.commit_date == ping_fv[:7]:
-                        bv.used_total += 1
-                        session.add(bv)
-                    else:
-                        e = f"B97229 downloaded {bv.commit_date} but reports {ping_fv[:7]}"
-                        logger.warning(util.front_berror_code(e, subd, ip))
-                device.update_to_basedver_id = None
-        session.add(device)
-        session.commit()  # update for enqueue_task()
+            if device.next_file_version and ping_fv != device.next_file_version:
+                e = f"B97229 downloaded {device.next_file_version} but reports {ping_fv}"
+                logger.warning(util.front_berror_code(e, subd, ip))
+        if device.next_file_version and ping_fv == device.next_file_version:
+            # confirm the exact download, even if unchanged or past due; clear only once
+            statement = select(BasedVer).where(BasedVer.commit_date == ping_fv[:7])
+            bv: BasedVer | None = session.exec(statement).one_or_none()
+            if bv is None:
+                e = f"B05150 missing BasedVer for {device.next_file_version}"
+                logger.warning(util.front_berror_code(e, subd, ip))
+            else:
+                bv.used_total += 1
+                session.add(bv)
+            device.next_file_version = ''
+        session.add(device)  # don't session.commit() here (would end transaction)
         ping_commit = ping_fv[0:7]
         tls = ping_fv[8:]  # test levels, (string of Platform values)
         try:
@@ -1365,8 +1378,7 @@ def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 elif promote_to.value > commit_level.value:
                     setattr(commit_bv, f'test_level_{platform.value}', promote_to)
                     after = commit_bv.compare_version(platform)
-                    session.add(commit_bv)
-                    session.commit()
+                    session.add(commit_bv)  # don't session.commit() here (would end transaction)
                     e = f"B39596 promoted bbbased {before} to test level {after[8:]}"
                     logger.info(util.front_berror_code(e, subd, ip))
         else:  # unknown version
@@ -1388,15 +1400,19 @@ def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 e = f"B16354 unapproved version {ping_cv} > {approved_cv}"
                 logger.warning(util.front_berror_code(e, subd, ip))
             elif ping_cv < approved_cv:
-                task_id = enqueue_task(
-                    device_id=device.id,
-                    method='update',
-                    args={'path': bbbased_path, 'version': approved_bv.commit_date},
-                    priority=5,
-                    dedupe=3,
-                )
-                e = f"B90867 launched task {task_id} update from bbbased {ping_cv} to {approved_cv}"
-                logger.debug(util.front_berror_code(e, subd, ip))
+                enqueue_update_task = True
+        session.commit()
+    # enqueue_task() opens another session, so release our transaction first
+    if enqueue_update_task:
+        task_id = enqueue_task(
+            device_id=device_id,
+            method='update',
+            args={'path': bbbased_path},
+            priority=5,
+            dedupe=3,
+        )
+        e = f"B90867 launched task {task_id} update from bbbased {ping_cv}"
+        logger.debug(util.front_berror_code(e, subd, ip))
 
 
 ###

@@ -16,6 +16,7 @@ import logging
 import re
 import urllib.parse
 from sqlmodel import Field
+from starlette.concurrency import run_in_threadpool
 from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -101,8 +102,7 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
 @router.get(adopt5s_route, response_class=PlainTextResponse)
 def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
     ip_address = request.client.host if request.client else '(unknown)'
-    version: db.BasedVer = db.get_adopt5s_version(subd)  # raises Berror if subd not valid
-    fv = version.file_version()
+    version, fv = db.get_adopt5s_version(subd)  # raises Berror if subd not valid
     logger.info(f"B76218 base {subd} completed adopt5s from {ip_address} (bbbased {fv})")
     headers = {'Cache-Control': 'no-store'}
     headers['X-BitBurrow-File-Version'] = fv
@@ -593,12 +593,14 @@ async def ping(
             logger.info(f"B51437 base {device.subd} completed adopt6e from {ip}")
         device.last_endpoint = ip
         device.last_handshake = int(ping_now.timestamp())
-        try:
-            db.process_ping(device_id=device.id, ip=ip, telem_data=telemetry, subd=subd)
-        except Berror as e:
-            logger.warning(util.front_berror_code(e, subd, ip))
         wait_seconds = device.long_poll_probe or device.long_poll_safe
         device_id = device.id
+    try:  # close the outer device transaction before process_ping() reserves the SQLite writer
+        await run_in_threadpool(  # don't block; https://fastapi.tiangolo.com/async/#other-utility-functions
+            db.process_ping, device_id=device_id, ip=ip, telem_data=telemetry, subd=subd
+        )
+    except Berror as e:
+        logger.warning(util.front_berror_code(e, subd, ip))
     global active_long_polls
     logger.debug(f"B37237 base {subd} at {ip} connect (1 of {active_long_polls+1})")
     async with active_long_polls_lock:

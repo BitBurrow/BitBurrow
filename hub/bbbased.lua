@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tmbz54'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tmunl5'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -1372,12 +1372,6 @@ end
 local function restart_after_update()
     if platform == 'init' then
         local init_path = '/etc/init.d/' .. bbsubd
-        -- updates replace bbbased.lua, so repair older generated service definitions here
-        local service_text = init_service_text(running_path)
-        while not install_service_file(init_path, service_text, '0755') do
-            log_warning("B83269 update init service repair failed; retrying")
-            sleep(30)
-        end
         -- procd reload is conditional: an identical file can return success without
         -- actually replacing the process; running '/etc/init.d/bbabcd restart' via ssh
         -- changed the PID and left the replacement running; close inherited FD 9 so the
@@ -3815,11 +3809,6 @@ local function handle_task(task_id, task_method, task_args)
             return send_task_result(task_id, task_method, false,
                 "B63317 invalid update path: " .. tostring(requested_path))
         end
-        -- local next_ver = task_args and json_get_string(task_args, 'version') or nil
-        -- if not next_ver or #next_ver ~= 7 or not next_ver:match('^[0-9a-z]+$') then
-        --     return send_task_result(task_id, task_method, false,
-        --         "B42164 invalid next version: " .. tostring(next_ver))
-        -- end
         local running_path = arg and arg[0]
         if not running_path or not running_path:match('^/') then
             return send_task_result(task_id, task_method, false,
@@ -3864,14 +3853,15 @@ local function handle_task(task_id, task_method, task_args)
                 not response_headers and 'unreadable response headers'
                 or not new_file_version and 'missing file-version header'
                 or new_file_version == '' and 'empty file-version header'
-                -- or not signature and 'missing signature header'
-                -- or signature == '' and 'empty signature header'
-                -- or not key_id and 'missing key-id header'
-                -- or key_id == '' and 'empty key-id header'
+                or #new_file_version < 12 and 'invalid file-version length'
+                or new_file_version:sub(8, 8) ~= '-' and 'invalid file-version separator'
                 or not staged_code and 'unreadable'
                 or #staged_code < 1000 and 'too short'
                 or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
                 or not new_commit_date and 'missing commit_date'
+                or #new_commit_date ~= 7 and 'invalid commit_date length'
+                or new_commit_date:find('[^0-9a-z]') and 'invalid commit_date chars'
+                or new_file_version:sub(1, 7) ~= new_commit_date and 'file-version mismatch'
                 or new_commit_date < commit_date and 'downgrade'
         if not invalid_reason then
             local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' /usr/bin/lua -e '
@@ -3893,7 +3883,7 @@ local function handle_task(task_id, task_method, task_args)
         updated_config.pending_task_id = task_id
         updated_config.pending_task_method = task_method
         updated_config.pending_update_state = 'prepared'
-        updated_config.file_version = new_file_version
+        -- keep the confirmed file_version until successful run_command('mv')
         if not save_base_config(updated_config) then
             remove_path(staged_path)
             return send_task_result(task_id, task_method, false, "B33348 cannot save update state")
@@ -3906,6 +3896,7 @@ local function handle_task(task_id, task_method, task_args)
             end
             return send_task_result(task_id, task_method, false, "B57225 mv failed")
         end
+        updated_config.file_version = new_file_version
         updated_config.pending_update_state = 'installed'  -- 'mv' was successful
         if not save_base_config(updated_config) then
             log_error("B97163 cannot mark update as installed")  -- update task will probably fail
