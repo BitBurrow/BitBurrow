@@ -4,6 +4,7 @@ from fastapi.responses import RedirectResponse
 import logging
 from nicegui import ui, app, Client
 import os
+import hub.config as conf
 import hub.db as db
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def set_session_cookie(response: Response, token: str, max_age: int = 0):
         httponly=True,
         samesite='strict',
         secure=SECURE_COOKIES,
-        path='/',
+        path='/',  # __Host- cookies require this path even when the app is mounted.
     )
     if max_age > 0:
         kwargs['max_age'] = max_age
@@ -74,7 +75,9 @@ def post_set_session(
     redirect: str = Body('/home', embed=True),
     max_age: int = Body(0, embed=True),
 ):
-    response = RedirectResponse(sanitize_redirect(redirect, '/home'), status_code=303)
+    response = RedirectResponse(
+        conf.get('frontend.site_code') + sanitize_redirect(redirect, '/home'), status_code=303
+    )
     set_session_cookie(response, token, max_age)
     return response
 
@@ -89,7 +92,7 @@ def logout(request: Request, redirect: str = Body('/login', embed=True)):
             db.log_out(lsid)  # invalidate login session in DB
         except db.CredentialsError:
             pass  # expired or invalid token
-    resp = RedirectResponse(safe_redirect, status_code=303)
+    resp = RedirectResponse(conf.get('frontend.site_code') + safe_redirect, status_code=303)
     resp.delete_cookie(SESSION_COOKIE_NAME, path='/')
     resp.delete_cookie(CSRF_COOKIE_NAME, path='/')
     return resp
@@ -107,7 +110,7 @@ def js_fetch_post(path: str, payload: dict) -> str:
           }
           async function ensureCsrf() {
             if (!getCookie('{CSRF_COOKIE_NAME}')) {
-            await fetch('/', { credentials: 'same-origin' }); // prime CSRF cookie
+            await fetch('{site_root}', { credentials: 'same-origin' }); // prime CSRF cookie
             }
           }
           async function postOnce() {
@@ -139,7 +142,8 @@ def js_fetch_post(path: str, payload: dict) -> str:
         })();
     '''
     return (  # f-strings don't like JS
-        js.replace('{path}', path)
+        js.replace('{path}', conf.get('frontend.site_code') + path)
+        .replace('{site_root}', conf.get('frontend.site_code') + '/')
         .replace('{payload}', str(payload))
         .replace('{CSRF_COOKIE_NAME}', CSRF_COOKIE_NAME)
         .replace('{CSRF_HEADER}', CSRF_HEADER)

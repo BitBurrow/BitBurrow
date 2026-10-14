@@ -27,6 +27,8 @@ typing-inspect = "^0.9.0"
 pydantic = "^2.10.2"
 htmy = "^0.7.4"
 nicegui = "^3.10.0"
+lxml = ">=5.0,<7"
+tinycss2 = "^1.4.0"
 psutil = "^7.2.1"
 robotframework-browser = {extras = ["bb"], version = "^19.12.3"}
 fastapi-jsonrpc = "^3.5.0"

@@ -11,6 +11,8 @@ import sys
 import sqlalchemy.exc
 from fastapi import responses, Request, HTTPException
 from sqlmodel import SQLModel, create_engine, sql
+import starlette.routing
+import starlette.types
 import uvicorn
 import hub.logs as logs
 import hub.config as conf
@@ -18,6 +20,7 @@ import hub.db as db
 import hub.net as net
 import hub.migrate_db as migrate_db
 import hub.util as util
+import hub.uif as uif
 import hub.pages as pages  # may appear unused, but UI won't work without this
 import hub.api as api
 import hub.door as door
@@ -329,6 +332,30 @@ class UvicornServer(uvicorn.Server):
         super().handle_exit(sig, frame)
 
 
+class SiteCodeApp:
+    """Mount all hub routes together and forward the original app's lifespan unchanged."""
+
+    def __init__(self, app: starlette.types.ASGIApp, prefix: str):
+        self.app = app  # also lets NiceGUI find the Uvicorn server through this wrapper
+        self.router = starlette.routing.Router(
+            routes=[starlette.routing.Mount(prefix or '/', app=app)]
+        )
+
+    async def __call__(
+        self,
+        scope: starlette.types.Scope,
+        receive: starlette.types.Receive,
+        send: starlette.types.Send,
+    ) -> None:
+        if scope['type'] not in ('http', 'websocket'):
+            await self.app(scope, receive, send)
+            return
+        scope = dict(scope)
+        # The configured mount is authoritative; a proxy must not add another URL prefix.
+        scope['headers'] = [(k, v) for k, v in scope['headers'] if k != b'x-forwarded-prefix']
+        await self.router(scope, receive, send)
+
+
 def entry_point():
     try:
         args = cli()
@@ -443,7 +470,8 @@ def entry_point():
         sys.exit(1)
     try:
         server_app.mount('/ui', StaticFiles(directory=util.ui_path), name='ui')
-        nicegui.ui.add_css(os.path.join(util.ui_path, 'theme.css'), shared=True)
+        with open(os.path.join(util.ui_path, 'theme.css'), encoding='utf-8') as f:
+            nicegui.ui.add_css(uif.prefix_css_urls(f.read()), shared=True)
         server_app.include_router(api.router)
         server_app.bind_entrypoint(api.jsonrpc_entrypoint)
         server_app.add_exception_handler(404, a_404_handler("B39369"))  # e.g. GET /ui/f.php
@@ -455,7 +483,7 @@ def entry_point():
             dark=None,  # None → follow OS setting for dark mode
         )
         uvicorn_config = uvicorn.Config(
-            server_app,
+            SiteCodeApp(server_app, conf.get('frontend.site_code')),
             host=conf.get('backend.ip'),
             port=conf.get('backend.web_port'),
             proxy_headers=True,

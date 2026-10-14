@@ -1,6 +1,7 @@
 import logging
 import os
 import secrets
+import string
 import tempfile
 import textwrap
 import yaml
@@ -34,11 +35,11 @@ def get(cpath: str):  # parse config path, e.g. get('frontend.ips')[0]
         raise Berror(f"B62808 invalid cpath: {cpath}")
 
 
-def base_url():  # build from config, e.g. https://vxm.example.org (no trailing slash)
+def base_url():  # e.g. https://vxm.example.org/229xGAfr (no trailing slash)
     public_port = get('frontend.web_port')
     port_spec = '' if public_port == 443 else ':' + str(public_port)
-    return f"{get('frontend.web_proto')}://{get('frontend.domain')}{port_spec}"
-    # FIXME: add f'/{get('frontend.site_code')}' to above
+    site_code = get('frontend.site_code')
+    return f"{get('frontend.web_proto')}://{get('frontend.domain')}{port_spec}{site_code}"
 
 
 # use only in migrate(); changes are not saved
@@ -102,8 +103,8 @@ def migrate(domain='', public_ip=''):  # update config data to current format
     if cfv != config_fv:
         logger.debug(f"B93350 migrate() from {cfv} to {config_fv}")
     if cfv == 5078:  # migrate in-memory to next version
-        digits = '23456789bcdfghjklmnpqrstvwxz'
-        site_code = ''.join(secrets.choice(digits) for i in range(7))
+        base62_digits = string.ascii_uppercase + string.ascii_lowercase + string.digits
+        site_code = '/' + ''.join(secrets.choice(base62_digits) for _ in range(8))
         wg_port = net.random_free_port(use_udp=True, avoid=[5353])
         # section: help
         new_branch = yaml.safe_load(textwrap.dedent(f'''
@@ -121,8 +122,9 @@ def migrate(domain='', public_ip=''):  # update config data to current format
                     frontend:
                       domain: Domain to access hub and for VPN client subdomains, e.g.
                         "vxm.example.org".
-                      site_code: Optional string prepended to all URL paths to make identification
-                        of BitBurrow hubs more difficult.
+                      site_code: Optional string prepended to all URL paths to make identifying
+                        and scanning BitBurrow hubs more difficult. Must begin with a slash and
+                        use URL-safe characters, e.g. '/a_44muitz/s'. Use '' to disable.
                       web_port: Public-facing TCP port, normally 443.
                       web_proto: Must be 'http' or 'https'.
                       wg_port: Frontend WireGuard UDP port. Don't change this once a base router
@@ -226,6 +228,13 @@ def load(path: str):
     except (yaml.parser.ParserError, yaml.scanner.ScannerError) as e:
         raise Berror(f"B60933 cannot parse configuration file: {e}")
     migrate()
+    site_code = get('frontend.site_code')
+    if (
+        not isinstance(site_code, str)
+        or len(site_code) == 1
+        or (site_code and (not site_code.startswith('/') or site_code.endswith('/')))
+    ):
+        raise Berror(f"B58427 invalid site_code '{site_code}'")
 
 
 def is_loaded():

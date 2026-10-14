@@ -1,12 +1,17 @@
 import ast
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from nicegui import app, ui, Client
+import lxml.html
+import tinycss2
+import tinycss2.serializer
 import os
 import re
 import logging
+import urllib.parse
 import yaml
 import zoneinfo
 import hub.auth as auth
+import hub.config as conf
 import hub.login_key as lk
 import hub.util as util
 
@@ -17,6 +22,71 @@ logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, 
 ###
 ### HTML page set-up
 ###
+
+
+def prefix_content_url(url: str, base_path: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if not url or url.startswith(('#', '?')) or parsed.scheme or parsed.netloc:
+        return url
+    return conf.get('frontend.site_code') + urllib.parse.urljoin(base_path, url)
+
+
+def prefix_css_tokens(tokens, base_path: str, url_strings: bool = False):
+    import_url = False
+    for token in tokens:
+        if token.type == 'url' or (token.type == 'string' and (import_url or url_strings)):
+            token.value = prefix_content_url(token.value, base_path)
+            quoted = '"' + tinycss2.serializer.serialize_string_value(token.value) + '"'
+            token.representation = f'url({quoted})' if token.type == 'url' else quoted
+        elif token.type == 'function':
+            prefix_css_tokens(
+                token.arguments,
+                base_path,
+                token.lower_name in ('url', 'image-set', '-webkit-image-set'),
+            )
+        elif hasattr(token, 'content'):
+            prefix_css_tokens(token.content, base_path)
+        if token.type not in ('whitespace', 'comment'):
+            import_url = token.type == 'at-keyword' and token.lower_value == 'import'
+
+
+def prefix_css_urls(content: str, base_path: str = '/') -> str:
+    """Rewrite CSS URL tokens, including quoted imports and nested functions."""
+    if not conf.get('frontend.site_code'):
+        return content
+    tokens = tinycss2.parse_component_value_list(content)
+    prefix_css_tokens(tokens, base_path)
+    return tinycss2.serialize(tokens)
+
+
+def prefix_content_urls(content: str, base_path: str = '/') -> str:
+    """Prefix local URLs in raw HTML, which bypasses NiceGUI's URL handling."""
+    if not conf.get('frontend.site_code'):
+        return content
+    element = lxml.html.fragment_fromstring(content, create_parent='div')
+    for node, attribute, url, offset in element.iterlinks():
+        if attribute is None or attribute == 'style':
+            continue  # CSS needs its own parser below.
+        value = node.get(attribute)
+        node.set(
+            attribute,
+            value[:offset] + prefix_content_url(url, base_path) + value[offset + len(url) :],
+        )
+    for node in element.iter():
+        if node.tag == 'style' and node.text:
+            node.text = prefix_css_urls(node.text, base_path)
+        if 'style' in node.attrib:
+            node.set('style', prefix_css_urls(node.get('style'), base_path))
+    return lxml.html.tostring(element, encoding='unicode')[5:-6]  # remove the temporary div wrapper
+
+
+def markdown(content: str):
+    """Call ui.markdown() while fixing URLs in markdown for site_code."""
+    request = ui.context.client.request
+    base_path = request.url.path.removeprefix(request.scope.get('root_path', '')) or '/'
+    # the callback rewrites URLs; retain NiceGUI's client-side HTML sanitization too
+    s = lambda rendered: prefix_content_urls(rendered, base_path)
+    return ui.markdown(content, sanitize=s).props('sanitize')
 
 
 def enable_external_links_new_tab():
@@ -284,11 +354,12 @@ def input(
 
 
 def headline(text: str, align='center'):
-    return ui.markdown(text).classes(f'w-full text-{align} text-3xl')
+    return markdown(text).classes(f'w-full text-{align} text-3xl')
 
 
 def image(source='', align='left', alt='', width=None):
-    img = ui.image(source if '/' in source else f'ui/img/{source}').props(f'alt={alt}')
+    # NiceGUI adds the mount prefix to root-relative image URLs.
+    img = ui.image(source if '/' in source else f'/ui/img/{source}').props(f'alt={alt}')
     if width:
         if width.endswith('%'):
             img.style(f'width:{width};')
@@ -436,9 +507,9 @@ def render_markdown_with_ctags(md: str, idelem: dict[str, object], within=None):
             if split_bare:  # avoid extra vertical space between elements
                 if within:
                     with within:
-                        obj = ui.markdown(split_bare)
+                        obj = markdown(split_bare)
                 else:
-                    obj = ui.markdown(split_bare)
+                    obj = markdown(split_bare)
                 for id in re.findall(r'\[[^]]+\]\(#([a-zA-Z_]\w*)\)', split_bare):
                     idelem[id] = obj  # allow callbacks on inline Markdown links
 
@@ -453,7 +524,7 @@ def render_expansion(title_md: str, within=None):
     with e.add_slot('header'):
         # using ui.row() with ui.icon() and ui.markdown() split bullet when screen was narrow
         content = f'▶\u2000 **{title_md.lstrip("# \t")}**'  # EN QUAD to force space after bullet
-        ui.markdown(content).classes('!m-0 !p-0 text-sm font-base')
+        markdown(content).classes('!m-0 !p-0 text-sm font-base')
     return e
 
 

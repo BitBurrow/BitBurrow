@@ -503,7 +503,7 @@ async def verify_signed_request(
         payload = json.loads(body)
     except Exception as e:
         raise Berror(f"B75948 invalid json body ({e})")
-    expected_host = re.sub(r'^https?://', '', conf.base_url()).rstrip('/')
+    expected_host = re.sub(r'^https?://', '', conf.base_url()).split('/', 1)[0]  # strip site_code
     actual_host = request.headers.get('host', '')
     if actual_host != expected_host:
         raise Berror(f"B70431 {actual_host} != {expected_host}")
@@ -589,7 +589,7 @@ async def ping(
             raise BaseError("B23086 invalid ping request")  # generic API response for security
         if device.ott_id is not None:
             db.log_out(device.ott_id)
-            device.ott_id = None  # tag_invalidate_device_ott
+            device.ott_id = None  # search: tag_invalidate_device_ott
             logger.info(f"B51437 base {device.subd} completed adopt6e from {ip}")
         device.last_endpoint = ip
         device.last_handshake = int(ping_now.timestamp())
