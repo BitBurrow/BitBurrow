@@ -717,6 +717,11 @@ class DeviceTask(SQLModel, table=True):
     )
 
 
+def get_task(task_id):
+    with Session(engine) as session:
+        return session.get(DeviceTask, task_id)
+
+
 def next_task(device_id: int, unstale: bool = True) -> DeviceTask | None:
     """Assign and return the next (top) queued task for a device."""
     with Session(engine) as session:
@@ -727,6 +732,7 @@ def next_task(device_id: int, unstale: bool = True) -> DeviceTask | None:
                 sqlalchemy.update(DeviceTask)
                 .where(DeviceTask.device_id == device_id)
                 .where(DeviceTask.status == DeviceTaskStatus.ASSIGNED)
+                .where(DeviceTask.method != 'rce')
                 .where(DeviceTask.assigned_at != None)
                 .where(DeviceTask.assigned_at < stale_before)
                 .values(

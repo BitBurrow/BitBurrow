@@ -6,6 +6,8 @@ import nicegui
 import nicegui.run as nicegui_run
 import os
 import platformdirs
+import re
+import select
 import ssl
 import sys
 import sqlalchemy.exc
@@ -109,6 +111,9 @@ def cli(return_help_text=False):
         help="Queue WireGuard activation for an adopted base router",
     )
     p_enable_wg.add_argument('subd', metavar='SUBD')
+    p_rce = subparsers.add_parser('rce', help="Queue a signed shell document for a base router")
+    p_rce.add_argument('filename', metavar='FILE', help="Signed YAML document, or - for stdin")
+    p_rce.add_argument('--await-reply', action='store_true', help="Wait for and print task output")
     p_port_forward_script = subparsers.add_parser(
         "port-forward-script",
         help="Print a Bash script for forwarding ports to LXC container",
@@ -133,6 +138,70 @@ def cli(return_help_text=False):
     if return_help_text:  # used by README.py
         return parser.format_help()
     return parser.parse_args()
+
+
+def queue_rce(filename: str, await_reply: bool) -> None:
+    if db.engine.url.database in (None, '', ':memory:'):
+        raise Berror("B83581 rce requires the daemon's persistent database")
+    document = util.read_yaml(filename)
+    fields = {'subd', 'content', 'sequence_id', 'signature', 'key_id'}
+    if (
+        not isinstance(document, dict)
+        or document.keys() != fields
+        or any(not isinstance(value, str) for value in document.values())
+    ):
+        raise Berror("B54093 signed document must contain exactly five string fields")
+    if not re.fullmatch('[a-z0-9]{1,63}', document['subd']):
+        raise Berror(f"B39173 invalid subd '{document['subd']}'")
+    if not re.fullmatch('[0-9a-z]{7}', document['sequence_id']):
+        raise Berror(f"B75713 invalid sequence_id '{document['sequence_id']}'")
+    path = f'/tmp/bbhub_rce_{document['subd']}{document['sequence_id']}'
+    document['content'].encode('utf-8')
+    if '\0' in document['content'] or not re.fullmatch('[0-9a-z]{7}', document['key_id']):
+        raise Berror("B72382 invalid content or key_id in signed document")
+    document['signature'] = ''.join(document['signature'].split())
+    if not document['signature']:
+        raise Berror("B61196 missing document signature")
+    with db.device_by_subd(document['subd']) as device:
+        if not device.auth_pubkey or db.hub_peer_id(device.id) is None:
+            raise Berror(f"B56361 {document['subd']} is not an adopted, managed base")
+        if device.platform not in (db.Platform.INIT, db.Platform.SYSTEMD):
+            raise Berror(f"B23496 {document['subd']} must report an init or sysd platform")
+        device_id = device.id
+    descriptor = None
+    pipe_stat = None
+    try:
+        if await_reply:  # the '--await-reply' CLI option
+            os.mkfifo(path, 0o600)
+            pipe_stat = util.pipe_stat(path)
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            if os.fstat(descriptor) != pipe_stat:
+                raise Berror("B58142 reply FIFO changed while opening it")
+        task_id = db.enqueue_task(device_id, 'rce', args=document)
+        print(
+            f"RCE queued for {document['subd']}; task_id {task_id}; "
+            f"sequence_id {document['sequence_id']}",
+            file=sys.stderr if await_reply else sys.stdout,
+            flush=True,
+        )
+        if await_reply:
+            while True:  # lost replies require Ctrl-C (RCE tasks are never resent)
+                select.select([descriptor], [], [])  # wait first; unopened FIFOs return EOF
+                try:
+                    data = os.read(descriptor, 65536)
+                except BlockingIOError:
+                    continue
+                if not data:  # also handles a writer closing an empty reply
+                    break
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if pipe_stat is not None:
+            util.unlink_pipe(path, pipe_stat)
 
 
 ###
@@ -404,6 +473,15 @@ def entry_point():
             addresses = db.get_conf(intf_id)[0]['Address']
             print(f"WireGuard activation queued for {args.subd}; connect via {addresses}")
             sys.exit(0)
+        elif args.command == 'rce':
+            try:
+                queue_rce(args.filename, args.await_reply)
+            except KeyboardInterrupt:
+                raise SystemExit(130)
+            except (Berror, db.CredentialsError, OSError, ValueError) as e:
+                print(f"B60472 cannot queue RCE: {e}", file=sys.stderr)
+                raise SystemExit(1)
+            raise SystemExit(0)
         elif args.command == 'port-forward-script':
             util.port_forward_script()
             sys.exit(0)

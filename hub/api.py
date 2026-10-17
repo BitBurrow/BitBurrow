@@ -682,12 +682,18 @@ async def task_result(
             if processor and newly_finished:
                 processor.finish(device)
             status = 'succeeded' if ok else 'failed'
-            e = f"B35214 finished task {task_id} {task_method} {status}: {output}"
+            e = f"B35214 finished task {task_id} {task_method} {status}: {repr(output[:100])}"
             (logger.debug if ok else logger.info)(util.front_berror_code(e, subd, ip))
         except (Berror, db.CredentialsError) as e:
             logger.warning(f"{e} (base {subd} at {ip})")
             raise BaseError("B34089 invalid task_result request")
         # device.telemetry = ...
+    if task_method == 'rce' and newly_finished:
+        await util.write_to_pipe(
+            int(task_id),
+            f'/tmp/bbhub_rce_{subd}{db.get_task(task_id).args['sequence_id']}',
+            output if ok else f"B08552 task failed: {repr(output[:100])}",
+        )
     return BaseResult(subd=subd, status='ok')
 
 

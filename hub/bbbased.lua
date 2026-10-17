@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tmunl5'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tn2jov'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -68,6 +68,8 @@ local lock_dir_pid_path = lock_dir .. 'pid'
 local lock_file_path = lock_dir .. 'flock'
 local lock_dir_stop_request_path = lock_dir .. 'stop_request'
 local sleep_method = nil
+local launch_method = nil
+local our_pgid = nil  -- process group ID
 local base_config = nil
 
 --
@@ -178,6 +180,30 @@ local function http_quoted_string_escape(value)
     return value
 end
 
+local function run_command_result(command, output, exit_code, failure_ok)
+    if exit_code == 0 then
+        if output ~= '' then
+            log_debug("--command succeeded: " .. displayable(output, 60))
+        else
+            log_debug("--command succeeded with empty output")
+        end
+        return output
+    end
+    local msg
+    local disp_command = displayable(command, 25)
+    if output ~= '' then
+        msg = "B11840 running " .. disp_command .. " failed: " .. displayable(output, 60)
+    else
+        msg = "B11545 running " .. disp_command .. " failed with exit code " .. tostring(exit_code)
+    end
+    if failure_ok then
+        log_debug(msg)
+    else
+        log_error(msg)
+    end
+    return nil, output, exit_code
+end
+
 local function run_command(command, merge_stderr, failure_ok)
     -- return captured output on success; return nil, output, and exit code on command failure
     -- do not use shell pipelines here (`set -o pipefail` not universally supported)
@@ -202,27 +228,7 @@ local function run_command(command, merge_stderr, failure_ok)
     exit_code = tonumber(exit_code)
     output = output:gsub('\n__EXIT__=%d+\n?$', '')
     output = output:gsub('%s+$', '')
-    if exit_code == 0 then
-        if output ~= '' then
-            log_debug("--command succeeded: " .. displayable(output, 60))
-        else
-            log_debug("--command succeeded with empty output")
-        end
-        return output
-    end
-    local msg
-    local disp_command = displayable(command, 25)
-    if output ~= '' then
-        msg = "B11840 running " .. disp_command .. " failed: " .. displayable(output, 60)
-    else
-        msg = "B11545 running " .. disp_command .. " failed with exit code " .. tostring(exit_code)
-    end
-    if failure_ok then
-        log_debug(msg)
-    else
-        log_error(msg)
-    end
-    return nil, output, exit_code
+    return run_command_result(command, output, exit_code, failure_ok)
 end
 
 local function trim_trailing_slashes(path)
@@ -785,6 +791,33 @@ local function sleep(seconds)
 end
 
 --
+-- launch method for run_command_for()
+--
+
+local function set_launch_method()
+    if run_command('command -v dd', true, true) and uptime_seconds() then
+        if run_command('command -v setsid', true, true) then
+            launch_method = 'setsid'
+        elseif run_command('command -v start-stop-daemon', true, true) then
+            launch_method = 'start-stop-daemon'
+        end
+    end
+    if not launch_method then
+        log_warning("B44368 timed commands need dd, /proc/uptime, and either setsid or start-stop-daemon")
+        return false
+    end
+    if launch_method == 'start-stop-daemon' then
+        our_pgid = read_text_file('/proc/self/stat', true):match('^%d+ %(.+%) %S+ %d+ (%d+) ')
+        if not our_pgid then
+            launch_method = nil
+            log_warning("B43025 cannot determine our process group")
+            return false
+        end
+    end
+    return true
+end
+
+--
 -- process management
 --
 
@@ -829,6 +862,135 @@ local function is_running(pid)
         if state == 'Z' then return false end
     end
     return run_command('kill -0 ' .. pid, true, true) ~= nil
+end
+
+local function run_command_for(command, max_seconds, merge_stderr, failure_ok)
+    -- return captured output, nil, 0, false on success; otherwise nil, output/error, code, timed_out
+    local script_path, output_path, status_path, pid_path
+    local output, exit_code, failure, pgid
+    local timed_out = false
+    repeat
+        if type(command) ~= 'string' or command:find('\0', 1, true) then
+            failure = "B60814 command must be a string without NUL bytes"
+            break
+        end
+        if type(max_seconds) ~= 'number' or max_seconds ~= max_seconds
+                or max_seconds <= 0 or max_seconds == math.huge then
+            failure = "B50412 max_seconds must be a positive finite number"
+            break
+        end
+        log_debug("running timed command: " .. command)
+        if not launch_method then
+            failure = "B60459 no usable timed-command launcher"
+            break
+        end
+        script_path = make_temp_path(nil, true)
+        output_path = make_temp_path(nil, true)
+        status_path = make_temp_path(nil, true)
+        if launch_method == 'start-stop-daemon' then pid_path = make_temp_path(nil, true) end
+        if not script_path or not output_path or not status_path
+                or (launch_method == 'start-stop-daemon' and not pid_path) then
+            failure = "B95013 cannot create command temporary files"
+            break
+        end
+        if not write_text_file(script_path, command, '0600') then
+            failure = "B87623 cannot write command script"
+            break
+        end
+        local runner = '{ sh ' .. shell_quote(script_path)
+                .. (merge_stderr and ' 2>&1' or ' 2>/dev/null')
+                .. '; rc=$?; printf "%s\\n" "$rc" >' .. shell_quote(status_path) .. '; }'
+        -- below, bs=1 preserves partial output if process takes too long
+        runner = runner .. ' | { dd bs=1 count=' .. string.format('%.0f', 18001)
+                .. ' 2>/dev/null; cat >/dev/null; }'
+        local started = uptime_seconds()
+        if not started then
+            failure = "B17892 cannot read command deadline clock"; break
+        end
+        local deadline = started + max_seconds
+        local pid
+        -- note: if bbbased is killed by service manager, detached shell can continue forever
+        if launch_method == 'setsid' then
+            pid = normalize_pid(run_command('(exec 9>&-; setsid sh -c ' .. shell_quote(runner)
+                .. ' </dev/null >' .. shell_quote(output_path) .. ' 2>&1 & echo $!)', true, true))
+            pgid = pid
+        else
+            -- 'start-stop-daemon -b' creates a session and can double-fork; PID and PGID can
+            -- differ; https://lists.busybox.net/pipermail/busybox-cvs/2023-November/041700.html
+            -- the acknowledgement prevents execution if startup fails; redirection must be
+            -- inside the wrapper because start-stop-daemon redirects its own output
+            local wrapped = 'exec 9>&-; exec </dev/null >' .. shell_quote(output_path) .. ' 2>&1; '
+                    .. 'read -r stat </proc/$$/stat || exit 1; set -- ${stat##*) }; '
+                    .. 'printf "%s %s\\n" "$$" "$3" >' .. shell_quote(pid_path) .. ' || exit 1; '
+                    .. 'for attempt in 1 2 3 4 5 6 7 8 9 10; do '
+                    .. 'if read -r state <' .. shell_quote(pid_path) .. ' && [ "$state" = go ]; then '
+                    .. runner .. '; exit; fi; sleep 1; done; exit 1'
+            local launched = run_command('(exec 9>&-; start-stop-daemon -S -b -p '
+                .. shell_quote(pid_path) .. ' -x /bin/sh -- -c ' .. shell_quote(wrapped) .. ')', true, true)
+            while launched do
+                local child, group = read_text_file(pid_path, true, true):match('^(%d+) (%d+)\n$')
+                if child then
+                    pid, pgid = normalize_pid(child), normalize_pid(group)
+                    break
+                end
+                local now = uptime_seconds()
+                if not now then
+                    failure = "B95323 cannot read command deadline clock"; break
+                end
+                if now >= deadline then
+                    timed_out = true; break
+                end
+                if now - started >= 5 or not sleep(math.min(0.1, deadline - now)) then break end
+            end
+            if pid then
+                if not pgid or pgid == our_pgid then
+                    run_command('kill -KILL ' .. pid, true, true)
+                    pid, pgid = nil, nil
+                elseif not write_text_file(pid_path, 'go\n') then
+                    pid = nil
+                end
+            end
+        end
+        if failure or timed_out then break end
+        if not pid then
+            failure = "B61884 cannot start command shell"; break
+        end
+        while is_running(pid) do
+            local now = uptime_seconds()
+            if not now then
+                failure = "B99386 cannot read command deadline clock"; break
+            end
+            if now >= deadline then
+                timed_out = true; break
+            end
+            if not sleep(math.min(0.1, deadline - now)) then
+                failure = "B98271 cannot wait for command"
+                break
+            end
+        end
+    until true
+    -- cleanup also stops children left behind when their parent shell exits
+    if pgid then run_command('kill -KILL -' .. pgid, true, true) end
+    if not failure then
+        local handle = io.open(output_path, 'r')
+        if handle then
+            local read_error
+            output, read_error = handle:read(18001)
+            local closed = handle:close()
+            if read_error or not closed then failure = "B51683 cannot read command output" end
+            output = output or ''
+        else
+            failure = "B99921 cannot open command output"
+        end
+        if not failure then
+            exit_code = timed_out and 124 or tonumber(read_text_file(status_path, true):match('^%d+$'))
+            if not exit_code then failure = "B13525 could not determine command exit status" end
+        end
+    end
+    remove_paths(script_path, output_path, status_path, pid_path)
+    if failure then output, exit_code = failure, nil end
+    local result, error_output = run_command_result(tostring(command), output, exit_code, failure_ok)
+    return result, error_output, exit_code, timed_out
 end
 
 local function wait_until_dead(pid, attempts)
@@ -895,7 +1057,6 @@ local json_simple_escapes = {
 }
 
 local function json_unescape(value)
-    -- minimal JSON decoding, preserving the prior policy that non-ASCII \u escapes become '?'
     -- decode once from left to right so an escaped backslash cannot introduce a second escape
     local result = {}
     local pos = 1
@@ -913,12 +1074,28 @@ local function json_unescape(value)
             local hex = value:sub(slash + 2, slash + 5)
             if #hex == 4 and hex:match('^%x%x%x%x$') then
                 local num = tonumber(hex, 16)
-                if num and num < 128 then
-                    result[#result + 1] = string.char(num)
-                else
-                    result[#result + 1] = '?'
-                end
                 pos = slash + 6
+                if num >= 0xd800 and num <= 0xdbff and value:sub(pos, pos + 1) == '\\u' then
+                    local low = tonumber(value:sub(pos + 2, pos + 5), 16)
+                    if low and low >= 0xdc00 and low <= 0xdfff then
+                        num = 0x10000 + (num - 0xd800) * 1024 + low - 0xdc00
+                        pos = pos + 6
+                    end
+                end
+                if num >= 0xd800 and num <= 0xdfff then
+                    result[#result + 1] = '?'
+                elseif num < 128 then
+                    result[#result + 1] = string.char(num)
+                elseif num < 2048 then
+                    result[#result + 1] = string.char(192 + math.floor(num / 64), 128 + num % 64)
+                elseif num < 65536 then
+                    result[#result + 1] = string.char(224 + math.floor(num / 4096),
+                        128 + math.floor(num / 64) % 64, 128 + num % 64)
+                else
+                    result[#result + 1] = string.char(240 + math.floor(num / 262144),
+                        128 + math.floor(num / 4096) % 64, 128 + math.floor(num / 64) % 64,
+                        128 + num % 64)
+                end
             else
                 result[#result + 1] = '\\'
                 pos = slash + 1
@@ -1961,6 +2138,22 @@ local function send_task_result(task_id, task_method, ok, output)
     if #output > 18000 then
         output = output:sub(1, 18000) .. '\n...truncated...'
     end
+    local escaped_output = json_escape(output)
+    if task_method == 'rce' then
+        -- binary output or a truncated UTF-8 character must not invalidate JSON
+        escaped_output = escaped_output:gsub('[\128-\255][\128-\191]*', function(bytes)
+            local first, second = bytes:byte(1, 2)
+            local length = first >= 194 and first <= 223 and 2
+                    or first >= 224 and first <= 239 and 3
+                    or first >= 240 and first <= 244 and 4 or 0
+            if #bytes ~= length or (first == 224 and second < 160)
+                    or (first == 237 and second >= 160) or (first == 240 and second < 144)
+                    or (first == 244 and second >= 144) then
+                return '\\ufffd'
+            end
+            return bytes
+        end)
+    end
     local request_body = '{'
             .. '"jsonrpc":"2.0",'
             .. '"id":1,'
@@ -1970,7 +2163,7 @@ local function send_task_result(task_id, task_method, ok, output)
             .. '"task_id":"' .. json_escape(task_id) .. '",'
             .. '"task_method":"' .. json_escape(task_method) .. '",'
             .. '"ok":' .. (ok and 'true' or 'false') .. ','
-            .. '"output":"' .. json_escape(output) .. '"'
+            .. '"output":"' .. escaped_output .. '"'
             .. '}'
             .. '}'
     local response_body = send_signed_jsonrpc(request_body)
@@ -3790,6 +3983,58 @@ local function verify_file_signature(staged_path, signature, key_id)
     return true
 end
 
+local function rce(task_args)
+    if type(task_args) ~= 'string' then return false, "B41362 missing signed document" end
+    local sequence_id = json_get_string(task_args, 'sequence_id')
+    local previous = base_config.rce_sequence_id or commit_date
+    if not sequence_id or #sequence_id ~= 7 or not sequence_id:match('^[0-9a-z]+$')
+            or #previous ~= 7 or not previous:match('^[0-9a-z]+$')
+            or sequence_id <= previous then
+        return false, "B27581 RCE sequence_id must be greater than " .. previous
+                .. "; try again in a minute"
+    end
+    if json_get_string(task_args, 'subd') ~= subd then
+        return false, "B63384 RCE subd does not match this base"
+    end
+    local content = json_get_string(task_args, 'content')
+    local signature = json_get_string(task_args, 'signature')
+    local key_id = json_get_string(task_args, 'key_id')
+    if not content or content:find('\0', 1, true) or not signature or not key_id then
+        return false, "B61872 invalid signed document fields"
+    end
+    local signature_path = make_temp_path(nil, true)
+    if not signature_path then return false, "B65835 cannot create RCE signature file" end
+    local ok, output = false, nil
+    repeat
+        local signature_base = 'sabozt45m\n' .. subd .. '\n' .. sequence_id .. '\n' .. content
+        if not write_text_file(signature_path, signature_base, '0600') then
+            output = "B11483 cannot write RCE signature base"
+            break
+        end
+        local verified = verify_file_signature(signature_path, signature, key_id)
+        if verified ~= true then
+            output = "B19163 bad RCE signature: " .. tostring(verified)
+            break
+        end
+        if not launch_method then
+            output = "B39107 no usable timed-command launcher"
+            break
+        end
+        local updated_config = copy_table(base_config)
+        updated_config.rce_sequence_id = sequence_id
+        if not save_base_config(updated_config) then
+            output = "B62484 cannot save RCE sequence_id"
+            break
+        end
+        base_config = updated_config
+        local captured, error_output, exit_code = run_command_for(content, 60, true, true)
+        ok, output = exit_code ~= nil, captured or error_output
+    until true
+    remove_path(signature_path)
+    return ok, output
+end
+
+
 local function handle_task(task_id, task_method, task_args)
     -- return true iff task was handled or no task was present
     if not task_id or not task_method then return true end
@@ -3801,6 +4046,10 @@ local function handle_task(task_id, task_method, task_args)
         local wg_conf, problem = request_wg_config()
         if not wg_conf then return send_task_result(task_id, task_method, false, problem) end
         local ok, output = enable_wg(wg_conf)
+        return send_task_result(task_id, task_method, ok, output)
+    end
+    if task_method == 'rce' then
+        local ok, output = rce(task_args)
         return send_task_result(task_id, task_method, ok, output)
     end
     if task_method == 'update' then
@@ -3998,6 +4247,7 @@ end
 
 log_warning("B20392 completed adopt5w, log level " .. logging_level)
 if not set_sleep_method() then cleanup_and_exit(13) end
+set_launch_method()  -- failure here is not fatal
 install_one_of('curl', 'curl')
 install_one_of('openssl openssl-util', 'openssl')
 

@@ -474,7 +474,8 @@ def sign_code(code: str, signing_key: Key) -> str:
         'rsa_mgf1_md:sha512',
     )
     privkey_path = str(signing_key.private_path)
-    print(f"Signing code with private key {signing_key.key_id} ...")
+    # use stderr so we don't corrput YAML on stdout
+    print(f"Signing code with private key {signing_key.key_id} ...", file=sys.stderr)
     args = ['openssl', 'dgst', '-sha512', '-sign', privkey_path, *rsa_pss_options, '-']
     # only the raw OpenSSL signature is binary; expose its base64 representation as text
     signature = subprocess.run(
@@ -484,6 +485,27 @@ def sign_code(code: str, signing_key: Key) -> str:
         stdout=subprocess.PIPE,
     ).stdout
     return textwrap.fill(base64.b64encode(signature).decode('ascii'), width=64)
+
+
+def sign_doc(subd: str, filename: str) -> None:
+    if not re.fullmatch('[a-z0-9]{1,63}', subd):
+        raise Berror(f"B79243 invalid subd: {subd!r}")
+    content = (sys.stdin.buffer.read() if filename == '-' else Path(filename).read_bytes()).decode(
+        'utf-8'
+    )
+    if '\0' in content:
+        raise Berror("B48731 signed shell content cannot contain NUL bytes")
+    signing_key = read_key(read_key_state()['active_key_id'])
+    sequence_id = b36datetime()
+    signature_base = 'sabozt45m\n' + subd + '\n' + sequence_id + '\n' + content
+    document = dict(
+        subd=subd,
+        content=content,
+        sequence_id=sequence_id,
+        signature=sign_code(signature_base, signing_key),
+        key_id=signing_key.key_id,
+    )
+    sys.stdout.write(dump_versions(document))
 
 
 def sign(commit_date: str | None = None) -> None:
@@ -587,12 +609,12 @@ commands = {
     'verify-black': (verify_black, (0,)),
     'find-berror-dups': (find_berror_dups, (0,)),
     'sign': (sign, (0, 1)),
+    'sign-doc': (sign_doc, (2,)),
     'rotate-keys': (rotate_keys, (0,)),
 }
 
 
 def main() -> None:
-    os.chdir(git_text('rev-parse', '--show-toplevel').removesuffix('\n'))
     operation = sys.argv[1] if len(sys.argv) > 1 else ''
     if operation not in commands:
         raise Berror(f"B61791 unknown operation {operation!r} (expected: {', '.join(commands)})")
@@ -601,6 +623,8 @@ def main() -> None:
     if len(arguments) not in argument_counts:
         expected = ' or '.join(str(count) for count in argument_counts)
         raise Berror(f"B86683 {operation} expects {expected} argument(s)")
+    if operation != 'sign-doc':
+        os.chdir(git_text('rev-parse', '--show-toplevel').removesuffix('\n'))
     function(*arguments)
 
 

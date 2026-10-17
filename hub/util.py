@@ -6,6 +6,8 @@ import importlib.metadata
 import io
 import os
 import re
+import stat
+import sys
 import textwrap
 import yaml
 import hub.config as conf
@@ -460,6 +462,63 @@ def mkdir_r(path):  # like Linux `mkdir --parents`
         raise Berror(f"B19340 cannot create directory: {path}")
 
 
+def pipe_stat(path: str) -> os.stat_result:
+    info = os.lstat(path)
+    if (
+        not stat.S_ISFIFO(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o600
+    ):
+        raise OSError(f"B79182 unsafe reply FIFO: {path}")
+    return info
+
+
+def unlink_pipe(path: str, info: os.stat_result) -> None:
+    try:
+        current = os.lstat(path)
+        if (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino):
+            os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+async def write_to_pipe(task_id: int, path: str, output: str) -> bool:
+    descriptor = None
+    info = None
+    try:
+        info = pipe_stat(path)
+        descriptor = os.open(path, os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+            raise OSError("reply FIFO changed while opening it")
+        # note: nonblocking writes can be partial, even with a connected reader: https://man7.org/linux/man-pages/man7/pipe.7.html
+        remaining = memoryview(output.encode('utf-8'))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5
+        while remaining:
+            try:
+                count = os.write(descriptor, remaining[:4096])
+                remaining = remaining[count:]
+            except BlockingIOError:
+                if loop.time() >= deadline:
+                    raise TimeoutError("reply reader stalled")
+                await asyncio.sleep(0.01)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        logger.warning(f"B71681 task {task_id} reply handoff failed: {e}")
+        return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if info is not None:
+            try:
+                unlink_pipe(path, info)
+            except OSError as e:
+                logger.warning(f"B70882 cannot unlink reply FIFO for task {task_id}: {e}")
+
+
 def port_forward_script():
     frontp = conf.get('frontend.web_proto')
     backp = conf.get('frontend.web_proto')
@@ -547,19 +606,26 @@ def tls_cert_script():  # script to run certbot for wildcard TLS cert
     print(textwrap.dedent(script).strip().replace('{domain}', conf.get('frontend.domain')))
 
 
+def read_yaml(filename: str) -> object:
+    try:
+        if filename == '-':  # '-' reads UTF-8 from stdin without closing it
+            # note safe_load() silently replaces earlier values
+            return yaml.safe_load(sys.stdin.buffer.read().decode('utf-8'))
+        with open(filename, encoding='utf-8', newline='') as stream:
+            return yaml.safe_load(stream)
+    except (OSError, UnicodeError):
+        logger.error(f"B20488 cannot read {filename}")
+        return dict()
+    except yaml.YAMLError:
+        logger.error(f"B92499 parsing '{filename}' failed")
+        return dict()
+
+
 def read_versions_yaml() -> dict[str, dict]:
     # 'versions.yaml' is updated at commit time via git_hooks/pre-commit
     versions_path = os.path.join(project_root_path, 'versions.yaml')
-    try:
-        with open(versions_path, encoding='utf-8') as f:
-            data = yaml.safe_load(f)
-    except OSError:
-        logger.error(f"B20488 cannot read {versions_path}")
-        return dict()
-    except yaml.YAMLError:
-        logger.error("B92499 parsing 'versions.yaml' failed")
-        return dict()
-    paths = data.get('paths')
+    data = read_yaml(versions_path)
+    paths = data.get('paths') if isinstance(data, dict) else None
     if not isinstance(paths, list):
         logger.error("B10573 'paths' in 'versions.yaml' must be a list")
         return dict()
