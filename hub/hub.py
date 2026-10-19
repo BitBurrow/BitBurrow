@@ -562,6 +562,7 @@ def entry_point():
             nicegui.ui.add_css(uif.prefix_css_urls(f.read()), shared=True)
         server_app.include_router(api.router)
         server_app.bind_entrypoint(api.jsonrpc_entrypoint)
+        server_app.add_exception_handler(Berror, api.handle_berror)  # e.g. GET /5s/abcd
         server_app.add_exception_handler(404, a_404_handler("B39369"))  # e.g. GET /ui/f.php
         nicegui.app.add_exception_handler(404, a_404_handler("B26511"))  # e.g. GET /f.php
         nicegui.ui.run_with(
