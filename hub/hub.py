@@ -111,7 +111,7 @@ def cli(return_help_text=False):
         help="Queue WireGuard activation for an adopted base router",
     )
     p_enable_wg.add_argument('subd', metavar='SUBD')
-    p_rce = subparsers.add_parser('rce', help="Queue a signed shell document for a base router")
+    p_rce = subparsers.add_parser('rce', help="Queue signed shell tasks for base routers")
     p_rce.add_argument('filename', metavar='FILE', help="Signed YAML document, or - for stdin")
     p_rce.add_argument('--await-reply', action='store_true', help="Wait for and print task output")
     p_port_forward_script = subparsers.add_parser(
@@ -144,63 +144,73 @@ def queue_rce(filename: str, await_reply: bool) -> None:
     if db.engine.url.database in (None, '', ':memory:'):
         raise Berror("B83581 rce requires the daemon's persistent database")
     document = util.read_yaml(filename)
-    fields = {'subd', 'content', 'sequence_id', 'signature', 'key_id'}
-    if (
-        not isinstance(document, dict)
-        or document.keys() != fields
-        or any(not isinstance(value, str) for value in document.values())
-    ):
-        raise Berror("B54093 signed document must contain exactly five string fields")
-    if not re.fullmatch('[a-z0-9]{1,63}', document['subd']):
-        raise Berror(f"B39173 invalid subd '{document['subd']}'")
-    if not re.fullmatch('[0-9a-z]{7}', document['sequence_id']):
-        raise Berror(f"B75713 invalid sequence_id '{document['sequence_id']}'")
-    path = f'/tmp/bbhub_rce_{document['subd']}{document['sequence_id']}'
-    document['content'].encode('utf-8')
-    if '\0' in document['content'] or not re.fullmatch('[0-9a-z]{7}', document['key_id']):
-        raise Berror("B72382 invalid content or key_id in signed document")
-    document['signature'] = ''.join(document['signature'].split())
-    if not document['signature']:
-        raise Berror("B61196 missing document signature")
-    with db.device_by_subd(document['subd']) as device:
-        if not device.auth_pubkey or db.hub_peer_id(device.id) is None:
-            raise Berror(f"B56361 {document['subd']} is not an adopted, managed base")
-        if device.platform not in (db.Platform.INIT, db.Platform.SYSTEMD):
-            raise Berror(f"B23496 {document['subd']} must report an init or sysd platform")
-        device_id = device.id
-    descriptor = None
-    pipe_stat = None
+    if not isinstance(document, dict) or document.keys() != {'tasks'}:
+        raise Berror("B54093 invalid input document")
+    tasks = dict()
+    for task in document['tasks']:
+        path = f'/tmp/bbhub_rce_{task['subd']}{task['sequence_id']}'
+        if path in tasks:
+            raise Berror(f"B72946 duplicate task {task['subd']}{task['sequence_id']}")
+        task['content'].encode('utf-8')
+        if '\0' in task['content'] or not re.fullmatch('[0-9a-z]{7}', task['key_id']):
+            raise Berror("B72382 invalid content or key_id in signed document")
+        task['signature'] = ''.join(task['signature'].split())
+        if not task['signature']:
+            raise Berror("B61196 missing document signature")
+        with db.device_by_subd(task['subd']) as device:
+            if not device.auth_pubkey or db.hub_peer_id(device.id) is None:
+                raise Berror(f"B56361 device for subd {task['subd']} not found")
+            tasks[path] = (device.id, task)
+    pipes = dict()
+    replies = dict()
     try:
-        if await_reply:  # the '--await-reply' CLI option
-            os.mkfifo(path, 0o600)
-            pipe_stat = util.pipe_stat(path)
-            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-            if os.fstat(descriptor) != pipe_stat:
-                raise Berror("B58142 reply FIFO changed while opening it")
-        task_id = db.enqueue_task(device_id, 'rce', args=document)
-        print(
-            f"RCE queued for {document['subd']}; task_id {task_id}; "
-            f"sequence_id {document['sequence_id']}",
-            file=sys.stderr if await_reply else sys.stdout,
-            flush=True,
-        )
         if await_reply:
-            while True:  # lost replies require Ctrl-C (RCE tasks are never resent)
-                select.select([descriptor], [], [])  # wait first; unopened FIFOs return EOF
+            for path, (_, task) in tasks.items():
+                os.mkfifo(path, 0o600)
+                pipe_stat = util.pipe_stat(path)
+                pipes[path] = (None, pipe_stat)
+                descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+                pipes[path] = (descriptor, pipe_stat)
+                if os.fstat(descriptor) != pipe_stat:
+                    raise Berror("B58142 reply FIFO changed while opening it")
+                replies[descriptor] = (task['subd'], bytearray())
+            try:
+                # make sure select() can handle this many descriptors before queuing tasks
+                select.select(list(replies), [], [], 0)
+            except ValueError:
+                raise Berror(f"B96283 too many tasks; try 1000 or fewer")
+                # https://man7.org/linux/man-pages/man2/select.2.html
+        for device_id, task in tasks.values():  # note a DB failure may leave a partial batch queued
+            task_id = db.enqueue_task(device_id, 'rce', args=task)
+            print(
+                f"RCE queued for {task['subd']}; task_id {task_id}; "
+                f"sequence_id {task['sequence_id']}",
+                file=sys.stderr if await_reply else sys.stdout,
+                flush=True,
+            )
+        while replies:
+            ready, _, _ = select.select(list(replies), [], [])
+            for descriptor in ready:
                 try:
                     data = os.read(descriptor, 65536)
                 except BlockingIOError:
                     continue
-                if not data:  # also handles a writer closing an empty reply
-                    break
-                sys.stdout.buffer.write(data)
+                subd, output = replies[descriptor]
+                if data:
+                    output.extend(data)
+                    continue
+                sys.stdout.buffer.write(f"### response from base {subd}:\n".encode('utf-8'))
+                sys.stdout.buffer.write(output)
+                if output and not output.endswith(b'\n'):
+                    sys.stdout.buffer.write(b'\n')
                 sys.stdout.buffer.flush()
+                del replies[descriptor]
     except KeyboardInterrupt:
         raise SystemExit(130)
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        if pipe_stat is not None:
+        for path, (descriptor, pipe_stat) in pipes.items():
+            if descriptor is not None:
+                os.close(descriptor)
             util.unlink_pipe(path, pipe_stat)
 
 
@@ -230,7 +240,7 @@ def eat_engineio_stack_dump(record: logging.LogRecord) -> bool:
     if (  # match the failing Engine.IO lookup, including its empty request dictionary
         frame.f_globals.get('__name__') != 'engineio.async_server'
         or frame.f_code.co_name != 'handle_request'
-        or frame.f_locals.get('environ') != {}
+        or frame.f_locals.get('environ') != dict()
     ):
         return True
     logger.info("B16162 Engine.IO request failed: missing REQUEST_METHOD")

@@ -3,6 +3,7 @@
 import base64
 import collections
 from datetime import datetime as DateTime, timezone as TimeZone
+import getpass
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,7 @@ versions_path = Path('versions.yaml')
 watched_paths = ('hub/bbbased.lua', 'hub/adopt5p.sh', 'hub/')
 keys_path = Path.home() / '.config/openssl/bitburrow'  # contains a subdir for each key
 key_state_path = keys_path / 'key_state.yaml'
+key_passphrases: dict[Path, str] = dict()  # keep each key's passphrase in memory
 
 
 class Berror(Exception):
@@ -65,6 +67,47 @@ def run_external(args: str | list[str], *, input: str | None = None) -> str:
     return proc.stdout.decode('utf-8', errors='surrogateescape')
 
 
+def run_openssl(
+    args: list[str], private_path: Path, *, input: bytes | None = None, new_key: bool = False
+) -> bytes:
+    """Return OpenSSL output bytes using cached passphrases, confirming new ones."""
+    private_path = private_path.resolve()
+    passphrase = key_passphrases.get(private_path)
+    if passphrase is None or new_key:
+        passphrase = ''
+        if new_key or b'ENCRYPTED' in private_path.read_bytes():
+            action = 'New private key' if new_key else 'Private key'
+            try:
+                with sys.modules['warnings'].catch_warnings(  # reuse warnings loaded by getpass
+                    action='error', category=getpass.GetPassWarning
+                ):
+                    passphrase = getpass.getpass(
+                        f"{action} passphrase ({private_path.parent.name}): "
+                    )
+                    if new_key:
+                        if len(passphrase) < 8:
+                            raise Berror("B75324 new key passphrase must be at least 8 characters")
+                        if getpass.getpass("Confirm private key passphrase: ") != passphrase:
+                            raise Berror("B29041 private key passphrases do not match")
+            except (getpass.GetPassWarning, EOFError):
+                raise Berror("B51308 read passphrase from the terminal without echo")
+    reader, writer = os.pipe()
+    with os.fdopen(reader, 'rb') as passin, os.fdopen(writer, 'wb') as passout:
+        # signed output uses stdout; password on separate pipe
+        passout.write((passphrase + '\n').encode('utf-8'))
+        passout.close()
+        option = '-pass' if new_key else '-passin'
+        output = subprocess.run(
+            ['openssl', *args, option, f'fd:{passin.fileno()}'],
+            input=input,
+            check=True,
+            stdout=subprocess.PIPE,
+            pass_fds=(passin.fileno(),),
+        ).stdout
+    key_passphrases[private_path] = passphrase
+    return output
+
+
 def git_text(*args: str, input: str | None = None) -> str:
     return run_external(['git', *args], input=input)
 
@@ -101,7 +144,7 @@ def read_indexed_file(path: Path) -> tuple[str, str] | None:
 
 def stage_contents(files: dict[Path, tuple[str, str]]) -> None:
     """Install prepared blobs together, without reading or staging worktree contents."""
-    entries = []
+    entries = list()
     for path, (mode, content) in files.items():
         object_id = git_text('hash-object', '-w', '--stdin', input=content).strip()
         entries.append(f'{mode} {object_id}\t{path}\0')
@@ -359,9 +402,8 @@ def prepare_key(key_id: str) -> Key:
         print(f"Generating new private key {key_id} ...")
         with tempfile.TemporaryDirectory(prefix='.keygen-', dir=key_path) as temporary:
             generated_path = Path(temporary) / 'privkey.pem'
-            subprocess.run(
+            run_openssl(
                 [
-                    'openssl',
                     'genpkey',
                     '-algorithm',
                     'RSA-PSS',
@@ -377,14 +419,16 @@ def prepare_key(key_id: str) -> Key:
                     '-out',
                     str(generated_path),
                 ],
-                check=True,
+                private_path,
+                new_key=True,
             )
             generated_path.chmod(0o600)
             generated_path.replace(private_path)
     # an interrupted export may leave only the private key; reuse it rather than generating another
     if not public_path.exists():
         print(f"Generating new public key from private key {key_id} ...")
-        public_key = stdout_from(['openssl', 'pkey', '-in', str(private_path), '-pubout'])
+        args = ['pkey', '-in', str(private_path), '-pubout']
+        public_key = run_openssl(args, private_path).decode('utf-8')
         if not public_key.startswith('-----BEGIN PUBLIC KEY-----\n'):
             raise Berror("B09240 OpenSSL did not export a PEM public key")
         atomic_write(public_path, public_key)
@@ -490,20 +534,21 @@ def sign_string(code: str, signing_key: Key) -> str:
     privkey_path = str(signing_key.private_path)
     # use stderr so we don't corrput YAML on stdout
     print(f"Signing code with private key {signing_key.key_id} ...", file=sys.stderr)
-    args = ['openssl', 'dgst', '-sha512', '-sign', privkey_path, *rsa_pss_options, '-']
-    # only the raw OpenSSL signature is binary; expose its base64 representation as text
-    signature = subprocess.run(
-        args,
+    signature = run_openssl(
+        ['dgst', '-sha512', '-sign', privkey_path, *rsa_pss_options],
+        signing_key.private_path,
         input=code.encode('utf-8', errors='surrogateescape'),
-        check=True,
-        stdout=subprocess.PIPE,
-    ).stdout
+    )
     return textwrap.fill(base64.b64encode(signature).decode('ascii'), width=64)
 
 
 def sign_doc(subd: str, filename: str) -> None:
-    if not re.fullmatch('[a-z0-9]{1,63}', subd):
+    """Sign shell content for one or more bases and write the task batch as YAML to stdout."""
+    subds = subd.split()
+    if not subds or any(not re.fullmatch('[a-z0-9]{1,63}', item) for item in subds):
         raise Berror(f"B79243 invalid subd: {subd!r}")
+    if len(subds) != len(set(subds)):
+        raise Berror("B81852 duplicate subd in signed task batch")
     content = (sys.stdin.buffer.read() if filename == '-' else Path(filename).read_bytes()).decode(
         'utf-8'
     )
@@ -511,15 +556,20 @@ def sign_doc(subd: str, filename: str) -> None:
         raise Berror("B48731 signed shell content cannot contain NUL bytes")
     signing_key = read_key(read_key_state()['active_key_id'])
     sequence_id = b36datetime()
-    signature_base = 'sabozt45m\n' + subd + '\n' + sequence_id + '\n' + content
-    document = dict(
-        subd=subd,
-        content=content,
-        sequence_id=sequence_id,
-        signature=sign_string(signature_base, signing_key),
-        key_id=signing_key.key_id,
-    )
-    sys.stdout.write(dump_versions(document))
+    tasks = list()
+    for task_id, subd in enumerate(subds, 1):
+        signature_base = 'sabozt45m\n' + subd + '\n' + sequence_id + '\n' + content
+        tasks.append(
+            dict(
+                id=task_id,
+                subd=subd,
+                content=content,
+                sequence_id=sequence_id,
+                signature=sign_string(signature_base, signing_key),
+                key_id=signing_key.key_id,
+            )
+        )
+    sys.stdout.write(dump_versions(dict(tasks=tasks)))
 
 
 def sign_code(commit_date: str | None = None) -> None:
@@ -541,7 +591,7 @@ def sign_code(commit_date: str | None = None) -> None:
     versions['paths'].extend({'path': path, 'version': commit_date} for path in matched)
     # unaffected entries retain their template values, even after an abandoned commit;
     # repairing stale metadata after changing the staged selection remains a manual operation
-    prepared = {}
+    prepared = dict()
     worktree_code = None
     pending_key = None
     if str(bbbased_path) in modified:
@@ -601,7 +651,7 @@ def rotate_keys() -> None:
     if not code_has_key(committed_code, key):
         return
     versions = parse_versions(committed_versions)
-    entry = next((e for e in versions['paths'] if e.get('path') == str(bbbased_path)), {})
+    entry = next((e for e in versions['paths'] if e.get('path') == str(bbbased_path)), dict())
     signing_id = entry.get('key_id')
     signing_ids = {state['active_key_id'], state.get('previous_key_id')} - {None}
     signature = entry.get('signature')
