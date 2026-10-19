@@ -6,4 +6,4 @@ devtool="$(git rev-parse --show-toplevel)/git_hooks/devtool.py"
 
 "$devtool" verify-black
 "$devtool" find-berror-dups
-"$devtool" sign
+"$devtool" sign-code

@@ -50,8 +50,8 @@ def represent_versions_string(dumper: yaml.SafeDumper, value: str) -> yaml.Scala
 Dumper.add_representer(str, represent_versions_string)
 
 
-def stdout_from(args: str | list[str], *, input: str | None = None) -> str:
-    '''Return command output unchanged; raise Berror if the command fails.'''
+def run_external(args: str | list[str], *, input: str | None = None) -> str:
+    """Return command output unchanged; raise Berror if the command fails."""
     if isinstance(args, str):  # can take a list or simple space-separated string
         args = args.split()  # caution: not using shlex.split(args)
     proc = subprocess.run(  # avoid subprocess text mode (would break signed Lua code)
@@ -66,14 +66,13 @@ def stdout_from(args: str | list[str], *, input: str | None = None) -> str:
 
 
 def git_text(*args: str, input: str | None = None) -> str:
-    return stdout_from(['git', *args], input=input)
+    return run_external(['git', *args], input=input)
 
 
 def git_blob(revision: str) -> str | None:
-    '''Read a committed blob, allowing absent history or an absent file during bootstrap.'''
-    result = subprocess.run(
-        ['git', 'show', revision], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
+    """Read a committed blob, allowing absent history or an absent file during bootstrap."""
+    args = ['git', 'show', revision]
+    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode == 128:
         return None
     result.check_returncode()
@@ -81,16 +80,12 @@ def git_blob(revision: str) -> str | None:
 
 
 def git_files(*args: str) -> set[str]:
-    '''Return filenames from a Git command whose arguments include -z.'''
+    """Return filenames from a Git command whose arguments include -z."""
     return {name for name in git_text(*args).split('\0') if name}
 
 
-def staged_files() -> set[str]:
-    return git_files('diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z')
-
-
 def read_indexed_file(path: Path) -> tuple[str, str] | None:
-    '''Return the index mode and contents, including files which are unchanged from HEAD.'''
+    """Return the index mode and contents, including files which are unchanged from HEAD."""
     records = git_text('ls-files', '--stage', '-z', '--', str(path)).split('\0')
     records = [record for record in records if record]
     if not records:
@@ -105,7 +100,7 @@ def read_indexed_file(path: Path) -> tuple[str, str] | None:
 
 
 def stage_contents(files: dict[Path, tuple[str, str]]) -> None:
-    '''Install prepared blobs together, without reading or staging worktree contents.'''
+    """Install prepared blobs together, without reading or staging worktree contents."""
     entries = []
     for path, (mode, content) in files.items():
         object_id = git_text('hash-object', '-w', '--stdin', input=content).strip()
@@ -114,7 +109,7 @@ def stage_contents(files: dict[Path, tuple[str, str]]) -> None:
 
 
 def atomic_write(path: Path, content: str, mode: int | None = None) -> None:
-    '''Replace path atomically, retaining its permissions or defaulting to owner-only.'''
+    """Replace path atomically, retaining its permissions or defaulting to owner-only."""
     temporary = tempfile.NamedTemporaryFile(dir=path.parent, prefix=f'.{path.name}.', delete=False)
     temporary_path = Path(temporary.name)
     try:
@@ -129,7 +124,6 @@ def atomic_write(path: Path, content: str, mode: int | None = None) -> None:
 
 
 def read_text(path: Path) -> str:
-    '''Read text without translating line endings or losing non-UTF-8 source bytes.'''
     return path.read_bytes().decode('utf-8', errors='surrogateescape')
 
 
@@ -146,7 +140,7 @@ def parse_yaml(content: str, path: Path, *, allow_empty: bool = False) -> dict:
 
 
 def b36datetime() -> str:
-    '''Return Unix time in base 36, padded to seven characters (one-second resolution).'''
+    """Return Unix time in base 36, padded to seven characters (one-second resolution)."""
     digits = '0123456789abcdefghijklmnopqrstuvwxyz'
     now = int(DateTime.now(TimeZone.utc).timestamp())
     result = ''
@@ -157,12 +151,13 @@ def b36datetime() -> str:
 
 
 def entry_public_key(entry: re.Match) -> str:
+    """Extract public key from a matched Lua key entry; strip whitespace."""
     payload = ''.join(re.findall(r"'([^'\r\n]*)'", entry['pubkey']))
     return ''.join(payload.split())
 
 
 def mask_lua_noncode(code: str, keep_strings: bool = False) -> str:
-    '''Blank comments and optionally strings while retaining offsets and line endings.'''
+    """Blank comments and optionally strings while retaining offsets and line endings."""
     masked = list(code)
     position = 0
     lua_token_re = re.compile(r'''--|\[(=*)\[|['"]''')
@@ -192,6 +187,7 @@ def mask_lua_noncode(code: str, keep_strings: bool = False) -> str:
 
 
 def file_pubkey_entries(code: str) -> list[re.Match]:
+    """Return validated Lua key-entry matches with offsets relative to the table body."""
     table = file_pubkeys_table(code)
     # Mask the whole file first: a block comment can begin on the table's declaration line.
     body = mask_lua_noncode(code, keep_strings=True)[table.start('body') : table.end('body')]
@@ -211,6 +207,7 @@ def file_pubkey_entries(code: str) -> list[re.Match]:
 
 
 def code_has_key(code: str, key: Key) -> bool:
+    """Return whether the Lua trust table maps the key ID to the given public key."""
     try:
         entries = file_pubkey_entries(code)
     except Berror:
@@ -223,15 +220,17 @@ def code_has_key(code: str, key: Key) -> bool:
 
 
 def read_key(key_id: str) -> Key:
+    """Load key metadata and public PEM text, requiring both key files to exist."""
     directory = keys_path / key_id
     for filename in ('privkey.pem', 'pubkey.pem'):
         if not (directory / filename).is_file():
             raise Berror(f"B53611 missing signing-key file: {directory / filename}")
     args = ['openssl', 'pkey', '-pubin', '-in', str(directory / 'pubkey.pem'), '-pubout']
-    return Key(key_id, directory, stdout_from(args))
+    return Key(key_id, directory, run_external(args))
 
 
 def validate_key_state(state: dict) -> dict:
+    """Validate key IDs and bootstrap or rotation state, then return the mapping."""
     for name in ('active_key_id', 'pending_key_id', 'previous_key_id'):
         key_id = state.get(name)
         if name != 'active_key_id' and key_id is None:
@@ -252,17 +251,20 @@ def validate_key_state(state: dict) -> dict:
 
 
 def read_key_state() -> dict:
+    """Read and validate the signing-key state file."""
     if not key_state_path.is_file():
         raise Berror(f"B26681 missing signing-key state file: {key_state_path}")
     return validate_key_state(parse_yaml(read_text(key_state_path), key_state_path))
 
 
 def write_key_state(state: dict) -> None:
+    """Validate and atomically write the signing-key state as YAML."""
     text = yaml.safe_dump(validate_key_state(state), default_flow_style=False, sort_keys=False)
     atomic_write(key_state_path, text)
 
 
 def dump_versions(versions: dict) -> str:
+    """Serialize metadata as YAML with indented lists and readable multiline strings."""
     return yaml.dump(
         versions,
         Dumper=Dumper,
@@ -273,6 +275,7 @@ def dump_versions(versions: dict) -> str:
 
 
 def parse_versions(content: str) -> dict:
+    """Parse version metadata, ensuring paths is a list of mappings."""
     versions = parse_yaml(content, versions_path, allow_empty=True)
     paths = versions.get('paths')
     if paths is None:
@@ -284,6 +287,7 @@ def parse_versions(content: str) -> dict:
 
 
 def matching_watched_paths(files: set[str]) -> list[str]:
+    """Return watched files or directories affected by the supplied filenames."""
     return [
         watched
         for watched in watched_paths
@@ -293,6 +297,7 @@ def matching_watched_paths(files: set[str]) -> list[str]:
 
 
 def set_bbbased_commit_date(code: str, new_commit_date: str) -> str:
+    """Replace the single live Lua commit_date value, preserving surrounding source."""
     masked = mask_lua_noncode(code)
     matches = [  # ignore comments, strings
         match
@@ -310,11 +315,13 @@ def set_bbbased_commit_date(code: str, new_commit_date: str) -> str:
 
 
 def verify_black() -> None:
+    """Check repository formatting with the configured Black options."""
     # Black can fail with parse errors or warnings before its formatting summary
-    stdout_from('poetry run black --check --line-length 100 --skip-string-normalization .')
+    run_external('poetry run black --check --line-length 100 --skip-string-normalization .')
 
 
 def find_berror_dups() -> None:
+    """Reject duplicate Berror codes in tracked Python/Dart files and staged paths."""
     to_scan = git_files('ls-files', '-z', '--', '*.py', '*.dart') | git_files(
         'diff', '--name-only', '--cached', '-z'
     )
@@ -329,7 +336,7 @@ def find_berror_dups() -> None:
 
 
 def select_signing_keys(state: dict) -> tuple[Key, Key]:
-    '''Return the active key and the key that must sign the next release.'''
+    """Return the active key and the key that must sign the next release."""
     active_key = read_key(state['active_key_id'])
     parent_code = git_blob(f'HEAD~:{bbbased_path}') or ''
     if state.get('previous_key_id') and not code_has_key(parent_code, active_key):
@@ -341,6 +348,7 @@ def select_signing_keys(state: dict) -> tuple[Key, Key]:
 
 
 def prepare_key(key_id: str) -> Key:
+    """Create missing key files and return the key, reusing any existing private key."""
     key_path = keys_path / key_id
     key_path.mkdir(mode=0o700, exist_ok=True)
     private_path = key_path / 'privkey.pem'
@@ -384,11 +392,12 @@ def prepare_key(key_id: str) -> Key:
 
 
 def read_or_create_key_state(commit_date: str) -> dict:
+    """Load or initialize the local machine key state, preparing the bootstrap key if needed."""
     if key_state_path.is_file():
         state = read_key_state()
     else:
         keys_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # Do not mistake a deleted state file on an existing system for a fresh installation.
+        # do not mistake a deleted state file on an existing system for a fresh installation
         if any(
             not item.name.startswith(f'.{key_state_path.name}.') for item in keys_path.iterdir()
         ):
@@ -405,6 +414,7 @@ def read_or_create_key_state(commit_date: str) -> dict:
 
 
 def get_pending_key(state: dict, commit_date: str) -> Key | None:
+    """Return or create the pending rotation key, or None if no rotation is requested."""
     pending_id = state.get('pending_key_id')
     if pending_id is None:
         rotation_requested = (keys_path / 'rotate_keys_after_signing').exists()
@@ -419,6 +429,7 @@ def get_pending_key(state: dict, commit_date: str) -> Key | None:
 
 
 def file_pubkeys_table(code: str) -> re.Match:
+    """Locate the single live Lua file_pubkeys table and return its source match."""
     pubkeys_table_re = re.compile(
         r'^local file_pubkeys[ \t]*=[ \t]*\{[^\r\n]*(?P<newline>\r?\n)(?P<body>.*?)^\}',
         re.MULTILINE | re.DOTALL,
@@ -434,6 +445,7 @@ def file_pubkeys_table(code: str) -> re.Match:
 
 
 def prepend_file_pubkey(code: str, key: Key) -> str:
+    """Prepend a Lua public key, removing duplicates and rejecting conflicting IDs."""
     table = file_pubkeys_table(code)
     body = table['body']
     normalized = ''.join(key.public_key.split())
@@ -457,6 +469,7 @@ def prepend_file_pubkey(code: str, key: Key) -> str:
 
 
 def mirror_file_pubkeys(worktree_code: str, staged_code: str) -> str:
+    """Copy the staged public-key table body into the worktree source."""
     table = file_pubkeys_table(worktree_code)
     body = file_pubkeys_table(staged_code)['body']
     # preserve the worktree's surrounding code and declaration comments, even during partial
@@ -464,7 +477,8 @@ def mirror_file_pubkeys(worktree_code: str, staged_code: str) -> str:
     return worktree_code[: table.start('body')] + body + worktree_code[table.end('body') :]
 
 
-def sign_code(code: str, signing_key: Key) -> str:
+def sign_string(code: str, signing_key: Key) -> str:
+    """Return a wrapped base64 RSA-PSS/SHA-512 signature of the supplied source text."""
     rsa_pss_options = (
         '-sigopt',
         'rsa_padding_mode:pss',
@@ -502,19 +516,19 @@ def sign_doc(subd: str, filename: str) -> None:
         subd=subd,
         content=content,
         sequence_id=sequence_id,
-        signature=sign_code(signature_base, signing_key),
+        signature=sign_string(signature_base, signing_key),
         key_id=signing_key.key_id,
     )
     sys.stdout.write(dump_versions(document))
 
 
-def sign(commit_date: str | None = None) -> None:
-    '''Prepare staged release metadata, then mirror generated values into the worktree.'''
+def sign_code(commit_date: str | None = None) -> None:
+    """Prepare staged release metadata, then mirror generated values into the worktree."""
     if commit_date is None:
         commit_date = b36datetime()
     if not re.fullmatch('[0-9a-z]{7}', commit_date):
         raise Berror(f"B34290 expected a seven-character base-36 commit date: {commit_date!r}")
-    modified = staged_files()
+    modified = git_files('diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z')
     indexed_versions = read_indexed_file(versions_path)
     if indexed_versions is None:
         template = read_text(versions_path)  # a missing worktree template is an error
@@ -557,7 +571,7 @@ def sign(commit_date: str | None = None) -> None:
             raise Berror("B48906 the release must retain the active public key and its key ID")
         worktree_code = mirror_file_pubkeys(worktree_code, code)
         entry = next(entry for entry in versions['paths'] if entry.get('path') == str(bbbased_path))
-        entry.update(signature=sign_code(code, signing_key), key_id=signing_key.key_id)
+        entry.update(signature=sign_string(code, signing_key), key_id=signing_key.key_id)
         prepared[bbbased_path] = (code_mode, code)
     prepared[versions_path] = (versions_mode, dump_versions(versions))
     # all parsing and signing have succeeded; write the prepared index blobs in one operation,
@@ -572,6 +586,7 @@ def sign(commit_date: str | None = None) -> None:
 
 
 def rotate_keys() -> None:
+    """Activate a bootstrap or pending key once committed code and metadata include it."""
     if not key_state_path.exists():
         return  # this commit did not use the signing hooks
     state = read_key_state()
@@ -608,7 +623,7 @@ def rotate_keys() -> None:
 commands = {
     'verify-black': (verify_black, (0,)),
     'find-berror-dups': (find_berror_dups, (0,)),
-    'sign': (sign, (0, 1)),
+    'sign-code': (sign_code, (0, 1)),
     'sign-doc': (sign_doc, (2,)),
     'rotate-keys': (rotate_keys, (0,)),
 }
