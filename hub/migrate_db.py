@@ -58,7 +58,9 @@ def copy_data_from_old_db_to_new(new_db_path: str, old_db_path: str) -> None:
                     if name in old_cols:
                         select_exprs.append(f'"{name}"')
                         continue
-                    if dflt_value is not None:
+                    if (coltype or '').upper().startswith('DATETIME'):
+                        select_exprs.append("'1970-01-01 00:00:00.000000'")
+                    elif dflt_value is not None:
                         select_exprs.append(dflt_value)  # dflt_value is already SQL-quoted
                     elif notnull:
                         t = (coltype or '').upper()
