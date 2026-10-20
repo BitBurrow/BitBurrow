@@ -8,6 +8,7 @@ import os
 import platformdirs
 import re
 import select
+import signal
 import ssl
 import sys
 import sqlalchemy.exc
@@ -163,8 +164,12 @@ def queue_rce(filename: str, await_reply: bool) -> None:
             tasks[path] = (device.id, task)
     pipes = dict()
     replies = dict()
+    poller = select.poll()
     try:
         if await_reply:
+            for stream in (sys.stdout, sys.stderr):
+                # watch output hangups for ssh disconnects (stdin EOF is end of YAML input)
+                poller.register(stream.fileno(), 0)  # 0 event mask reports errors, hangups, bad fds
             for path, (_, task) in tasks.items():
                 os.mkfifo(path, 0o600)
                 pipe_stat = util.pipe_stat(path)
@@ -174,12 +179,7 @@ def queue_rce(filename: str, await_reply: bool) -> None:
                 if os.fstat(descriptor) != pipe_stat:
                     raise Berror("B58142 reply FIFO changed while opening it")
                 replies[descriptor] = (task['subd'], bytearray())
-            try:
-                # make sure select() can handle this many descriptors before queuing tasks
-                select.select(list(replies), [], [], 0)
-            except ValueError:
-                raise Berror(f"B96283 too many tasks; try 1000 or fewer")
-                # https://man7.org/linux/man-pages/man2/select.2.html
+                poller.register(descriptor, select.POLLIN)
         for device_id, task in tasks.values():  # note a DB failure may leave a partial batch queued
             task_id = db.enqueue_task(device_id, 'rce', args=task)
             print(
@@ -189,8 +189,10 @@ def queue_rce(filename: str, await_reply: bool) -> None:
                 flush=True,
             )
         while replies:
-            ready, _, _ = select.select(list(replies), [], [])
-            for descriptor in ready:
+            ready = poller.poll()
+            if any(descriptor not in replies for descriptor, _ in ready):
+                raise SystemExit(1)
+            for descriptor, _ in ready:
                 try:
                     data = os.read(descriptor, 65536)
                 except BlockingIOError:
@@ -204,14 +206,21 @@ def queue_rce(filename: str, await_reply: bool) -> None:
                 if output and not output.endswith(b'\n'):
                     sys.stdout.buffer.write(b'\n')
                 sys.stdout.buffer.flush()
+                poller.unregister(descriptor)
                 del replies[descriptor]
     except KeyboardInterrupt:
         raise SystemExit(130)
     finally:
-        for path, (descriptor, pipe_stat) in pipes.items():
-            if descriptor is not None:
-                os.close(descriptor)
-            util.unlink_pipe(path, pipe_stat)
+        # pause any additional shutdown signals while we remove the reply FIFOs
+        signals = (signal.SIGINT, signal.SIGHUP, signal.SIGTERM)
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, signals)
+        try:
+            for path, (descriptor, pipe_stat) in pipes.items():
+                if descriptor is not None:
+                    os.close(descriptor)
+                util.unlink_pipe(path, pipe_stat)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
 
 ###
@@ -484,6 +493,9 @@ def entry_point():
             print(f"WireGuard activation queued for {args.subd}; connect via {addresses}")
             sys.exit(0)
         elif args.command == 'rce':
+            # to detect ssh disconnects, route interrupts and session shutdown through FIFO cleanup
+            for signum in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM):
+                signal.signal(signum, signal.default_int_handler)
             try:
                 queue_rce(args.filename, args.await_reply)
             except KeyboardInterrupt:
