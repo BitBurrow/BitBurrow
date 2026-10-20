@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tn2jov'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tn81xg'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -1027,149 +1027,879 @@ local function cleanup_and_exit(exit_code)
 end
 
 --
--- JSON functions
+-- dkjson 2.11 (vendored, unmodified) from https://dkolf.de/dkjson-lua/dkjson-2.11.lua
 --
 
-local function json_escape(value)
-    value = tostring(value)
-    value = value:gsub('\\', '\\\\')
-    value = value:gsub('"', '\\"')
-    value = value:gsub('\b', '\\b')
-    value = value:gsub('\f', '\\f')
-    value = value:gsub('\n', '\\n')
-    value = value:gsub('\r', '\\r')
-    value = value:gsub('\t', '\\t')
-    value = value:gsub('[%z\1-\31]', function(char)
-        return string.format('\\u%04x', char:byte())
+-- the 2 lines below prevent some editors from auto-indenting and changing the dkjson sha256sum
+-- stylua: ignore
+---@format disable-next
+local json = (function()  -- wrapper to contain module's locals and captures its return value
+-- sha256sum: 197cb50834c642f84b4cf99fe724932c50e6d9c92faec7ad89aa25e91df4d481  dkjson.lua
+-- BEGIN unmodified dkjson-2.11.lua
+-- Module options:
+local always_use_lpeg = false
+local register_global_module_table = false
+local global_module_name = 'json'
+
+--[==[
+
+David Kolf's JSON module for Lua 5.1 - 5.5
+
+Version 2.11
+
+
+For the documentation see the corresponding readme.txt or visit
+<http://dkolf.de/dkjson-lua/>.
+
+You can contact the author by sending an e-mail to 'david' at the
+domain 'dkolf.de'.
+
+
+Copyright (C) 2010-2026 David Heiko Kolf
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--]==]
+
+    -- global dependencies:
+    local pairs, type, tostring, tonumber, getmetatable, setmetatable =
+            pairs, type, tostring, tonumber, getmetatable, setmetatable
+    local error, require, pcall, select = error, require, pcall, select
+    local floor, huge = math.floor, math.huge
+    local strrep, gsub, strsub, strbyte, strchar, strfind, strlen, strformat =
+            string.rep, string.gsub, string.sub, string.byte, string.char,
+            string.find, string.len, string.format
+    local strmatch = string.match
+    local concat = table.concat
+
+    local json = {version = "dkjson 2.11"}
+
+    local jsonlpeg = {}
+
+    if register_global_module_table then
+        if always_use_lpeg then
+            _G[global_module_name] = jsonlpeg
+        else
+            _G[global_module_name] = json
+        end
+    end
+
+    local _ENV = nil  -- blocking globals in Lua 5.2 and later
+
+    pcall(function()
+        -- Enable access to blocked metatables.
+        -- Don't worry, this module doesn't change anything in them.
+        local debmeta = require "debug".getmetatable
+        if debmeta then getmetatable = debmeta end
     end)
+
+    json.null = setmetatable({}, {
+        __tojson = function() return "null" end
+    })
+
+    local function isarray(tbl)
+        local max, n, arraylen = 0, 0, 0
+        for k, v in pairs(tbl) do
+            if k == 'n' and type(v) == 'number' then
+                arraylen = v
+                if v > max then
+                    max = v
+                end
+            else
+                if type(k) ~= 'number' or k < 1 or floor(k) ~= k then
+                    return false
+                end
+                if k > max then
+                    max = k
+                end
+                n = n + 1
+            end
+        end
+        if max > 10 and max > arraylen and max > n * 2 then
+            return false  -- don't create an array with too many holes
+        end
+        return true, max
+    end
+
+    local escapecodes = {
+        ["\""] = "\\\"",
+        ["\\"] = "\\\\",
+        ["\b"] = "\\b",
+        ["\f"] = "\\f",
+        ["\n"] = "\\n",
+        ["\r"] = "\\r",
+        ["\t"] = "\\t"
+    }
+
+    local function escapeutf8(uchar)
+        local value = escapecodes[uchar]
+        if value then
+            return value
+        end
+        local a, b, c, d = strbyte(uchar, 1, 4)
+        a, b, c, d = a or 0, b or 0, c or 0, d or 0
+        if a <= 0x7f then
+            value = a
+        elseif 0xc0 <= a and a <= 0xdf and b >= 0x80 then
+            value = (a - 0xc0) * 0x40 + b - 0x80
+        elseif 0xe0 <= a and a <= 0xef and b >= 0x80 and c >= 0x80 then
+            value = ((a - 0xe0) * 0x40 + b - 0x80) * 0x40 + c - 0x80
+        elseif 0xf0 <= a and a <= 0xf7 and b >= 0x80 and c >= 0x80 and d >= 0x80 then
+            value = (((a - 0xf0) * 0x40 + b - 0x80) * 0x40 + c - 0x80) * 0x40 + d - 0x80
+        else
+            return ""
+        end
+        if value <= 0xffff then
+            return strformat("\\u%.4x", value)
+        elseif value <= 0x10ffff then
+            -- encode as UTF-16 surrogate pair
+            value = value - 0x10000
+            local highsur, lowsur = 0xD800 + floor(value / 0x400), 0xDC00 + (value % 0x400)
+            return strformat("\\u%.4x\\u%.4x", highsur, lowsur)
+        else
+            return ""
+        end
+    end
+
+    local function fsub(str, pattern, repl)
+        -- gsub always builds a new string in a buffer, even when no match
+        -- exists. First using find should be more efficient when most strings
+        -- don't contain the pattern.
+        if strfind(str, pattern) then
+            return gsub(str, pattern, repl)
+        else
+            return str
+        end
+    end
+
+    local function quotestring(value)
+        -- based on the regexp "escapable" in https://github.com/douglascrockford/JSON-js
+        value = fsub(value, "[%z\1-\31\"\\\127]", escapeutf8)
+        if strfind(value, "[\194\216\220\225\226\239]") then
+            value = fsub(value, "\194[\128-\159\173]", escapeutf8)
+            value = fsub(value, "\216[\128-\132]", escapeutf8)
+            value = fsub(value, "\220\143", escapeutf8)
+            value = fsub(value, "\225\158[\180\181]", escapeutf8)
+            value = fsub(value, "\226\128[\140-\143\168-\175]", escapeutf8)
+            value = fsub(value, "\226\129[\160-\175]", escapeutf8)
+            value = fsub(value, "\239\187\191", escapeutf8)
+            value = fsub(value, "\239\191[\176-\191]", escapeutf8)
+        end
+        return "\"" .. value .. "\""
+    end
+    json.quotestring = quotestring
+
+    local function replace(str, o, n)
+        local i, j = strfind(str, o, 1, true)
+        if i then
+            return strsub(str, 1, i - 1) .. n .. strsub(str, j + 1, -1)
+        else
+            return str
+        end
+    end
+
+    -- locale independent num2str and str2num functions
+    local decpoint, numfilter
+
+    local function updatedecpoint()
+        decpoint = strmatch(tostring(0.5), "([^05+])")
+        -- build a filter that can be used to remove group separators
+        numfilter = "[^0-9%-%+eE" .. gsub(decpoint, "[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0") .. "]+"
+    end
+
+    updatedecpoint()
+
+    local function num2str(num)
+        return replace(fsub(tostring(num), numfilter, ""), decpoint, ".")
+    end
+
+    local function str2num(str)
+        local num = tonumber(replace(str, ".", decpoint))
+        if not num then
+            updatedecpoint()
+            num = tonumber(replace(str, ".", decpoint))
+        end
+        return num
+    end
+
+    local function addnewline2(level, buffer, buflen)
+        buffer[buflen + 1] = "\n"
+        buffer[buflen + 2] = strrep("  ", level)
+        buflen = buflen + 2
+        return buflen
+    end
+
+    function json.addnewline(state)
+        if state.indent then
+            state.bufferlen = addnewline2(state.level or 0,
+                state.buffer, state.bufferlen or #(state.buffer))
+        end
+    end
+
+    local encode2  -- forward declaration
+
+    local function addpair(key, value, prev, indent, level, buffer, buflen, tables, globalorder, state)
+        local kt = type(key)
+        if kt ~= 'string' and kt ~= 'number' then
+            return nil, "type '" .. kt .. "' is not supported as a key by JSON."
+        end
+        if prev then
+            buflen = buflen + 1
+            buffer[buflen] = ","
+        end
+        if indent then
+            buflen = addnewline2(level, buffer, buflen)
+        end
+        -- When Lua is compiled with LUA_NOCVTN2S this will fail when
+        -- numbers are mixed into the keys of the table. JSON keys are always
+        -- strings, so this would be an implicit conversion too and the failure
+        -- is intentional.
+        buffer[buflen + 1] = quotestring(key)
+        buffer[buflen + 2] = ":"
+        return encode2(value, indent, level, buffer, buflen + 2, tables, globalorder, state)
+    end
+
+    local function appendcustom(res, buffer, state)
+        local buflen = state.bufferlen
+        if type(res) == 'string' then
+            buflen = buflen + 1
+            buffer[buflen] = res
+        end
+        return buflen
+    end
+
+    local function exception(reason, value, state, buffer, buflen, defaultmessage)
+        defaultmessage = defaultmessage or reason
+        local handler = state.exception
+        if not handler then
+            return nil, defaultmessage
+        else
+            state.bufferlen = buflen
+            local ret, msg = handler(reason, value, state, defaultmessage)
+            if not ret then return nil, msg or defaultmessage end
+            return appendcustom(ret, buffer, state)
+        end
+    end
+
+    function json.encodeexception(reason, value, state, defaultmessage)
+        return quotestring("<" .. defaultmessage .. ">")
+    end
+
+    encode2 = function(value, indent, level, buffer, buflen, tables, globalorder, state)
+        local valtype = type(value)
+        local valmeta = getmetatable(value)
+        valmeta = type(valmeta) == 'table' and valmeta  -- only tables
+        local valtojson = valmeta and valmeta.__tojson
+        if valtojson then
+            if tables[value] then
+                return exception('reference cycle', value, state, buffer, buflen)
+            end
+            tables[value] = true
+            state.bufferlen = buflen
+            local ret, msg = valtojson(value, state)
+            if not ret then return exception('custom encoder failed', value, state, buffer, buflen, msg) end
+            tables[value] = nil
+            buflen = appendcustom(ret, buffer, state)
+        elseif value == nil then
+            buflen = buflen + 1
+            buffer[buflen] = "null"
+        elseif valtype == 'number' then
+            local s
+            if value ~= value or value >= huge or -value >= huge then
+                -- This is the behaviour of the original JSON implementation.
+                s = "null"
+            else
+                s = num2str(value)
+            end
+            buflen = buflen + 1
+            buffer[buflen] = s
+        elseif valtype == 'boolean' then
+            buflen = buflen + 1
+            buffer[buflen] = value and "true" or "false"
+        elseif valtype == 'string' then
+            buflen = buflen + 1
+            buffer[buflen] = quotestring(value)
+        elseif valtype == 'table' then
+            if tables[value] then
+                return exception('reference cycle', value, state, buffer, buflen)
+            end
+            tables[value] = true
+            level = level + 1
+            local isa, n = isarray(value)
+            if n == 0 and valmeta and valmeta.__jsontype == 'object' then
+                isa = false
+            end
+            local msg
+            if isa then  -- JSON array
+                buflen = buflen + 1
+                buffer[buflen] = "["
+                for i = 1, n do
+                    buflen, msg = encode2(value[i], indent, level, buffer, buflen, tables, globalorder, state)
+                    if not buflen then return nil, msg end
+                    if i < n then
+                        buflen = buflen + 1
+                        buffer[buflen] = ","
+                    end
+                end
+                buflen = buflen + 1
+                buffer[buflen] = "]"
+            else  -- JSON object
+                local prev = false
+                buflen = buflen + 1
+                buffer[buflen] = "{"
+                local order = valmeta and valmeta.__jsonorder or globalorder
+                if order then
+                    local used = {}
+                    n = #order
+                    for i = 1, n do
+                        local k = order[i]
+                        local v = value[k]
+                        if v ~= nil then
+                            used[k] = true
+                            buflen, msg = addpair(k, v, prev, indent, level, buffer, buflen, tables, globalorder, state)
+                            if not buflen then return nil, msg end
+                            prev = true  -- add a seperator before the next element
+                        end
+                    end
+                    for k, v in pairs(value) do
+                        if not used[k] then
+                            buflen, msg = addpair(k, v, prev, indent, level, buffer, buflen, tables, globalorder, state)
+                            if not buflen then return nil, msg end
+                            prev = true  -- add a seperator before the next element
+                        end
+                    end
+                else  -- unordered
+                    for k, v in pairs(value) do
+                        buflen, msg = addpair(k, v, prev, indent, level, buffer, buflen, tables, globalorder, state)
+                        if not buflen then return nil, msg end
+                        prev = true  -- add a seperator before the next element
+                    end
+                end
+                if indent then
+                    buflen = addnewline2(level - 1, buffer, buflen)
+                end
+                buflen = buflen + 1
+                buffer[buflen] = "}"
+            end
+            tables[value] = nil
+        else
+            return exception('unsupported type', value, state, buffer, buflen,
+                "type '" .. valtype .. "' is not supported by JSON.")
+        end
+        return buflen
+    end
+
+    function json.encode(value, state)
+        state = state or {}
+        local oldbuffer = state.buffer
+        local buffer = oldbuffer or {}
+        state.buffer = buffer
+        updatedecpoint()
+        local ret, msg = encode2(value, state.indent, state.level or 0,
+            buffer, state.bufferlen or 0, state.tables or {}, state.keyorder, state)
+        if not ret then
+            error(msg, 2)
+        elseif oldbuffer == buffer then
+            state.bufferlen = ret
+            return true
+        else
+            state.bufferlen = nil
+            state.buffer = nil
+            return concat(buffer)
+        end
+    end
+
+    local function loc(str, where)
+        local line, pos, linepos = 1, 1, 0
+        while true do
+            pos = strfind(str, "\n", pos, true)
+            if pos and pos < where then
+                line = line + 1
+                linepos = pos
+                pos = pos + 1
+            else
+                break
+            end
+        end
+        return strformat("line %d, column %d", line, where - linepos)
+    end
+
+    local function unterminated(str, what, where)
+        return nil, strlen(str) + 1, "unterminated " .. what .. " at " .. loc(str, where)
+    end
+
+    local function scanwhite(str, pos)
+        while true do
+            pos = strmatch(str, "%s*()", pos)
+            local n1, n2, n3 = strbyte(str, pos, pos + 2)
+            if n1 == 239 and n2 == 187 and n3 == 191 then
+                -- UTF-8 Byte Order Mark
+                pos = pos + 3
+            elseif n1 == 47 then
+                if n2 == 47 then  -- "//"
+                    pos = strfind(str, "[\n\r]", pos + 2)
+                    if not pos then return nil end
+                elseif n2 == 42 then  -- "/*"
+                    pos = strfind(str, "*/", pos + 2)
+                    if not pos then return nil end
+                    pos = pos + 2
+                else
+                    return pos, n1
+                end
+            elseif n1 == nil then
+                return nil
+            else
+                return pos, n1
+            end
+        end
+    end
+
+    local escapechars = {
+        ["\""] = "\"",
+        ["\\"] = "\\",
+        ["/"] = "/",
+        ["b"] = "\b",
+        ["f"] = "\f",
+        ["n"] = "\n",
+        ["r"] = "\r",
+        ["t"] = "\t"
+    }
+
+    local function unichar(value)
+        if value < 0 then
+            return nil
+        elseif value <= 0x007f then
+            return strchar(value)
+        elseif value <= 0x07ff then
+            return strchar(0xc0 + floor(value / 0x40),
+                0x80 + (floor(value) % 0x40))
+        elseif value <= 0xffff then
+            return strchar(0xe0 + floor(value / 0x1000),
+                0x80 + (floor(value / 0x40) % 0x40),
+                0x80 + (floor(value) % 0x40))
+        elseif value <= 0x10ffff then
+            return strchar(0xf0 + floor(value / 0x40000),
+                0x80 + (floor(value / 0x1000) % 0x40),
+                0x80 + (floor(value / 0x40) % 0x40),
+                0x80 + (floor(value) % 0x40))
+        else
+            return nil
+        end
+    end
+
+    local function scanstring(str, pos)
+        local lastpos = pos + 1
+        local buffer, n = {}, 0
+        while true do
+            local nextpos = strfind(str, "[\"\\]", lastpos)
+            if not nextpos then
+                return unterminated(str, "string", pos)
+            end
+            if nextpos > lastpos then
+                n = n + 1
+                buffer[n] = strsub(str, lastpos, nextpos - 1)
+            end
+            if strbyte(str, nextpos) == 34 then  -- '"'
+                lastpos = nextpos + 1
+                break
+            else
+                local escchar = strsub(str, nextpos + 1, nextpos + 1)
+                local value
+                if escchar == "u" then
+                    value = tonumber(strsub(str, nextpos + 2, nextpos + 5), 16)
+                    if value then
+                        local value2
+                        if 0xD800 <= value and value <= 0xDBff then
+                            -- we have the high surrogate of UTF-16. Check if there is a
+                            -- low surrogate escaped nearby to combine them.
+                            if strsub(str, nextpos + 6, nextpos + 7) == "\\u" then
+                                value2 = tonumber(strsub(str, nextpos + 8, nextpos + 11), 16)
+                                if value2 and 0xDC00 <= value2 and value2 <= 0xDFFF then
+                                    value = (value - 0xD800) * 0x400 + (value2 - 0xDC00) + 0x10000
+                                else
+                                    value2 = nil  -- in case it was out of range for a low surrogate
+                                end
+                            end
+                        end
+                        value = value and unichar(value)
+                        if value then
+                            if value2 then
+                                lastpos = nextpos + 12
+                            else
+                                lastpos = nextpos + 6
+                            end
+                        end
+                    end
+                end
+                if not value then
+                    value = escapechars[escchar] or escchar
+                    lastpos = nextpos + 2
+                end
+                n = n + 1
+                buffer[n] = value
+            end
+        end
+        if n == 1 then
+            return buffer[1], lastpos
+        elseif n > 1 then
+            return concat(buffer), lastpos
+        else
+            return "", lastpos
+        end
+    end
+
+    local scanvalue  -- forward declaration
+
+    local function scanobject(str, startpos, nullval, objectmeta, arraymeta)
+        local tbl = setmetatable({}, objectmeta)
+        local pos = startpos + 1
+
+        while true do
+            local char
+            pos, char = scanwhite(str, pos)
+            local key, err
+            if char == 34 then  -- '"'
+                key, pos, err = scanstring(str, pos)
+            elseif char == 125 then  -- "}"
+                return tbl, pos + 1
+            elseif not pos then
+                return unterminated(str, "object", startpos)
+            else
+                return nil, pos, "invalid key at " .. loc(str, pos)
+            end
+            if err then return nil, pos, err end
+
+            char = strbyte(str, pos)
+            if char ~= 58 then  -- ":"
+                pos, char = scanwhite(str, pos)
+                if not pos then
+                    return unterminated(str, "object", startpos)
+                elseif char ~= 58 then
+                    return nil, pos, "missing colon at " .. loc(str, pos)
+                end
+            end
+
+            pos = scanwhite(str, pos + 1)
+            if not pos then return unterminated(str, "object", startpos) end
+            local val
+            val, pos, err = scanvalue(str, pos, nullval, objectmeta, arraymeta)
+            if err then return nil, pos, err end
+            tbl[key] = val
+
+            char = strbyte(str, pos)
+            if char == 44 then  -- ","
+                pos = pos + 1
+            else
+                pos, char = scanwhite(str, pos)
+
+                if char == 44 then
+                    pos = pos + 1
+                elseif not pos then
+                    return unterminated(str, "object", startpos)
+                end
+            end
+        end
+    end
+
+    local function scanarray(str, startpos, nullval, objectmeta, arraymeta)
+        local tbl, n = setmetatable({}, arraymeta), 0
+        local pos = startpos + 1
+
+        while true do
+            local char
+            pos, char = scanwhite(str, pos)
+
+            if char == 93 then  -- "]"
+                return tbl, pos + 1
+            elseif not pos then
+                return unterminated(str, "array", startpos)
+            end
+
+            local val, err
+            val, pos, err = scanvalue(str, pos, nullval, objectmeta, arraymeta)
+            if err then return nil, pos, err end
+            n = n + 1
+            tbl[n] = val
+
+            char = strbyte(str, pos)
+            if char == 44 then  -- ","
+                pos = pos + 1
+            else
+                pos, char = scanwhite(str, pos)
+
+                if char == 44 then
+                    pos = pos + 1
+                elseif not pos then
+                    return unterminated(str, "array", startpos)
+                end
+            end
+        end
+    end
+
+    local function scaninvalid(str, pos)
+        return nil, pos, "no valid JSON value at " .. loc(str, pos)
+    end
+
+    local function scanliteral(str, pos, expected, value)
+        local pstart, pend = strfind(str, "^%a%w*", pos)
+        local name = strsub(str, pstart, pend)
+        if name == expected then
+            return value, pend + 1
+        else
+            return scaninvalid(str, pos)
+        end
+    end
+
+    local function scannumber(str, pos)
+        local pstart, pend = strfind(str, "^%-?[%d%.]*[eE]?[%+%-]?%d*", pos)
+        local number = str2num(strsub(str, pstart, pend))
+        if number then
+            return number, pend + 1
+        else
+            return scaninvalid(str, pos)
+        end
+    end
+
+    scanvalue = function(str, pos, nullval, objectmeta, arraymeta)
+        pos = pos or 1
+        local c
+        pos, c = scanwhite(str, pos)
+
+        if not pos then
+            return nil, strlen(str) + 1, "no valid JSON value (reached the end)"
+        elseif c == 34 then  -- '"'
+            return scanstring(str, pos)
+        elseif c == 123 then  -- "{"
+            return scanobject(str, pos, nullval, objectmeta, arraymeta)
+        elseif c == 91 then  -- "["
+            return scanarray(str, pos, nullval, objectmeta, arraymeta)
+        elseif c == 45 or (c >= 48 and c <= 57) then  -- "-", "0"..."9"
+            return scannumber(str, pos)
+        elseif c == 116 then  -- "t"
+            return scanliteral(str, pos, "true", true)
+        elseif c == 102 then  -- "f"
+            return scanliteral(str, pos, "false", false)
+        elseif c == 110 then  -- "n"
+            return scanliteral(str, pos, "null", nullval)
+        else
+            return scaninvalid(str, pos)
+        end
+    end
+
+    local function optionalmetatables(...)
+        if select("#", ...) > 0 then
+            return ...
+        else
+            return {__jsontype = 'object'}, {__jsontype = 'array'}
+        end
+    end
+
+    function json.decode(str, pos, nullval, ...)
+        local objectmeta, arraymeta = optionalmetatables(...)
+        return scanvalue(str, pos, nullval, objectmeta, arraymeta)
+    end
+
+    function json.use_lpeg()
+        local g = require("lpeg")
+
+        if type(g.version) == 'function' and g.version() == "0.11" then
+            error "due to a bug in LPeg 0.11, it cannot be used for JSON matching"
+        end
+
+        local pegmatch = g.match
+        local P, S, R = g.P, g.S, g.R
+
+        local function ErrorCall(str, pos, msg, state)
+            if not state.msg then
+                state.msg = msg .. " at " .. loc(str, pos)
+                state.pos = pos
+            end
+            return false
+        end
+
+        local function Err(msg)
+            return g.Cmt(g.Cc(msg) * g.Carg(2), ErrorCall)
+        end
+
+        local function ErrorUnterminatedCall(str, pos, what, state)
+            return ErrorCall(str, pos - 1, "unterminated " .. what, state)
+        end
+
+        local SingleLineComment = P "//" * (1 - S "\n\r") ^ 0
+        local MultiLineComment = P "/*" * (1 - P "*/") ^ 0 * P "*/"
+        local Space = (S " \n\r\t" + P "\239\187\191" + SingleLineComment + MultiLineComment) ^ 0
+
+        local function ErrUnterminated(what)
+            return g.Cmt(g.Cc(what) * g.Carg(2), ErrorUnterminatedCall)
+        end
+
+        local PlainChar = 1 - S "\"\\\n\r"
+        local EscapeSequence = (P "\\" * g.C(S "\"\\/bfnrt" + Err "unsupported escape sequence")) / escapechars
+        local HexDigit = R("09", "af", "AF")
+        local function UTF16Surrogate(match, pos, high, low)
+            high, low = tonumber(high, 16), tonumber(low, 16)
+            if 0xD800 <= high and high <= 0xDBff and 0xDC00 <= low and low <= 0xDFFF then
+                return true, unichar((high - 0xD800) * 0x400 + (low - 0xDC00) + 0x10000)
+            else
+                return false
+            end
+        end
+        local function UTF16BMP(hex)
+            return unichar(tonumber(hex, 16))
+        end
+        local U16Sequence = (P "\\u" * g.C(HexDigit * HexDigit * HexDigit * HexDigit))
+        local UnicodeEscape = g.Cmt(U16Sequence * U16Sequence, UTF16Surrogate) + U16Sequence / UTF16BMP
+        local Char = UnicodeEscape + EscapeSequence + PlainChar
+        local String = P "\"" * (g.Cs(Char ^ 0) * P "\"" + ErrUnterminated "string")
+        local Integer = P "-" ^ (-1) * (P "0" + (R "19" * R "09" ^ 0))
+        local Fractal = P "." * R "09" ^ 0
+        local Exponent = (S "eE") * (S "+-") ^ (-1) * R "09" ^ 1
+        local Number = (Integer * Fractal ^ (-1) * Exponent ^ (-1)) / str2num
+        local Constant = P "true" * g.Cc(true) + P "false" * g.Cc(false) + P "null" * g.Carg(1)
+        local SimpleValue = Number + String + Constant
+        local ArrayContent, ObjectContent
+
+        -- The functions parsearray and parseobject parse only a single value/pair
+        -- at a time and store them directly to avoid hitting the LPeg limits.
+        local function parsearray(str, pos, nullval, state)
+            local obj, cont
+            local start = pos
+            local npos
+            local t, nt = {}, 0
+            repeat
+                obj, cont, npos = pegmatch(ArrayContent, str, pos, nullval, state)
+                if cont == 'end' then
+                    return ErrorUnterminatedCall(str, start, "array", state)
+                end
+                pos = npos
+                if cont == 'cont' or cont == 'last' then
+                    nt = nt + 1
+                    t[nt] = obj
+                end
+            until cont ~= 'cont'
+            return pos, setmetatable(t, state.arraymeta)
+        end
+
+        local function parseobject(str, pos, nullval, state)
+            local obj, key, cont
+            local start = pos
+            local npos
+            local t = {}
+            repeat
+                key, obj, cont, npos = pegmatch(ObjectContent, str, pos, nullval, state)
+                if cont == 'end' then
+                    return ErrorUnterminatedCall(str, start, "object", state)
+                end
+                pos = npos
+                if cont == 'cont' or cont == 'last' then
+                    t[key] = obj
+                end
+            until cont ~= 'cont'
+            return pos, setmetatable(t, state.objectmeta)
+        end
+
+        local Array = P "[" * g.Cmt(g.Carg(1) * g.Carg(2), parsearray)
+        local Object = P "{" * g.Cmt(g.Carg(1) * g.Carg(2), parseobject)
+        local Value = Space * (Array + Object + SimpleValue)
+        local ExpectedValue = Value + Space * Err "value expected"
+        local ExpectedKey = String + Err "key expected"
+        local End = P(-1) * g.Cc 'end'
+        local ErrInvalid = Err "invalid JSON"
+        ArrayContent = (Value * Space * (P "," * g.Cc 'cont' + P "]" * g.Cc 'last' + End + ErrInvalid) + g.Cc(nil) * (P "]" * g.Cc 'empty' + End + ErrInvalid)) *
+                g.Cp()
+        local Pair = g.Cg(Space * ExpectedKey * Space * (P ":" + Err "colon expected") * ExpectedValue)
+        ObjectContent = (g.Cc(nil) * g.Cc(nil) * P "}" * g.Cc 'empty' + End + (Pair * Space * (P "," * g.Cc 'cont' + P "}" * g.Cc 'last' + End + ErrInvalid) + ErrInvalid)) *
+                g.Cp()
+        local DecodeValue = ExpectedValue * g.Cp()
+
+        jsonlpeg.version = json.version
+        jsonlpeg.encode = json.encode
+        jsonlpeg.null = json.null
+        jsonlpeg.quotestring = json.quotestring
+        jsonlpeg.addnewline = json.addnewline
+        jsonlpeg.encodeexception = json.encodeexception
+        jsonlpeg.using_lpeg = true
+
+        function jsonlpeg.decode(str, pos, nullval, ...)
+            local state = {}
+            state.objectmeta, state.arraymeta = optionalmetatables(...)
+            local obj, retpos = pegmatch(DecodeValue, str, pos, nullval, state)
+            if state.msg then
+                return nil, state.pos, state.msg
+            else
+                return obj, retpos
+            end
+        end
+
+        -- cache result of this function:
+        json.use_lpeg = function() return jsonlpeg end
+        jsonlpeg.use_lpeg = json.use_lpeg
+
+        return jsonlpeg
+    end
+
+    if always_use_lpeg then
+        return json.use_lpeg()
+    end
+
+    return json
+    -- END unmodified dkjson-2.11.lua
+end)()
+
+--
+-- JSON integration
+--
+
+local function decode_json(body, max_bytes, max_depth)
+    if type(body) ~= 'string' or (max_bytes and #body > max_bytes) then return nil end
+    local ok, value, pos, err = pcall(json.decode, body, 1, json.null)
+    -- dkjson decodes one value; require the complete response to contain only that value.
+    if not ok or err or body:find('%S', pos) then return nil end
+    if max_depth then
+        local function within_depth(item, depth)
+            if depth > max_depth then return false end
+            if type(item) == 'table' then
+                for _, child in pairs(item) do
+                    if not within_depth(child, depth + 1) then return false end
+                end
+            end
+            return true
+        end
+        if not within_depth(value, 0) then return nil end
+    end
     return value
 end
 
-local json_simple_escapes = {
-    ['"'] = '"',
-    ['\\'] = '\\',
-    ['/'] = '/',
-    b = '\b',
-    f = '\f',
-    n = '\n',
-    r = '\r',
-    t = '\t',
-}
-
-local function json_unescape(value)
-    -- decode once from left to right so an escaped backslash cannot introduce a second escape
-    local result = {}
-    local pos = 1
-    while pos <= #value do
-        local slash = value:find('\\', pos, true)
-        if not slash then
-            result[#result + 1] = value:sub(pos)
-            break
-        end
-        if slash > pos then
-            result[#result + 1] = value:sub(pos, slash - 1)
-        end
-        local escaped = value:sub(slash + 1, slash + 1)
-        if escaped == 'u' then
-            local hex = value:sub(slash + 2, slash + 5)
-            if #hex == 4 and hex:match('^%x%x%x%x$') then
-                local num = tonumber(hex, 16)
-                pos = slash + 6
-                if num >= 0xd800 and num <= 0xdbff and value:sub(pos, pos + 1) == '\\u' then
-                    local low = tonumber(value:sub(pos + 2, pos + 5), 16)
-                    if low and low >= 0xdc00 and low <= 0xdfff then
-                        num = 0x10000 + (num - 0xd800) * 1024 + low - 0xdc00
-                        pos = pos + 6
-                    end
-                end
-                if num >= 0xd800 and num <= 0xdfff then
-                    result[#result + 1] = '?'
-                elseif num < 128 then
-                    result[#result + 1] = string.char(num)
-                elseif num < 2048 then
-                    result[#result + 1] = string.char(192 + math.floor(num / 64), 128 + num % 64)
-                elseif num < 65536 then
-                    result[#result + 1] = string.char(224 + math.floor(num / 4096),
-                        128 + math.floor(num / 64) % 64, 128 + num % 64)
-                else
-                    result[#result + 1] = string.char(240 + math.floor(num / 262144),
-                        128 + math.floor(num / 4096) % 64, 128 + math.floor(num / 64) % 64,
-                        128 + num % 64)
-                end
-            else
-                result[#result + 1] = '\\'
-                pos = slash + 1
-            end
-        else
-            local decoded = json_simple_escapes[escaped]
-            if decoded then
-                result[#result + 1] = decoded
-                pos = slash + 2
-            else
-                -- preserve malformed or incomplete escapes for the caller to reject or display
-                result[#result + 1] = '\\'
-                pos = slash + 1
-            end
-        end
-    end
-    return table.concat(result)
+local function json_container(value, kind)
+    local meta = type(value) == 'table' and getmetatable(value)
+    return meta and meta.__jsontype == kind
 end
 
-local function json_get_string(body, name)
-    local start_pos = body:find('"' .. name .. '"%s*:%s*"')
-    if not start_pos then return nil end
-    local value_start = body:find('"', start_pos + #name + 2)
-    if not value_start then return nil end
-    value_start = value_start + 1
-    local pos = value_start
-    while pos <= #body do
-        local char = body:sub(pos, pos)
-        if char == '"' then
-            local slash_count = 0
-            local back = pos - 1
-            while back >= value_start and body:sub(back, back) == '\\' do
-                slash_count = slash_count + 1
-                back = back - 1
-            end
-            if slash_count % 2 == 0 then
-                return json_unescape(body:sub(value_start, pos - 1))
-            end
-        end
-        pos = pos + 1
+local function jsonrpc_result(body, max_bytes, max_depth)
+    local response = decode_json(body, max_bytes, max_depth)
+    if not json_container(response, 'object') or response.jsonrpc ~= '2.0' or response.id ~= 1
+            or response.error ~= nil or not json_container(response.result, 'object') then
+        return nil
     end
-    return nil
-end
-
-local function json_get_object(body, name)
-    local name_end = body:find('"' .. name .. '"%s*:%s*{')
-    if not name_end then return nil end
-    local object_start = body:find('{', name_end)
-    if not object_start then return nil end
-    local depth = 0
-    local in_string = false
-    local escaped = false
-    for pos = object_start, #body do
-        local char = body:sub(pos, pos)
-        if in_string then
-            if escaped then
-                escaped = false
-            elseif char == '\\' then
-                escaped = true
-            elseif char == '"' then
-                in_string = false
-            end
-        elseif char == '"' then
-            in_string = true
-        elseif char == '{' then
-            depth = depth + 1
-        elseif char == '}' then
-            depth = depth - 1
-            if depth == 0 then
-                return body:sub(object_start, pos)
-            end
-        end
-    end
-    return nil
+    return response.result
 end
 
 --
@@ -1869,16 +2599,12 @@ local function do_adopt6c()
             remove_paths(request_path, response_path)
             return nil
         end
-        local request_body = '{'
-                .. '"jsonrpc":"2.0",'
-                .. '"id":1,'
-                .. '"method":"adopt6c",'
-                .. '"params":{'
-                .. '"subd":"' .. json_escape(subd) .. '",'
-                .. '"token":"' .. json_escape(token) .. '",'
-                .. '"auth_pubkey":"' .. json_escape(auth_pubkey) .. '"'
-                .. '}'
-                .. '}'
+        local request_body = json.encode({
+            jsonrpc = '2.0',
+            id = 1,
+            method = 'adopt6c',
+            params = {subd = subd, token = token, auth_pubkey = auth_pubkey},
+        })
         local write_ok = write_text_file(request_path, request_body, '0600')
         if not write_ok then
             -- log_error() already called from write_text_file()
@@ -1897,13 +2623,8 @@ local function do_adopt6c()
         remove_paths(request_path, response_path)
         if curl_output and response_body then
             log_debug("adopt6c response body: " .. displayable(response_body, 60))
-            local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
-            local has_result = response_body:match('"result"%s*:') ~= nil
-            local has_error = response_body:match('"error"%s*:') ~= nil
-            local status = json_get_string(response_body, 'status')
-            local response_subd = json_get_string(response_body, 'subd')
-            local mostly_okay = has_jsonrpc and has_result and not has_error
-            if mostly_okay and status == 'ok' and response_subd == subd then
+            local result = jsonrpc_result(response_body)
+            if result and result.status == 'ok' and result.subd == subd then
                 log_info("public key upload succeeded")
                 if not write_text_file(pubkeys_uploaded_path, 'uploaded\n', '0600') then
                     log_error("B04717 adopt6c succeeded but could not touch pubkeys_uploaded")
@@ -1923,21 +2644,21 @@ local function do_adopt6c()
 end
 
 local function collect_telemetry()
-    local telemetry = '{'
-            .. '"proc_uptime":"' .. json_escape(read_text_file('/proc/uptime', true, false)) .. '",'
-            .. '"proc_loadavg":"' .. json_escape(read_text_file('/proc/loadavg', true, false)) .. '",'
-            .. '"proc_meminfo":"' .. json_escape(read_text_file('/proc/meminfo', true, false)) .. '",'
-            .. '"proc_net_dev":"' .. json_escape(read_text_file('/proc/net/dev', true, false)) .. '",'
-            .. '"proc_net_route":"' .. json_escape(read_text_file('/proc/net/route', true, false)) .. '",'
-            -- maybe add: df or /proc/mounts + stat
-            -- maybe add: ip addr, /proc/net/fib_trie
-            -- maybe add: wg
-            .. '"etc_os_release":"' .. json_escape(read_text_file('/etc/os-release', true, false)) .. '",'
-            .. '"platform":"' .. platform .. '",'
-            -- don't need file_version every time, but it's low-cost and needed if hub or we restart
-            .. '"file_version":"' .. json_escape(file_version) .. '",'
-            .. '"telemetry_version": 1'
-    return telemetry .. '}'
+    return {
+        proc_uptime = read_text_file('/proc/uptime', true, false),
+        proc_loadavg = read_text_file('/proc/loadavg', true, false),
+        proc_meminfo = read_text_file('/proc/meminfo', true, false),
+        proc_net_dev = read_text_file('/proc/net/dev', true, false),
+        proc_net_route = read_text_file('/proc/net/route', true, false),
+        -- maybe add: df or /proc/mounts + stat
+        -- maybe add: ip addr, /proc/net/fib_trie
+        -- maybe add: wg
+        etc_os_release = read_text_file('/etc/os-release', true, false),
+        platform = platform,
+        -- don't need file_version every time, but it's low-cost and needed if hub or we restart
+        file_version = file_version,
+        telemetry_version = 1,
+    }
 end
 
 local function build_ping_request()
@@ -1949,17 +2670,17 @@ local function build_ping_request()
         log_debug('cannot build ping request because one or more inputs were unavailable')
         return nil
     end
-    local request_body = '{'
-            .. '"jsonrpc":"2.0",'
-            .. '"id":1,'
-            .. '"method":"ping",'
-            .. '"params":{'
-            .. '"subd":"' .. json_escape(subd) .. '",'
-            .. '"time":"' .. json_escape(utc_time) .. '",'
-            .. '"telemetry":' .. collect_telemetry() .. ','
-            .. '"request_id":"' .. json_escape(request_id) .. '"'
-            .. '}'
-            .. '}'
+    local request_body = json.encode({
+        jsonrpc = '2.0',
+        id = 1,
+        method = 'ping',
+        params = {
+            subd = subd,
+            time = utc_time,
+            telemetry = collect_telemetry(),
+            request_id = request_id,
+        },
+    })
     log_debug("built ping request body (" .. tostring(#request_body) .. " bytes)")
     return request_body
 end
@@ -2138,10 +2859,9 @@ local function send_task_result(task_id, task_method, ok, output)
     if #output > 18000 then
         output = output:sub(1, 18000) .. '\n...truncated...'
     end
-    local escaped_output = json_escape(output)
     if task_method == 'rce' then
         -- binary output or a truncated UTF-8 character must not invalidate JSON
-        escaped_output = escaped_output:gsub('[\128-\255][\128-\191]*', function(bytes)
+        output = output:gsub('[\128-\255][\128-\191]*', function(bytes)
             local first, second = bytes:byte(1, 2)
             local length = first >= 194 and first <= 223 and 2
                     or first >= 224 and first <= 239 and 3
@@ -2149,33 +2869,31 @@ local function send_task_result(task_id, task_method, ok, output)
             if #bytes ~= length or (first == 224 and second < 160)
                     or (first == 237 and second >= 160) or (first == 240 and second < 144)
                     or (first == 244 and second >= 144) then
-                return '\\ufffd'
+                return '\239\191\189'
             end
             return bytes
         end)
     end
-    local request_body = '{'
-            .. '"jsonrpc":"2.0",'
-            .. '"id":1,'
-            .. '"method":"task_result",'
-            .. '"params":{'
-            .. '"subd":"' .. json_escape(subd) .. '",'
-            .. '"task_id":"' .. json_escape(task_id) .. '",'
-            .. '"task_method":"' .. json_escape(task_method) .. '",'
-            .. '"ok":' .. (ok and 'true' or 'false') .. ','
-            .. '"output":"' .. escaped_output .. '"'
-            .. '}'
-            .. '}'
+    local request_body = json.encode({
+        jsonrpc = '2.0',
+        id = 1,
+        method = 'task_result',
+        params = {
+            subd = subd,
+            task_id = tostring(task_id),
+            task_method = tostring(task_method),
+            ok = not not ok,
+            output = output,
+        },
+    })
     local response_body = send_signed_jsonrpc(request_body)
     if not response_body then
         log_warning("task_result failed without a usable response")
         return nil
     end
     log_debug("task_result response body: " .. displayable(response_body, 300))
-    local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
-    local has_error = response_body:match('"error"%s*:') ~= nil
-    local status = json_get_string(response_body, 'status')
-    if has_jsonrpc and not has_error and status == 'ok' then
+    local result = jsonrpc_result(response_body)
+    if result and result.status == 'ok' then
         log_info("task_result accepted for " .. task_method .. " task " .. task_id)
         return true
     end
@@ -2204,112 +2922,7 @@ end
 local enable_wg, request_wg_config, restore_wg
 
 do
-    local json_null = {}
     local wg_status = nil
-    local function decode_wg_json(body)
-        -- parse containers as well as scalars: regex extraction cannot validate a peer list
-        if type(body) ~= 'string' or #body > 262144 then return nil end
-        local pos, tokens = 1, {}
-        local function skip_space()
-            local _, last = body:find('^[ \t\r\n]*', pos)
-            pos = last + 1
-        end
-        local function take(token)
-            if body:sub(pos, pos + #token - 1) ~= token then error('invalid JSON', 0) end
-            tokens[#tokens + 1] = token
-            pos = pos + #token
-        end
-        local function read_string()
-            local start = pos
-            pos = pos + 1
-            while pos <= #body do
-                local char = body:sub(pos, pos)
-                if char == '"' then
-                    local raw = body:sub(start, pos)
-                    tokens[#tokens + 1] = raw
-                    pos = pos + 1
-                    return json_unescape(raw:sub(2, -2))
-                end
-                if char:byte() < 32 then error('control character in JSON', 0) end
-                if char == '\\' then
-                    pos = pos + 1
-                    char = body:sub(pos, pos)
-                    if char == 'u' then
-                        if not body:sub(pos + 1, pos + 4):match('^%x%x%x%x$') then
-                            error('invalid JSON escape', 0)
-                        end
-                        pos = pos + 4
-                    elseif not json_simple_escapes[char] then
-                        error('invalid JSON escape', 0)
-                    end
-                end
-                pos = pos + 1
-            end
-            error('unterminated JSON string', 0)
-        end
-        local parse
-        parse = function(depth)
-            if depth > 12 then error('JSON nesting too deep', 0) end
-            skip_space()
-            local char = body:sub(pos, pos)
-            if char == '"' then return read_string() end
-            if char == '{' or char == '[' then
-                local first_token = #tokens + 1
-                local is_object = char == '{'
-                local close = is_object and '}' or ']'
-                local value = {}
-                take(char)
-                skip_space()
-                if body:sub(pos, pos) ~= close then
-                    while true do
-                        local key = #value + 1
-                        if is_object then
-                            if body:sub(pos, pos) ~= '"' then error('invalid JSON key', 0) end
-                            key = read_string()
-                            if value[key] ~= nil then error('duplicate JSON key', 0) end
-                            skip_space()
-                            take(':')
-                        end
-                        value[key] = parse(depth + 1)
-                        skip_space()
-                        if body:sub(pos, pos) == close then break end
-                        take(',')
-                        skip_space()
-                    end
-                end
-                take(close)
-                return setmetatable(value, {
-                    kind = is_object and 'object' or 'array',
-                    json = table.concat(tokens, '', first_token, #tokens),
-                })
-            end
-            for literal, value in pairs({['null'] = json_null, ['true'] = true, ['false'] = false}) do
-                if body:sub(pos, pos + #literal - 1) == literal then
-                    take(literal)
-                    return value
-                end
-            end
-            local number = body:match('^-?%d+', pos)
-            if not number or number:match('^-?0%d') then error('invalid JSON value', 0) end
-            take(number)
-            -- get_conf() uses integer numbers; reject floats rather than truncate them.
-            local value = tonumber(number)
-            if not value or math.abs(value) == math.huge then error('invalid JSON number', 0) end
-            return value
-        end
-        local ok, value = pcall(function()
-            local result = parse(0)
-            skip_space()
-            if pos <= #body then error('trailing JSON data', 0) end
-            return result
-        end)
-        if ok then return value end
-        return nil
-    end
-    local function container(value, kind)
-        local meta = type(value) == 'table' and getmetatable(value)
-        return meta and meta.kind == kind
-    end
     local function integer(value, minimum, maximum)
         if type(value) ~= 'number' and type(value) ~= 'string' then return nil end
         if not tostring(value):match('^%d+$') then return nil end
@@ -2399,13 +3012,13 @@ do
         return ip_words(address) == wanted_family and #port <= 5 and integer(port, 1, 65535)
     end
     local function validate_conf(text)
-        local conf = decode_wg_json(text)
-        if not container(conf, 'object') or not container(conf.Interface, 'object')
-                or not container(conf.Peers, 'array') then
+        local conf = decode_json(text, 262144, 12)
+        if not json_container(conf, 'object') or not json_container(conf.Interface, 'object')
+                or not json_container(conf.Peers, 'array') then
             return nil, "B37080 invalid WireGuard configuration object"
         end
         local intf = conf.Interface
-        if intf.PrivateKey ~= nil and intf.PrivateKey ~= json_null then
+        if intf.PrivateKey ~= nil and intf.PrivateKey ~= json.null then
             return nil, "B27754 WireGuard private keys must remain local"
         end
         local fields = {
@@ -2444,7 +3057,7 @@ do
             PersistentKeepalive = true
         }
         for _, peer in ipairs(conf.Peers) do
-            if not container(peer, 'object') or not public_key(peer.PublicKey)
+            if not json_container(peer, 'object') or not public_key(peer.PublicKey)
                     or keys[peer.PublicKey] then
                 return nil, "B97715 invalid or duplicate WireGuard peer"
             end
@@ -2490,7 +3103,13 @@ do
         end
         local conf, settings = validate_conf(text)
         if not conf then return nil, settings end
-        local saved_json = getmetatable(conf).json
+        -- Stable ordering avoids rewriting base.conf solely because table iteration order changed.
+        local saved_json = json.encode(conf, {
+            keyorder = {
+                'Interface', 'Peers', 'Name', 'PrivateKey', 'Address', 'ListenPort', 'MTU',
+                'FwMark', 'Table', 'DNS', 'PublicKey', 'AllowedIPs', 'Endpoint', 'PersistentKeepalive',
+            }
+        })
         if base_config.wg_conf ~= saved_json or base_config.wg_enabled ~= '1'
                 or base_config.wg_ipv6_policy ~= 'optional' then
             local updated = copy_table(base_config)
@@ -2672,16 +3291,18 @@ do
         end
         local key = read_text_file(wg_pubkey_path, true)
         if not public_key(key) then return nil, "B78910 invalid local WireGuard public key" end
-        local body = '{"jsonrpc":"2.0","id":1,"method":"wg","params":{"subd":"'
-                .. json_escape(subd) .. '","pubkey":"' .. json_escape(key) .. '"}}'
-        local response = decode_wg_json(send_signed_jsonrpc(body))
-        if not container(response, 'object') or response.jsonrpc ~= '2.0' or response.id ~= 1
-                or response.error ~= nil or not container(response.result, 'object')
-                or response.result.status ~= 'ok' or response.result.subd ~= subd
-                or not container(response.result.task_args, 'object') then
+        local body = json.encode({
+            jsonrpc = '2.0',
+            id = 1,
+            method = 'wg',
+            params = {subd = subd, pubkey = key},
+        })
+        local result = jsonrpc_result(send_signed_jsonrpc(body), 262144, 12)
+        if not result or result.status ~= 'ok' or result.subd ~= subd
+                or not json_container(result.task_args, 'object') then
             return nil, "B57314 invalid wg API response"
         end
-        return getmetatable(response.result.task_args).json
+        return json.encode(result.task_args)
     end
     restore_wg = function()
         if base_config.wg_enabled ~= '1' then return end
@@ -2924,7 +3545,7 @@ local function filter_upnp_locations(candidates, gateway, source_ip, source_pref
                 rejected_location_count = rejected_location_count + 1
                 if rejected_location_count <= 8 then
                     local message = "B14803 dropping UPnP LOCATION outside gateway/LAN subnet; " .. "host="
-                            .. displayable(json_escape(location_host or '(invalid)'), 100)
+                            .. displayable(json.quotestring(location_host or '(invalid)'), 100)
                     log_info(message)
                 elseif rejected_location_count == 9 then
                     log_warning("B92150 additional rejected UPnP LOCATION warnings omitted")
@@ -2978,7 +3599,7 @@ local function read_upnp_control_url(location, seconds_left, gateway, source_ip,
                 if not allowed then
                     local message = "B24547 dropping UPnP control URL outside "
                             .. "gateway/LAN subnet or with invalid authority; host="
-                            .. displayable(json_escape(control_host or '(invalid)'), 100)
+                            .. displayable(json.quotestring(control_host or '(invalid)'), 100)
                     log_info(message)
                     control_url = nil
                 end
@@ -3027,27 +3648,20 @@ local function read_upnp_igds(locations, gateway, source_ip, source_prefix)
 end
 
 local function upnp_result_json(gateway, method, response_count, igds)
-    local result_prefix = '{'
-            .. '"gateway":"' .. json_escape(gateway) .. '",'
-            .. '"method":"' .. json_escape(method) .. '",'
-            .. '"response_count":' .. tostring(response_count) .. ','
-            .. '"igds":['
-    local igd_json = {}
-    local result_bytes = #result_prefix + 2  -- closing ]}
+    local result = {gateway = gateway, method = method, response_count = response_count, igds = {}}
+    local result_bytes = #json.encode(result)
     for _, igd in ipairs(igds) do
-        local entry = '{'
-                .. '"location":"' .. json_escape(igd.location) .. '",'
-                .. '"control_url":"' .. json_escape(igd.control_url) .. '"'
-                .. '}'
-        local separator_bytes = #igd_json > 0 and 1 or 0
-        if result_bytes + separator_bytes + #entry > max_upnp_result_bytes then
+        local entry = {location = igd.location, control_url = igd.control_url}
+        local entry_bytes = #json.encode(entry)
+        local separator_bytes = #result.igds > 0 and 1 or 0
+        if result_bytes + separator_bytes + entry_bytes > max_upnp_result_bytes then
             log_warning("B75089 UPnP discovery result size limit reached; ignoring additional IGDs")
             break
         end
-        igd_json[#igd_json + 1] = entry
-        result_bytes = result_bytes + separator_bytes + #entry
+        result.igds[#result.igds + 1] = entry
+        result_bytes = result_bytes + separator_bytes + entry_bytes
     end
-    return result_prefix .. table.concat(igd_json, ',') .. ']}'
+    return json.encode(result)
 end
 
 local function uint32_at(data, offset, little_endian)
@@ -3984,22 +4598,24 @@ local function verify_file_signature(staged_path, signature, key_id)
 end
 
 local function rce(task_args)
-    if type(task_args) ~= 'string' then return false, "B41362 missing signed document" end
-    local sequence_id = json_get_string(task_args, 'sequence_id')
+    if not json_container(task_args, 'object') then
+        return false, "B41362 missing signed document"
+    end
+    local sequence_id = task_args.sequence_id
     local previous = base_config.rce_sequence_id or commit_date
-    if not sequence_id or #sequence_id ~= 7 or not sequence_id:match('^[0-9a-z]+$')
+    if type(sequence_id) ~= 'string' or #sequence_id ~= 7
+            or not sequence_id:match('^[0-9a-z]+$')
             or #previous ~= 7 or not previous:match('^[0-9a-z]+$')
             or sequence_id <= previous then
         return false, "B27581 RCE sequence_id must be greater than " .. previous
                 .. "; try again in a minute"
     end
-    if json_get_string(task_args, 'subd') ~= subd then
+    if task_args.subd ~= subd then
         return false, "B63384 RCE subd does not match this base"
     end
-    local content = json_get_string(task_args, 'content')
-    local signature = json_get_string(task_args, 'signature')
-    local key_id = json_get_string(task_args, 'key_id')
-    if not content or content:find('\0', 1, true) or not signature or not key_id then
+    local content, signature, key_id = task_args.content, task_args.signature, task_args.key_id
+    if type(content) ~= 'string' or content:find('\0', 1, true)
+            or type(signature) ~= 'string' or type(key_id) ~= 'string' then
         return false, "B61872 invalid signed document fields"
     end
     local signature_path = make_temp_path(nil, true)
@@ -4037,7 +4653,9 @@ end
 
 local function handle_task(task_id, task_method, task_args)
     -- return true iff task was handled or no task was present
-    if not task_id or not task_method then return true end
+    if type(task_id) ~= 'string' or type(task_method) ~= 'string' then return true end
+    -- Accept task arguments as either JSON strings or already decoded objects.
+    if type(task_args) == 'string' then task_args = decode_json(task_args) or task_args end
     log_info("received task " .. task_method .. " id=" .. task_id)
     if task_method == 'no_op' then
         return send_task_result(task_id, task_method, true, 'ok')
@@ -4053,7 +4671,7 @@ local function handle_task(task_id, task_method, task_args)
         return send_task_result(task_id, task_method, ok, output)
     end
     if task_method == 'update' then
-        local requested_path = task_args and json_get_string(task_args, 'path') or nil
+        local requested_path = json_container(task_args, 'object') and task_args.path or nil
         if requested_path ~= 'hub/bbbased.lua' then
             return send_task_result(task_id, task_method, false,
                 "B63317 invalid update path: " .. tostring(requested_path))
@@ -4155,15 +4773,13 @@ local function handle_task(task_id, task_method, task_args)
         restart_after_update()
     end
     if task_method == 'discover_upnp' then
-        local pcap_base64 = task_args and json_get_string(task_args, 'pcap') or nil
+        local pcap_base64 = json_container(task_args, 'object') and task_args.pcap or nil
+        if type(pcap_base64) ~= 'string' then pcap_base64 = nil end
         local ok, output = discover_upnp(pcap_base64)
         return send_task_result(task_id, task_method, ok, output)
     end
     if task_method == 'df' then
-        local df_args = task_args
-        if task_args and task_args:sub(1, 1) == '{' then
-            df_args = json_get_string(task_args, 'args')
-        end
+        local df_args = json_container(task_args, 'object') and task_args.args or task_args
         if df_args ~= '-hT' then
             return send_task_result(task_id, task_method, false, 'unsupported df args')
         end
@@ -4184,23 +4800,11 @@ local function do_ping()
     local response_body = send_signed_jsonrpc(request_body)
     if not response_body then return nil end
     log_debug("ping response body: " .. displayable(response_body, 300))
-    local has_jsonrpc = response_body:match('"jsonrpc"%s*:%s*"2%.0"') ~= nil
-    local has_error = response_body:match('"error"%s*:') ~= nil
-    local status = json_get_string(response_body, 'status')
-    if has_jsonrpc and not has_error and status == 'ok' then
-        log_info("ping succeeded with status " .. displayable(status, 60))
-        local task_args = json_get_string(response_body, 'task_args')
-        if task_args == nil then
-            task_args = json_get_object(response_body, 'task_args')
-        end
-        if not handle_task(
-                    json_get_string(response_body, 'task_id'),
-                    json_get_string(response_body, 'task_method'),
-                    task_args
-                ) then
-            return nil
-        end
-        return status
+    local result = jsonrpc_result(response_body)
+    if result and result.status == 'ok' then
+        log_info("ping succeeded with status " .. displayable(result.status, 60))
+        if not handle_task(result.task_id, result.task_method, result.task_args) then return nil end
+        return result.status
     end
     -- note the Berror code below is used in api.py
     log_error("B64445 ping rejected: " .. displayable(response_body, 300))
