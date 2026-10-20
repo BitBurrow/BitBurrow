@@ -532,8 +532,8 @@ def sign_string(code: str, signing_key: Key) -> str:
         'rsa_mgf1_md:sha512',
     )
     privkey_path = str(signing_key.private_path)
-    # use stderr so we don't corrput YAML on stdout
-    print(f"Signing code with private key {signing_key.key_id} ...", file=sys.stderr)
+    # # use stderr so we don't corrput YAML on stdout
+    # print(f"Signing code with private key {signing_key.key_id} ...", file=sys.stderr)
     signature = run_openssl(
         ['dgst', '-sha512', '-sign', privkey_path, *rsa_pss_options],
         signing_key.private_path,

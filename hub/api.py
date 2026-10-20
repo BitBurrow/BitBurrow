@@ -691,7 +691,7 @@ async def task_result(
     if task_method == 'rce' and newly_finished:
         await util.write_to_pipe(
             int(task_id),
-            f'/tmp/bbhub_rce_{subd}{db.get_task(task_id).args['sequence_id']}',
+            util.pipe_path(subd, db.get_task(task_id).args['sequence_id']),
             output if ok else f"B08552 task failed: {repr(output[:100])}",
         )
     return BaseResult(subd=subd, status='ok')

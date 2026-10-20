@@ -7,6 +7,7 @@ import io
 import os
 import re
 import stat
+import subprocess
 import sys
 import textwrap
 import yaml
@@ -517,6 +518,18 @@ async def write_to_pipe(task_id: int, path: str, output: str) -> bool:
                 unlink_pipe(path, info)
             except OSError as e:
                 logger.warning(f"B70882 cannot unlink reply FIFO for task {task_id}: {e}")
+
+
+def pipe_path(subd: str, sequence_id: str):  # share FIFO between bbhub daemon and bbhub CLI
+    try:
+        proc = subprocess.run('systemctl --quiet is-active bitburrow.service'.split(' '))
+    except OSError:  # systemctl is probably missing
+        pass
+    else:
+        if proc.returncode == 0:
+            # for systemd, use a shared runtime directory ('RuntimeDirectory=bitburrow' in service file)
+            return f'/run/bitburrow/bbhub_rce_{subd}{sequence_id}'
+    return f'/tmp/bbhub_rce_{subd}{sequence_id}'
 
 
 def port_forward_script():

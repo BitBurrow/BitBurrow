@@ -149,7 +149,7 @@ def queue_rce(filename: str, await_reply: bool) -> None:
         raise Berror("B54093 invalid input document")
     tasks = dict()
     for task in document['tasks']:
-        path = f'/tmp/bbhub_rce_{task['subd']}{task['sequence_id']}'
+        path = util.pipe_path(task['subd'], task['sequence_id'])
         if path in tasks:
             raise Berror(f"B72946 duplicate task {task['subd']}{task['sequence_id']}")
         task['content'].encode('utf-8')
@@ -180,14 +180,15 @@ def queue_rce(filename: str, await_reply: bool) -> None:
                     raise Berror("B58142 reply FIFO changed while opening it")
                 replies[descriptor] = (task['subd'], bytearray())
                 poller.register(descriptor, select.POLLIN)
+        task_ids = set()
         for device_id, task in tasks.values():  # note a DB failure may leave a partial batch queued
-            task_id = db.enqueue_task(device_id, 'rce', args=task)
-            print(
-                f"RCE queued for {task['subd']}; task_id {task_id}; "
-                f"sequence_id {task['sequence_id']}",
-                file=sys.stderr if await_reply else sys.stdout,
-                flush=True,
-            )
+            task_ids.add(db.enqueue_task(device_id, 'rce', args=task))
+        range = f"{min(task_ids)}-{max(task_ids)}" if len(task_ids) > 1 else str(max(task_ids))
+        print(
+            f"RCE queued for {' '.join(t['subd'] for _, t in tasks.values())}; task_id {range}",
+            file=sys.stderr if await_reply else sys.stdout,
+            flush=True,
+        )
         while replies:
             ready = poller.poll()
             if any(descriptor not in replies for descriptor, _ in ready):

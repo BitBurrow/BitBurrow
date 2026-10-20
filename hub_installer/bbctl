@@ -202,6 +202,10 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
         ExecStart={{ poetry }} run python3 {{ bbhub }} serve
         Restart=always
         PrivateTmp=true
+        # use a shared runtime directory so 'bbhub rce ...' can share FIFOs with by daemon
+        RuntimeDirectory=bitburrow
+        RuntimeDirectoryMode=0700
+        RuntimeDirectoryPreserve=restart
         PrivateDevices=false
         NoNewPrivileges=false
         #
