@@ -413,14 +413,9 @@ bbbased_path = 'hub/bbbased.lua'
 
 
 class Device(SQLModel, table=True):
-    __table_args__ = (  # name_slug must be unique *for this user*
-        sqlalchemy.UniqueConstraint('account_id', 'name_slug', name='uq_device_account_slug'),
-        sqlalchemy.Index('ix_device_account_slug', 'account_id', 'name_slug'),
-    )
     id: int | None = Field(primary_key=True, default=None)
     account_id: int | None = Field(index=True, foreign_key='account.id')  # device admin--manager
     name: str = ''  # e.g. "Base SPW" but user can modify
-    name_slug: str = Field(index=True, default='')  # URL-safe version of name
     # for bases, subd is the left-most label of FQDN, e.g. y99g in y99g.vxm.example.org
     subd: str = Field(index=True, unique=True, default='')
     last_endpoint: str | None = None  # most recent public IP
@@ -1746,7 +1741,7 @@ def hub_intf_exists(session):
 
 
 def new_device_subd(session, device: Device) -> None:
-    # a domain name that begins with a digit is legal but occasionally problematic
+    # a domain name that begins with a digit is legal but occasionally problematic;
     # up to 439,040 base routers; Linux probably can't handle nearly that many anyhow
     subd = lambda _: (lk.generate_login_key_letters(1) + lk.generate_login_key(3)).lower()
     set_unique_value(session, device, 'subd', retry=200, valuef=subd)
@@ -1770,7 +1765,7 @@ def create_hub_if_missing(session):
 
 
 def new_device(account_id, is_base: bool, name: str) -> str:
-    """Create a new device and return it's name_slug."""
+    """Create a new device and return its subd."""
     with Session(engine) as session:
         if is_base:
             create_hub_if_missing(session)  # in case this is the first base router
@@ -1787,34 +1782,13 @@ def new_device(account_id, is_base: bool, name: str) -> str:
         ):  # the *first* device must be a canary tester; see also berror code 15159
             device.min_test_level = TestLevel.UNTESTED
         device.name = name
-        slugged = util.slugify(device.name)
-        # find a unique (for this user) name_slug
-        name_slug = lambda attempt: slugged + ('' if attempt == 0 else str(attempt))
-        set_unique_value(session, device, 'name_slug', retry=1000, valuef=name_slug)
+        session.commit()  # save the name and test level before new_intf() opens another session
         if is_base:  # create an Intf for a WireGuard connection between the new device and the hub
             hub_peer_id = new_intf(device_id=device.id, base_intf_id=hub_id)
             logger.info(f"B16979 base {device.subd} completed adopt0c (Device {device.id} created)")
         else:
             logger.debug(f"B04560 device {device.id} created")
-        return device.name_slug
-
-
-def get_device_by_slug(device_slug: str, account_id: int) -> Device | None:
-    """Return the Device for the slug, or None if it doesn't exist for that user."""
-    with Session(engine) as session:
-        account = session.exec(select(Account).where(Account.id == account_id)).one()
-        if account.kind == AccountKind.ADMIN:  # allow admins to manage everything
-            statement = select(Device).where(Device.name_slug == device_slug)
-        else:
-            statement = select(Device).where(
-                Device.name_slug == device_slug,
-                Device.account_id == account_id,
-            )
-        try:
-            device = session.exec(statement).one()
-        except sqlalchemy.exc.NoResultFound:
-            return None
-        return device
+        return device.subd
 
 
 def get_device_by_ott_id(lsid: int) -> Device:
@@ -1828,14 +1802,22 @@ def get_device_by_ott_id(lsid: int) -> Device:
 
 
 @contextmanager
-def device_by_subd(subd: str):
-    with Session(engine) as session:
+def device_by_subd(subd: str, account_id: int | None = None):
+    """Yield a device and commit changes. With account_id, enforce setup access."""
+    # 'expire_on_commit=False' keeps fields loaded
+    with Session(engine, expire_on_commit=False) as session:
+        statement = select(Device).where(Device.subd == subd)
+        if account_id is not None:
+            account = session.exec(select(Account).where(Account.id == account_id)).one()
+            statement = statement.where(Device.id != hub_id)  # the hub is not a setup target
+            if account.kind != AccountKind.ADMIN:
+                statement = statement.where(Device.account_id == account_id)
         try:
-            device: Device = session.exec(select(Device).where(Device.subd == subd)).one()
-        except sqlalchemy.exc.NoResultFound:
-            raise Berror(f"B59719 device for subd {subd} not found")
+            device = session.exec(statement).one_or_none()
         except sqlalchemy.exc.MultipleResultsFound:
             raise Berror(f"B53274 multiple devices found for subd {subd}")
+        if device is None and account_id is None:
+            raise Berror(f"B59719 device for subd {subd} not found")
         try:
             yield device
             session.commit()

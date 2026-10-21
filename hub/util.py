@@ -444,13 +444,6 @@ def gzbify(input: str, max_width=33) -> str:
     )
 
 
-def slugify(s: str, *, max_len: int = 32) -> str:
-    s = re.sub(r'[&+@]', lambda m: {'&': ' and ', '+': ' plus ', '@': ' at '}[m[0]], s)
-    s = re.sub(r'[^a-z0-9]+', '-', s.lower())
-    s = re.sub(r'-{2,}', '-', s)
-    return s[:max_len].strip('-')
-
-
 def mkdir_r(path):  # like Linux `mkdir --parents`
     if path == '':
         return
@@ -523,12 +516,11 @@ async def write_to_pipe(task_id: int, path: str, output: str) -> bool:
 def pipe_path(subd: str, sequence_id: str):  # share FIFO between bbhub daemon and bbhub CLI
     try:
         proc = subprocess.run('systemctl --quiet is-active bitburrow.service'.split(' '))
-    except OSError:  # systemctl is probably missing
-        pass
-    else:
         if proc.returncode == 0:
             # for systemd, use a shared runtime directory ('RuntimeDirectory=bitburrow' in service file)
             return f'/run/bitburrow/bbhub_rce_{subd}{sequence_id}'
+    except OSError:  # systemctl is probably missing
+        pass
     return f'/tmp/bbhub_rce_{subd}{sequence_id}'
 
 

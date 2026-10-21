@@ -166,8 +166,8 @@ def home(client: Client):
                 'id': device.id,
                 'login': device.account.login,
                 'name': device.name,
-                'slug': device.name_slug,
-                'subd': f'{device.subd}.{conf.get('frontend.domain')}' if device.subd else '-',
+                'subd': device.subd,
+                'fqdn': f'{device.subd}.{conf.get('frontend.domain')}' if device.subd else '-',
             }
             if device.last_endpoint:
                 new_row['last_ip'] = device.last_endpoint
@@ -213,7 +213,7 @@ def home(client: Client):
                 with ui.card().classes(css):
                     with ui.column().classes('min-w-0 gap-0'):
                         ui.label(card['name']).classes('text-subtitle1 font-medium truncate')
-                        ui.label(card['subd']).classes('text-caption text-grey-7 truncate')
+                        ui.label(card['fqdn']).classes('text-caption text-grey-7 truncate')
                     # doesn't really improve anything: ui.separator().classes('my-2')
                     with ui.column().classes('w-full gap-1'):
                         if kind == db.AccountKind.ADMIN:
@@ -224,7 +224,7 @@ def home(client: Client):
                     with ui.row().classes('w-full no-wrap items-center justify-end gap-2'):
                         ui.button(
                             'Set up',
-                            on_click=lambda c=card: ui.navigate.to(f'/setup/{c['slug']}'),
+                            on_click=lambda c=card: ui.navigate.to(f'/setup/{c['subd']}'),
                         ).props('flat')
                         ui.button(
                             'Delete',
@@ -268,8 +268,8 @@ def home(client: Client):
 
     async def on_add_item():
         base_name = idelem['base_name'].value[:70] or f'Base {lk.generate_login_key(3)}'
-        device_slug = db.new_device(account_id=aid, is_base=True, name=base_name)
-        ui.navigate.to(f'/setup/{device_slug}')
+        subd = db.new_device(account_id=aid, is_base=True, name=base_name)
+        ui.navigate.to(f'/setup/{subd}')
 
     render_cards()
 
@@ -279,21 +279,23 @@ def home(client: Client):
 ###
 
 
-@ui.page('/setup/{device_slug}')
-def setup(client: Client, device_slug: str):
+@ui.page('/setup/{subd}')
+def setup(client: Client, subd: str):
     try:
         lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
         return
-    device = db.get_device_by_slug(device_slug, aid)
-    if not device:
-        sections = uif.parse_markdown_sections('device-not-found')
-        for i, s in enumerate(sections):
-            sections[i] = s.replace('{device_slug}', device_slug)
-        ui.run_javascript(f"document.title = '{sections[0]}'")
-        uif.render_header(is_logged_in=True)
-        idelem = uif.render_content(sections)
-        return
+    with db.device_by_subd(subd, aid) as device:
+        if not device:
+            sections = uif.parse_markdown_sections('device-not-found')
+            if lk.sanitize_subd(subd) != subd:
+                subd = ''  # avoid '{{ ' injection and don't show different subd if invalid format
+            for i, s in enumerate(sections):
+                sections[i] = s.replace('{subd}', subd)
+            ui.run_javascript(f"document.title = '{sections[0]}'")
+            uif.render_header(is_logged_in=True)
+            idelem = uif.render_content(sections)
+            return
     stage_state = 'adopt'
     upnp_running = False
     upnp_status_label = None
@@ -333,10 +335,10 @@ def setup(client: Client, device_slug: str):
             return
         upnp_running = True
         try:
-            current_device = db.get_device_by_slug(device_slug, aid)
-            if current_device is None:
-                show_upnp_status("The base router could not be found.")
-                return
+            with db.device_by_subd(subd, aid) as current_device:
+                if current_device is None:
+                    show_upnp_status("The base router could not be found.")
+                    return
             if current_device.upnp_igd_url == 'disabled':
                 show_upnp_status(upnp_result_text(current_device))
                 return
@@ -365,11 +367,11 @@ def setup(client: Client, device_slug: str):
             while asyncio.get_running_loop().time() < deadline:
                 task_status = db.get_device_task_status(task_id, current_device.id)
                 if task_status in (db.DeviceTaskStatus.DONE, db.DeviceTaskStatus.FAILED):
-                    current_device = db.get_device_by_slug(device_slug, aid)
-                    if current_device is None:
-                        show_upnp_status("The base router could not be found.")
-                    else:
-                        show_upnp_status(upnp_result_text(current_device))
+                    with db.device_by_subd(subd, aid) as current_device:
+                        if current_device is None:
+                            show_upnp_status("The base router could not be found.")
+                        else:
+                            show_upnp_status(upnp_result_text(current_device))
                     return
                 if task_status is None:
                     db.set_upnp_igd_result(current_device.id, 'failed')
@@ -379,11 +381,11 @@ def setup(client: Client, device_slug: str):
             if db.timeout_upnp_discovery(task_id, current_device.id):
                 message = f"UPnP discovery task {task_id} timed out"
                 logger.info(f"B60568 base {current_device.subd} {message}")
-            current_device = db.get_device_by_slug(device_slug, aid)
-            if current_device is None:
-                show_upnp_status("The base router could not be found.")
-            else:
-                show_upnp_status(upnp_result_text(current_device))
+            with db.device_by_subd(subd, aid) as current_device:
+                if current_device is None:
+                    show_upnp_status("The base router could not be found.")
+                else:
+                    show_upnp_status(upnp_result_text(current_device))
         finally:
             upnp_running = False
 
@@ -483,10 +485,10 @@ def setup(client: Client, device_slug: str):
         obj = adopt5c_code_obj['value']
         if obj is None:
             return
-        current_device = db.get_device_by_slug(device_slug, aid)
-        if current_device is None:
-            ui.notify("This base router could not be found.")
-            return
+        with db.device_by_subd(subd, aid) as current_device:
+            if current_device is None:
+                ui.notify("This base router could not be found.")
+                return
         if current_device.adopt_state() >= 'adopt6c':
             # note: if base is up, this is a race because next ping will invalidate the OTT
             # search: tag_invalidate_device_ott

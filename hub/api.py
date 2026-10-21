@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric import rsa
 import hub.db as db
 import hub.config as conf
+import hub.login_key as lk
 import hub.uif as uif
 import hub.util as util
 
@@ -44,15 +45,10 @@ router = APIRouter()
 ###
 
 
-def sanitize_subd(subd):
-    """Return a safer version of subd, but still unverified"""
-    return re.sub(r'[^a-zA-Z0-9]', '', subd)[:8]
-
-
 @nicegui.app.exception_handler(Berror)
 async def handle_berror(request: Request, exc: Berror) -> Response:
     subd = request.path_params.get('subd') or request.query_params.get('subd')
-    subd = sanitize_subd(subd) if subd else '(unknown)'
+    subd = lk.sanitize_subd(subd) if subd else '(unknown)'
     ip_address = request.client.host if request.client else '(unknown)'
     logger.error(util.front_berror_code(exc, subd, ip_address))
     return Response(
@@ -82,7 +78,7 @@ def get_file(
 
 @router.get(adopt5l_route, response_class=PlainTextResponse)
 def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
-    subd = sanitize_subd(subd)  # unverified; 'adopt5p.sh' does not contain any secrets
+    subd = lk.sanitize_subd(subd)  # unverified; 'adopt5p.sh' does not contain any secrets
     expand_braces = (  # for security, these hub_config values are immutable; in alphabetical order
         lambda s: s.replace('{api_url}', conf.base_url() + jsonrpc_route)
         .replace('{download_url}', conf.base_url() + adopt5s_route.format(subd=subd))
@@ -117,7 +113,7 @@ def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
 
 @router.post(log_err_route)
 async def log_error(subd: str, request: Request) -> Response:
-    subd = sanitize_subd(subd)
+    subd = lk.sanitize_subd(subd)
     body_unsafe = await request.body()
     body_text = body_unsafe[:900].decode('utf-8', errors='replace')
     disp = ''.join(c if c.isprintable() and c not in '\r\n\t' else repr(c)[1:-1] for c in body_text)
@@ -284,7 +280,7 @@ class BitBurrowEntrypoint(jsonrpc.Entrypoint):
             request = context.http_request
             params = context.raw_request.get('params', {})
             subd = params.get('subd') if isinstance(params, dict) else None
-            subd = sanitize_subd(subd) if isinstance(subd, str) else '(unknown)'
+            subd = lk.sanitize_subd(subd) if isinstance(subd, str) else '(unknown)'
             ip_address = request.client.host if request.client else '(unknown)'
             logger.error(util.front_berror_code(exc, subd, ip_address))
             # keep the JSON-RPC error envelope while marking the HTTP request as failed

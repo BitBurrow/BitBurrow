@@ -15,6 +15,7 @@ from typing import Final
 # Plus Codes use base 20 ('23456789CFGHJMPQRVWX'): https://en.wikipedia.org/wiki/Open_Location_Code
 base28_digits: Final[str] = '23456789BCDFGHJKLMNPQRSTVWXZ'  # avoid bad words, 1/i, 0/O
 base28_set: Final[set] = set(base28_digits)
+base28_lower_set: Final[set] = set(base28_digits.lower())
 base28_set_valid_input: Final[set] = set(base28_digits + base28_digits.lower() + '-')
 base20_digits: Final[str] = 'BCDFGHJKLMNPQRSTVWXZ'  # no numbers
 login_key_len: Final[int] = 18
@@ -54,3 +55,8 @@ def has_invalid_chars(k: str):  # True if k contains any invalid characters ('-'
 
 def generate_login_key_letters(n):  # same but letters only (for domain names)
     return ''.join(secrets.choice(base20_digits) for i in range(n))
+
+
+def sanitize_subd(subd):
+    """Return a safer version of subd, but still unverified"""
+    return ''.join(c for c in subd[:8] if c in base28_lower_set)
