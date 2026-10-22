@@ -32,7 +32,7 @@ def welcome(client: Client):
     uif.render_header(is_logged_in=False)
     idelem = uif.render_content(sections)
     if qparam_invite:
-        idelem['invite_code'].set_value(qparam_invite)
+        idelem['invite_code'].set_value(lk.styled_login_key(qparam_invite))
 
     async def on_continue():
         invite = lk.plain_login_key(idelem['invite_code'].value.upper() or '')
