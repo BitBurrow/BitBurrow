@@ -1,6 +1,7 @@
 import asyncio
 import base64
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
+import json
 import logging
 import urllib.parse
 from nicegui import ui, Client
@@ -135,9 +136,10 @@ def login(client: Client):
         idelem = uif.render_content(sections)
     lk_element = idelem['login_key']
     lk_element.props('type=password name=password autocomplete=current-password')
+    ignore_clicks = False  # used during formatting stage
 
-    async def on_continue():
-        login_key = lk.plain_login_key(lk_element.value.upper() or '')
+    async def on_continue(v):  # v is value captured at submission (lk_element.value may lag)
+        login_key = lk.plain_login_key((v.args or '').upper())
         try:
             aid = db.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
         except db.CredentialsError as e:
@@ -146,14 +148,50 @@ def login(client: Client):
         auth.log_in(aid, idelem['keep_me_logged_in'].value, client.request)
 
     async def on_blur():
-        login_key = lk.plain_login_key(lk_element.value.upper() or '')
+        login_key = lk.plain_login_key((lk_element.value or '').upper())
         lk_element.value = lk.styled_login_key(login_key)  # add dashes where needed
         # this also helps ensure that the styled version is grabbed by password managers
 
+    async def submit_styled(v):
+        nonlocal ignore_clicks
+        if ignore_clicks:
+            return
+        ignore_clicks = True
+        try:
+            lk_element.value = v.args  # use the DOM value
+            await on_blur()
+            # set the native value before dispatching submit
+            await ui.run_javascript(f'''
+                const form = document.getElementById({json.dumps(form.html_id)});
+                const input = form.elements.namedItem('password');
+                input.value = {json.dumps(lk_element.value)};
+                input.dispatchEvent(new Event('input', {{bubbles: true}}));
+                form.requestSubmit();
+            ''')
+        finally:
+            ignore_clicks = False
+
     # a real form (rather than `idelem['continue'].on_click(callback=on_continue)`) is more
-    # ... likely to be recognized by password managers
+    # likely to be recognized by password managers; 'enter' key activates this submit button
+    # too; cancel its default action before any submit
     idelem['continue'].props('type=submit')
-    form.on('submit', on_continue, js_handler='(event) => { event.preventDefault(); emit(); }')
+    idelem['continue'].on(
+        'click',
+        submit_styled,
+        js_handler=f'''(event) => {{
+            event.preventDefault();
+            const form = document.getElementById({json.dumps(form.html_id)});
+            emit(form.elements.namedItem('password').value);
+        }}''',
+    )
+    form.on(
+        'submit',
+        on_continue,
+        js_handler='''(event) => {
+            event.preventDefault();
+            emit(event.target.elements.namedItem('password').value);
+        }''',
+    )
     lk_element.on('blur', on_blur)
 
 
