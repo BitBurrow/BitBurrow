@@ -87,13 +87,23 @@ def confirm(client: Client):
     )
     idelem['login_key'].set_value(lk.styled_login_key(login_key))
 
+    async def on_written_down(c):
+        lk_element = idelem['login_key']
+        if c.value:
+            lk_element.props('type=password')
+            lk_element.set_value(login_key)  # unstyled for storing in password valut
+        else:
+            lk_element.set_value(lk.styled_login_key(login_key))  # styled
+            lk_element.props('type=text')
+
+    # encourage browser offer to store lk in password vault, help user understand it is a secret
+    idelem['have_written_down'].on_value_change(callback=on_written_down)
+
     async def on_continue():
         if not idelem['have_written_down'].value:
             ui.notify("Required input is missing")
             return
         idelem['continue'].disable()
-        idelem['login_key'].set_value(lk.styled_login_key('*' * lk.login_key_len))
-        await asyncio.sleep(1)  # let user see the importantce of keeping the login key secret
         aid = db.update_account(  # validate the new account
             login=login_key,  # find account by 'login' portion only
             kind=db.AccountKind.MANAGER,  # it's now a full login key
