@@ -79,25 +79,24 @@ def confirm(client: Client):
     sections = uif.parse_markdown_sections('confirm')
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=False)
-    idelem = uif.render_content(sections)
+    with ui.element('form').props('method=post') as form:  # add metadata for password managers
+        form.classes('w-full flex flex-col items-start gap-4')
+        idelem = uif.render_content(sections)
+    # use readonly to avoid password manager offer to generate new password
+    lk_element = idelem['login_key']
+    lk_element.props('readonly name=password autocomplete=new-password')
     login_key = db.new_account(
         kind=db.AccountKind.NONE,  # in DB but disabled until confirmed
         valid_for=TimeDelta(days=1),  # expire in 1 day if not confirmed
-        parent_account_id=aid,  # invite code used
+        parent_account_id=aid,  # id of invite code used
     )
-    idelem['login_key'].set_value(lk.styled_login_key(login_key))
+    lk_element.set_value(lk.styled_login_key(login_key))
 
-    async def on_written_down(c):
-        lk_element = idelem['login_key']
-        if c.value:
-            lk_element.props('type=password')
-            lk_element.set_value(login_key)  # unstyled for storing in password valut
-        else:
-            lk_element.set_value(lk.styled_login_key(login_key))  # styled
-            lk_element.props('type=text')
-
-    # encourage browser offer to store lk in password vault, help user understand it is a secret
-    idelem['have_written_down'].on_value_change(callback=on_written_down)
+    # encourage password managers to offer storing lk in password vault; highlight security for user
+    idelem['have_written_down'].on_value_change(
+        # keep styled version for password manager, matching how login() keeps it
+        callback=lambda c: lk_element.props('type=password' if c.value else 'type=text')
+    )
 
     async def on_continue():
         if not idelem['have_written_down'].value:
@@ -111,7 +110,10 @@ def confirm(client: Client):
         )
         auth.log_in(aid, idelem['keep_me_logged_in'].value, client.request)
 
-    idelem['continue'].on_click(callback=on_continue)
+    # a real form (rather than `idelem['continue'].on_click(callback=on_continue)`) is more
+    # ... likely to be recognized by password managers
+    idelem['continue'].props('type=submit')
+    form.on('submit', on_continue, js_handler='(event) => { event.preventDefault(); emit(); }')
     # do not store login_key anywhere
 
 
@@ -128,10 +130,14 @@ def login(client: Client):
     sections = uif.parse_markdown_sections('login')
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=False)
-    idelem = uif.render_content(sections)
+    with ui.element('form').props('method=post') as form:  # add metadata for password managers
+        form.classes('w-full flex flex-col items-start gap-4')
+        idelem = uif.render_content(sections)
+    lk_element = idelem['login_key']
+    lk_element.props('type=password name=password autocomplete=current-password')
 
     async def on_continue():
-        login_key = lk.plain_login_key(idelem['login_key'].value.upper() or '')
+        login_key = lk.plain_login_key(lk_element.value.upper() or '')
         try:
             aid = db.validate_login_key(login_key, allowed_kinds=db.admin_or_manager)
         except db.CredentialsError as e:
@@ -139,17 +145,16 @@ def login(client: Client):
             return
         auth.log_in(aid, idelem['keep_me_logged_in'].value, client.request)
 
-    async def check_enter(e):
-        if e.args.get('key') == 'Enter':
-            await on_continue()
-
     async def on_blur():
-        login_key = lk.plain_login_key(idelem['login_key'].value.upper() or '')
-        idelem['login_key'].value = lk.styled_login_key(login_key)  # add dashes where needed
+        login_key = lk.plain_login_key(lk_element.value.upper() or '')
+        lk_element.value = lk.styled_login_key(login_key)  # add dashes where needed
+        # this also helps ensure that the styled version is grabbed by password managers
 
-    idelem['continue'].on_click(callback=on_continue)
-    idelem['login_key'].on('keydown', check_enter)  # pressing Enter submits form
-    idelem['login_key'].on('blur', on_blur)
+    # a real form (rather than `idelem['continue'].on_click(callback=on_continue)`) is more
+    # ... likely to be recognized by password managers
+    idelem['continue'].props('type=submit')
+    form.on('submit', on_continue, js_handler='(event) => { event.preventDefault(); emit(); }')
+    lk_element.on('blur', on_blur)
 
 
 ###
