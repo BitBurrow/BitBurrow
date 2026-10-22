@@ -69,11 +69,13 @@ def confirm(client: Client):
         return
     qparam_invite = client.request.query_params.get('invite')
     if not qparam_invite:  # invite code is required
-        ui.navigate.to(f'/welcome?invite={qparam_invite}')
+        ui.navigate.to('/welcome')
+        return
     try:  # validate (no other way to confirm that user came via /welcome)
         aid = db.validate_login_key(qparam_invite, allowed_kinds=db.invite)
-    except db.CredentialsError as e:  # send them back to /welcome
+    except db.CredentialsError:  # send them back to /welcome
         ui.navigate.to(f'/welcome?invite={qparam_invite}')
+        return
     sections = uif.parse_markdown_sections('confirm')
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=False)
