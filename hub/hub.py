@@ -158,10 +158,10 @@ def queue_rce(filename: str, await_reply: bool) -> None:
         task['signature'] = ''.join(task['signature'].split())
         if not task['signature']:
             raise Berror("B61196 missing document signature")
-        with db.device_by_subd(task['subd']) as device:
-            if not device.auth_pubkey or db.hub_peer_id(device.id) is None:
-                raise Berror(f"B56361 device for subd {task['subd']} not found")
-            tasks[path] = (device.id, task)
+        with db.base_by_subd(task['subd']) as base:
+            if not base.auth_pubkey or db.hub_peer_id(base.id) is None:
+                raise Berror(f"B56361 base for subd {task['subd']} not found")
+            tasks[path] = (base.id, task)
     pipes = dict()
     replies = dict()
     poller = select.poll()
@@ -181,8 +181,8 @@ def queue_rce(filename: str, await_reply: bool) -> None:
                 replies[descriptor] = (task['subd'], bytearray())
                 poller.register(descriptor, select.POLLIN)
         task_ids = set()
-        for device_id, task in tasks.values():  # note a DB failure may leave a partial batch queued
-            task_ids.add(db.enqueue_task(device_id, 'rce', args=task))
+        for base_id, task in tasks.values():  # note a DB failure may leave a partial batch queued
+            task_ids.add(db.enqueue_task(base_id, 'rce', args=task))
         range = f"{min(task_ids)}-{max(task_ids)}" if len(task_ids) > 1 else str(max(task_ids))
         print(
             f"RCE queued for {' '.join(t['subd'] for _, t in tasks.values())}; task_id {range}",
@@ -481,15 +481,15 @@ def entry_point():
         elif args.command == 'enable-wg':
             if db.engine.url.database in (None, '', ':memory:'):
                 raise Berror("B31782 enable-wg requires the daemon's persistent database")
-            with db.device_by_subd(args.subd) as device:
-                intf_id = db.hub_peer_id(device.id)
-                if not device.auth_pubkey or intf_id is None:
+            with db.base_by_subd(args.subd) as base:
+                intf_id = db.hub_peer_id(base.id)
+                if not base.auth_pubkey or intf_id is None:
                     raise Berror(f"B45396 {args.subd} is not an adopted, managed base")
-                if device.platform not in (db.Platform.INIT, db.Platform.SYSTEMD):
+                if base.platform not in (db.Platform.INIT, db.Platform.SYSTEMD):
                     raise Berror(f"B19358 {args.subd} must report an init or sysd platform")
-                device_id = device.id
+                base_id = base.id
             # the daemon polls the same database; do not call db.on_startup() here
-            db.enqueue_task(device_id, 'enable_wg', dedupe=3)
+            db.enqueue_task(base_id, 'enable_wg', dedupe=3)
             addresses = db.get_conf(intf_id)[0]['Address']
             print(f"WireGuard activation queued for {args.subd}; connect via {addresses}")
             sys.exit(0)

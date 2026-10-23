@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tn81xg'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tndq16'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -756,7 +756,7 @@ local function set_sleep_method(test_all_methods)
         local m_text = "sleep method " .. tostring(method) .. " (" .. sleep_methods[method] .. ")"
         if ok and elapsed and elapsed >= minimum_elapsed then
             log_debug(m_text .. " succeeded: " .. string.format('%.2f', elapsed) .. " seconds")
-            sleep_method = sleep_method or method  -- use first method that works on this device
+            sleep_method = sleep_method or method  -- use first method that works on this base
             if not test_all_methods then
                 return true
             end

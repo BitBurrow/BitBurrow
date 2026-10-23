@@ -39,7 +39,7 @@ import hub.util as util
 Berror = util.Berror
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
-hub_id = 1  # Intf.id of BitBurrow hub interface; also Device.id of hub device
+hub_id = 1  # Intf.id of BitBurrow hub interface; also Base.id of the hub row
 engine = None
 
 
@@ -145,7 +145,7 @@ class Account(SQLModel, table=True):
     email: str = ''  # optional, allow login key reset
     comment: str = ""
     login_sessions: list['LoginSession'] = Relationship(back_populates='account')
-    devices: list['Device'] = Relationship(back_populates='account')
+    bases: list['Base'] = Relationship(back_populates='account')
 
 
 def account_count(account_kind=AccountKind.NONE):
@@ -155,7 +155,7 @@ def account_count(account_kind=AccountKind.NONE):
         return session.query(Account).filter(Account.kind == account_kind).count()
 
 
-def new_account(kind: AccountKind, valid_for=TimeDelta(days=10950), parent_account_id=0):
+def new_account(kind: AccountKind, valid_for=TimeDelta(days=10950), parent_id: int | None = None):
     """Create a new account and return its login key."""
     account = Account()
     key = lk.generate_login_key(lk.key_len)
@@ -165,7 +165,7 @@ def new_account(kind: AccountKind, valid_for=TimeDelta(days=10950), parent_accou
         account.clients_max = 0  # admins cannot create VPN clients
     account.kind = kind
     account.valid_until = DateTime.now(TimeZone.utc) + valid_for
-    account.parent_id = parent_account_id
+    account.parent_id = parent_id
     with Session(engine) as session:
         new_login = lambda _: lk.generate_login_key(lk.login_len)
         set_unique_value(session, account, 'login', retry=50, valuef=new_login)
@@ -310,7 +310,7 @@ class LoginSessionKind(enum.Enum):
     TRASH = 0  # not valid; scheduled for deletion
     DISABLED = 10  # not yet valid
     COOKIE = 20  # stored in user's web browser
-    DEVICE_OTT = 30  # used as one-time-token to bootstrap a base router (adopt6c)
+    BASE_OTT = 30  # used as one-time-token to bootstrap a base router (adopt6c)
 
 
 class LoginSession(SQLModel, table=True):
@@ -352,7 +352,7 @@ def new_login_session(
         ls.ip = metadata.client.host if metadata.client else '(unknown)'
         ls.user_agent = metadata.headers.get('User-Agent', '')
     else:  # one-time token
-        ls.kind = LoginSessionKind.DEVICE_OTT
+        ls.kind = LoginSessionKind.BASE_OTT
         ls.ip = ''
         ls.user_agent = 'OTT'
     with Session(engine) as session:
@@ -388,7 +388,7 @@ def iter_get_login_session_by_account_id(aid: int | None):
 
 
 ###
-### DB table Device - VPN device
+### DB table Base - VPN base router or computer
 ###
 
 
@@ -412,9 +412,9 @@ default_fv = '0000000-aaaa'
 bbbased_path = 'hub/bbbased.lua'
 
 
-class Device(SQLModel, table=True):
+class Base(SQLModel, table=True):
     id: int | None = Field(primary_key=True, default=None)
-    account_id: int | None = Field(index=True, foreign_key='account.id')  # device admin--manager
+    account_id: int | None = Field(index=True, foreign_key='account.id')  # base admin--manager
     name: str = ''  # e.g. "Base SPW" but user can modify
     # for bases, subd is the left-most label of FQDN, e.g. y99g in y99g.vxm.example.org
     subd: str = Field(index=True, unique=True, default='')
@@ -426,7 +426,7 @@ class Device(SQLModel, table=True):
     long_polls: int = 0  # count of succesful pings (safe or probe)
     ott_id: int | None = Field(foreign_key='loginsession.id', default=None)  # one-time token
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
-    account: Account | None = Relationship(back_populates='devices')
+    account: Account | None = Relationship(back_populates='bases')
     file_version: str = default_fv  # last confirmed bbbased.lua version
     next_file_version: str = ''  # set on adopt5s; '' means no update in progress
     update_deadline: DateTime = DateTime(1970, 1, 1, tzinfo=TimeZone.utc)
@@ -443,7 +443,7 @@ class Device(SQLModel, table=True):
         """Return an approximate adoption state.
 
         Key adopt steps:
-        * adopt0c device created
+        * adopt0c base created
         * adopt1* automatic via phone app; see ui/setup-adopt.yaml
         * adopt2* manual via router web ui; see ui/setup-adopt.yaml
         * adopt5a OTT created
@@ -458,16 +458,16 @@ class Device(SQLModel, table=True):
         """
         if self.auth_pubkey == '':
             if self.ott_id is None:
-                return "adopt0c"  # device exists in DB
+                return "adopt0c"  # base exists in DB
             else:
                 return "adopt5a"  # OTT has been created
         else:
             return "adopt6c"  # OTT verified; auth_pubkey accepted
 
 
-def set_setup_ui_path(device_id: int, path: str) -> None:
+def set_setup_ui_path(base_id: int, path: str) -> None:
     with Session(engine) as session:
-        session.exec(update(Device).where(Device.id == device_id).values(setup_ui_path=path))
+        session.exec(update(Base).where(Base.id == base_id).values(setup_ui_path=path))
         session.commit()
 
 
@@ -477,42 +477,42 @@ def clamp_wait_seconds(wait_seconds: int | None) -> int:
     return min(90, wait_seconds)
 
 
-def record_long_poll_clean(device: Device) -> None:
+def record_long_poll_clean(base: Base) -> None:
     """Record a full long-poll response that did not time out."""
-    if device.long_poll_probe is not None:  # currently probing
-        device.long_polls += 1
-        if device.long_polls >= 5:  # when probe is successful 5 times, consider it okay
-            device.long_poll_safe = clamp_wait_seconds(device.long_poll_probe)
-            device.long_poll_probe = None  # no longer probing
-            device.long_polls = 0
-            intro = f"B04375 base {device.subd}"
-            logger.debug(f"{intro} long-poll safe timeout promoted to {device.long_poll_safe}s")
+    if base.long_poll_probe is not None:  # currently probing
+        base.long_polls += 1
+        if base.long_polls >= 5:  # when probe is successful 5 times, consider it okay
+            base.long_poll_safe = clamp_wait_seconds(base.long_poll_probe)
+            base.long_poll_probe = None  # no longer probing
+            base.long_polls = 0
+            intro = f"B04375 base {base.subd}"
+            logger.debug(f"{intro} long-poll safe timeout promoted to {base.long_poll_safe}s")
     else:  # not currently probing
-        device.long_polls += 1
-        if device.long_poll_safe >= 90:  # don't attempt probing longer than 90 seconds
+        base.long_polls += 1
+        if base.long_poll_safe >= 90:  # don't attempt probing longer than 90 seconds
             return
-        if device.long_polls >= 10:  # after 10 clean pings at the 'safe' timeout, begin probing
-            device.long_poll_probe = clamp_wait_seconds(device.long_poll_safe + 5)
-            device.long_polls = 0
-            logger.debug(f"B96805 base {device.subd} long-poll probing {device.long_poll_probe}s")
+        if base.long_polls >= 10:  # after 10 clean pings at the 'safe' timeout, begin probing
+            base.long_poll_probe = clamp_wait_seconds(base.long_poll_safe + 5)
+            base.long_polls = 0
+            logger.debug(f"B96805 base {base.subd} long-poll probing {base.long_poll_probe}s")
 
 
 def record_long_poll_timeout(subd: str) -> None:
-    """Record a client-reported long-poll timeout for one device."""
-    with device_by_subd(subd) as device:
-        if device.long_poll_probe is not None:  # currently probing
-            intro = f"B12689 base {device.subd} long-poll {device.long_poll_probe}s probe failed;"
-            logger.debug(f"{intro} keeping {device.long_poll_safe}s safe timeout")
-            device.long_poll_probe = None
-            device.long_polls = 0
+    """Record a client-reported long-poll timeout for one base."""
+    with base_by_subd(subd) as base:
+        if base.long_poll_probe is not None:  # currently probing
+            intro = f"B12689 base {base.subd} long-poll {base.long_poll_probe}s probe failed;"
+            logger.debug(f"{intro} keeping {base.long_poll_safe}s safe timeout")
+            base.long_poll_probe = None
+            base.long_polls = 0
         else:  # not currently probing
-            device.long_poll_safe = clamp_wait_seconds(device.long_poll_safe - 5)
-            device.long_polls = 0
-            intro = f"B36477 base {device.subd}"
-            logger.info(f"{intro} reduced long-poll safe timeout to {device.long_poll_safe}s")
+            base.long_poll_safe = clamp_wait_seconds(base.long_poll_safe - 5)
+            base.long_polls = 0
+            intro = f"B36477 base {base.subd}"
+            logger.info(f"{intro} reduced long-poll safe timeout to {base.long_poll_safe}s")
 
 
-def ott_filename(subd: str) -> str:  # a random-ish 8 characters that is unique to this device
+def ott_filename(subd: str) -> str:  # a random-ish 8 characters that is unique to this base
     fingerprint = f'{subd}/{conf.base_url()}'
     hash = hashlib.md5(fingerprint.encode('utf-8')).digest()
     return base64.urlsafe_b64encode(hash).decode()[0:8]
@@ -520,11 +520,11 @@ def ott_filename(subd: str) -> str:  # a random-ish 8 characters that is unique 
 
 def canary_list(platform: Platform) -> list[str]:
     with Session(engine) as session:
-        devices = session.exec(select(Device)).all()
+        bases = session.exec(select(Base)).all()
     return [
-        device.subd
-        for device in devices
-        if device.min_test_level.value < TestLevel.CAN_UPDATE.value and device.platform == platform
+        base.subd
+        for base in bases
+        if base.min_test_level.value < TestLevel.CAN_UPDATE.value and base.platform == platform
     ]
 
 
@@ -545,7 +545,7 @@ class IntfMethod(enum.Enum):  # method used to configure Wireguard
 
 class Intf(SQLModel, table=True):
     id: int | None = Field(primary_key=True, default=None)
-    device_id: int = Field(index=True, foreign_key='device.id')  # device this intf is on
+    base_id: int = Field(index=True, foreign_key='base.id')  # base this intf is on
     name: str = ''  # e.g. wgbby99g80 if subd is y99g
     ipv4_base: str = ''  # ipaddress.ip_network() but without a prefix length
     ipv6_base: str = ''
@@ -589,13 +589,13 @@ class Intf(SQLModel, table=True):
         return f'{self.ipv6()}/{self.allowed_ipv6_subnet}'
 
 
-def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> int:
+def new_intf(base_id: int, base_intf_id=None, base_is_hub: bool = False) -> int:
     """Create a new intf and return its id. For clients, set base_intf_id."""
-    intf = Intf(device_id=device_id)
+    intf = Intf(base_id=base_id)
     with Session(engine) as session:
-        device: Device = session.exec(select(Device).where(Device.id == device_id)).one_or_none()
-        if not device:
-            raise Berror(f"B48159 cannot find device {device_id}")
+        base: Base = session.exec(select(Base).where(Base.id == base_id)).one_or_none()
+        if not base:
+            raise Berror(f"B48159 cannot find base {base_id}")
         if base_intf_id:  # single-peer, i.e. new 'client': copy network details from base_intf
             assert base_is_hub == False
             statement = select(Intf).where(Intf.id == base_intf_id)
@@ -634,7 +634,7 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
             intf.allowed_ipv6_subnet = 0
         intf.base_intf_id = base_intf_id
         if base_is_hub:
-            intf.wg_privkey = net.sudo_wg(['genkey'])  # all managed devices generate own privkey
+            intf.wg_privkey = net.sudo_wg(['genkey'])  # all managed bases generate own privkey
             intf.wg_pubkey = net.sudo_wg(['pubkey'], input=intf.wg_privkey)
             # on the hub, use ports from config file
             intf.backend_port = conf.get('backend.wg_port')
@@ -649,7 +649,7 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
             intf.keepalive = 25  # so hub can track IP and initiate a connection to router
         session.add(intf)
         session.flush()  # assign intf.id before using it
-        intf.name = f'{wgif_prefix}{device.subd}{intf.id}'  # unique name on the device
+        intf.name = f'{wgif_prefix}{base.subd}{intf.id}'  # unique name on the base
         host_id_min = 39  # reserved 0..38
         host_id_limit = 2**intf.host_bits - 1
         if base_intf_id:  # single-peer, i.e. new 'client'
@@ -676,24 +676,24 @@ def new_intf(device_id: int, base_intf_id=None, base_is_hub: bool = False) -> in
 
 
 ###
-### DB table DeviceTask - queued item for a Device to do
+### DB table BaseTask - queued item for a Base to do
 ###
 
 
-class DeviceTaskStatus(enum.Enum):
+class BaseTaskStatus(enum.Enum):
     QUEUED = 20  # new, waiting
-    ASSIGNED = 40  # given to a device to do
+    ASSIGNED = 40  # given to a base to do
     DONE = 60
     FAILED = 80
 
 
-class DeviceTask(SQLModel, table=True):
+class BaseTask(SQLModel, table=True):
     __table_args__ = (
-        sqlalchemy.Index('ix_device_task_next', 'device_id', 'status', 'priority', 'position'),
+        sqlalchemy.Index('ix_base_task_next', 'base_id', 'status', 'priority', 'position'),
     )
     id: int | None = Field(primary_key=True, default=None)
-    device_id: int = Field(index=True, foreign_key='device.id')
-    status: DeviceTaskStatus = Field(default=DeviceTaskStatus.QUEUED)
+    base_id: int = Field(index=True, foreign_key='base.id')
+    status: BaseTaskStatus = Field(default=BaseTaskStatus.QUEUED)
     priority: int = Field(default=0)  # range -9 (lowest) to 9 (highest)
     position: int  # larger for newer tasks; multiple workers can cause dups
     method: str  # e.g. 'update', 'no_op'
@@ -714,46 +714,46 @@ class DeviceTask(SQLModel, table=True):
 
 def get_task(task_id):
     with Session(engine) as session:
-        return session.get(DeviceTask, task_id)
+        return session.get(BaseTask, task_id)
 
 
-def next_task(device_id: int, unstale: bool = True) -> DeviceTask | None:
-    """Assign and return the next (top) queued task for a device."""
+def next_task(base_id: int, unstale: bool = True) -> BaseTask | None:
+    """Assign and return the next (top) queued task for a base."""
     with Session(engine) as session:
 
         def stale_tasks_check(stale_after_seconds: int = 600) -> None:
             stale_before = DateTime.now(TimeZone.utc) - TimeDelta(seconds=stale_after_seconds)
             statement = (
-                sqlalchemy.update(DeviceTask)
-                .where(DeviceTask.device_id == device_id)
-                .where(DeviceTask.status == DeviceTaskStatus.ASSIGNED)
-                .where(DeviceTask.method != 'rce')
-                .where(DeviceTask.assigned_at != None)
-                .where(DeviceTask.assigned_at < stale_before)
+                sqlalchemy.update(BaseTask)
+                .where(BaseTask.base_id == base_id)
+                .where(BaseTask.status == BaseTaskStatus.ASSIGNED)
+                .where(BaseTask.method != 'rce')
+                .where(BaseTask.assigned_at != None)
+                .where(BaseTask.assigned_at < stale_before)
                 .values(
-                    status=DeviceTaskStatus.QUEUED,
+                    status=BaseTaskStatus.QUEUED,
                     assigned_at=None,
                 )
-                .returning(DeviceTask.id)
+                .returning(BaseTask.id)
             )
             task_ids = session.execute(statement).scalars().all()
             session.commit()
             if len(task_ids) == 1:
-                logger.warning(f"B14627 requeued stale task {task_ids[0]}, {device_id=}")
+                logger.warning(f"B14627 requeued stale task {task_ids[0]}, {base_id=}")
             elif task_ids:
-                logger.warning(f"B14628 requeued {len(task_ids)} stale tasks, {device_id=}")
+                logger.warning(f"B14628 requeued {len(task_ids)} stale tasks, {base_id=}")
 
         if unstale:
             stale_tasks_check()
         for retry in range(20):
             statement = (
-                select(DeviceTask.id)
-                .where(DeviceTask.device_id == device_id)
-                .where(DeviceTask.status == DeviceTaskStatus.QUEUED)
+                select(BaseTask.id)
+                .where(BaseTask.base_id == base_id)
+                .where(BaseTask.status == BaseTaskStatus.QUEUED)
                 .order_by(
-                    DeviceTask.priority.desc(),  # high priority trumps position
-                    DeviceTask.position.asc(),
-                    DeviceTask.id.asc(),  # is is tie-breaker if all others are equal
+                    BaseTask.priority.desc(),  # high priority trumps position
+                    BaseTask.position.asc(),
+                    BaseTask.id.asc(),  # is is tie-breaker if all others are equal
                 )
                 .limit(1)
             )
@@ -761,24 +761,24 @@ def next_task(device_id: int, unstale: bool = True) -> DeviceTask | None:
             if task_id is None:
                 return None  # no pending tasks
             update_statement = (
-                sqlalchemy.update(DeviceTask)
-                .where(DeviceTask.id == task_id)
-                .where(DeviceTask.status == DeviceTaskStatus.QUEUED)
+                sqlalchemy.update(BaseTask)
+                .where(BaseTask.id == task_id)
+                .where(BaseTask.status == BaseTaskStatus.QUEUED)
                 .values(
-                    status=DeviceTaskStatus.ASSIGNED,
+                    status=BaseTaskStatus.ASSIGNED,
                     assigned_at=DateTime.now(TimeZone.utc),
                 )
             )
             result = session.exec(update_statement)
             if result.rowcount == 1:
                 session.commit()
-                return session.get(DeviceTask, task_id)
+                return session.get(BaseTask, task_id)
             session.rollback()
-        raise Berror(f"B19708 could not find next task, {device_id=}")
+        raise Berror(f"B19708 could not find next task, {base_id=}")
 
 
 def enqueue_task(
-    device_id: int,
+    base_id: int,
     method: str,
     args: dict[str, Any] | None = None,
     priority: int = 0,
@@ -787,42 +787,42 @@ def enqueue_task(
     #     3 → dedup if method and args match
     #     7 → dedup if method matches (args can be different)
 ) -> int:
-    """Add a task to the bottom of a device's queue. Note dedupe is best-effort (race-prone)."""
+    """Add a task to the bottom of a base's queue. Note dedupe is best-effort (race-prone)."""
     task_args = args or dict()
     if priority < -9 or priority > 9:
         raise Berror(f"B25273 invalid priority {priority}")
     with Session(engine) as session:
         if dedupe > 0:
             statement = (
-                select(DeviceTask)
-                .where(DeviceTask.device_id == device_id)
-                .where(DeviceTask.method == method)
+                select(BaseTask)
+                .where(BaseTask.base_id == base_id)
+                .where(BaseTask.method == method)
                 .where(
-                    DeviceTask.status.in_(
+                    BaseTask.status.in_(
                         [
-                            DeviceTaskStatus.QUEUED,
-                            DeviceTaskStatus.ASSIGNED,
+                            BaseTaskStatus.QUEUED,
+                            BaseTaskStatus.ASSIGNED,
                         ],
                     ),
                 )
             )
             if dedupe <= 3:  # args must match
-                statement = statement.where(DeviceTask.args == task_args)
+                statement = statement.where(BaseTask.args == task_args)
             statement = statement.order_by(
-                DeviceTask.priority.desc(),
-                DeviceTask.position.asc(),
-                DeviceTask.id.asc(),
+                BaseTask.priority.desc(),
+                BaseTask.position.asc(),
+                BaseTask.id.asc(),
             ).limit(1)
             existing_task = session.exec(statement).first()
             if existing_task is not None:
                 return existing_task.id
-        position_statement = select(func.max(DeviceTask.position)).where(
-            DeviceTask.device_id == device_id,
+        position_statement = select(func.max(BaseTask.position)).where(
+            BaseTask.base_id == base_id,
         )
         max_position = session.exec(position_statement).one()  # max() always returns 1 value
-        task = DeviceTask(
-            device_id=device_id,
-            status=DeviceTaskStatus.QUEUED,
+        task = BaseTask(
+            base_id=base_id,
+            status=BaseTaskStatus.QUEUED,
             priority=priority,
             position=0 if max_position is None else max_position + 1,
             method=method,
@@ -834,30 +834,30 @@ def enqueue_task(
         return task.id
 
 
-def get_device_task_status(task_id: int, device_id: int) -> DeviceTaskStatus | None:
+def get_base_task_status(task_id: int, base_id: int) -> BaseTaskStatus | None:
     with Session(engine) as session:
-        task = session.get(DeviceTask, task_id)
-        if task is None or task.device_id != device_id:
+        task = session.get(BaseTask, task_id)
+        if task is None or task.base_id != base_id:
             return None
         return task.status
 
 
 def finish_task(
     session: Session,
-    task: DeviceTask,
-    status: DeviceTaskStatus,
-    prior_statuses: tuple[DeviceTaskStatus, ...],
+    task: BaseTask,
+    status: BaseTaskStatus,
+    prior_statuses: tuple[BaseTaskStatus, ...],
 ) -> bool:
     """Apply one validated task completion using the caller's session."""
     if task.status == status:
         logger.info(f"B30309 accepting already-recorded result for task {task.id}")
         return False
     statement = (
-        sqlalchemy.update(DeviceTask)
-        .where(DeviceTask.id == task.id)
-        .where(DeviceTask.device_id == task.device_id)
-        .where(DeviceTask.method == task.method)
-        .where(DeviceTask.status.in_(prior_statuses))
+        sqlalchemy.update(BaseTask)
+        .where(BaseTask.id == task.id)
+        .where(BaseTask.base_id == task.base_id)
+        .where(BaseTask.method == task.method)
+        .where(BaseTask.status.in_(prior_statuses))
         .values(
             status=status,
             finished_at=DateTime.now(TimeZone.utc),
@@ -873,36 +873,36 @@ def finish_task(
 
 def mark_task_status(
     task_id: int,
-    status: DeviceTaskStatus,
-    device_id: int | None = None,
+    status: BaseTaskStatus,
+    base_id: int | None = None,
 ) -> None:
     """Mark an assigned task as done or failed. Accept identical retries."""
-    if status not in (DeviceTaskStatus.DONE, DeviceTaskStatus.FAILED):
+    if status not in (BaseTaskStatus.DONE, BaseTaskStatus.FAILED):
         raise Berror(f"B14766 invalid task status {status}")
     with Session(engine) as session:
-        task = session.get(DeviceTask, task_id)
-        if task is None or (device_id is not None and task.device_id != device_id):
+        task = session.get(BaseTask, task_id)
+        if task is None or (base_id is not None and task.base_id != base_id):
             raise Berror(f"B92552 task {task_id} was not assigned")
-        finish_task(session, task, status, (DeviceTaskStatus.ASSIGNED,))
+        finish_task(session, task, status, (BaseTaskStatus.ASSIGNED,))
 
 
 def finish_task_result(
     task_id: int,
-    status: DeviceTaskStatus,
+    status: BaseTaskStatus,
     *,
-    device_id: int,
+    base_id: int,
     method: str,
 ) -> bool:
     """Validate and finish a reported task result; return true iff newly finished."""
-    if status not in (DeviceTaskStatus.DONE, DeviceTaskStatus.FAILED):
+    if status not in (BaseTaskStatus.DONE, BaseTaskStatus.FAILED):
         raise Berror(f"B14767 invalid task status {status}")
     with Session(engine) as session:
-        task = session.get(DeviceTask, task_id)
-        if task is None or task.device_id != device_id or task.method != method:
+        task = session.get(BaseTask, task_id)
+        if task is None or task.base_id != base_id or task.method != method:
             raise Berror(f"B92553 task {task_id} was not assigned")
-        prior_statuses = (DeviceTaskStatus.ASSIGNED,)
-        if method == 'discover_upnp' and status == DeviceTaskStatus.DONE:
-            prior_statuses += (DeviceTaskStatus.FAILED,)
+        prior_statuses = (BaseTaskStatus.ASSIGNED,)
+        if method == 'discover_upnp' and status == BaseTaskStatus.DONE:
+            prior_statuses += (BaseTaskStatus.FAILED,)
         return finish_task(session, task, status, prior_statuses)
 
 
@@ -911,59 +911,59 @@ def finish_task_result(
 ###
 
 
-def set_upnp_igd_result(device_id: int, upnp_igd_url: str) -> None:
+def set_upnp_igd_result(base_id: int, upnp_igd_url: str) -> None:
     """Store a completed UPnP discovery result and its completion time."""
     with Session(engine) as session:
-        device = session.get(Device, device_id)
-        if device is None:
-            raise Berror(f"B60562 device {device_id} not found")
-        device.upnp_igd_url = upnp_igd_url
-        device.upnp_igd_date = DateTime.now(TimeZone.utc)
-        session.add(device)
+        base = session.get(Base, base_id)
+        if base is None:
+            raise Berror(f"B60562 base {base_id} not found")
+        base.upnp_igd_url = upnp_igd_url
+        base.upnp_igd_date = DateTime.now(TimeZone.utc)
+        session.add(base)
         session.commit()
 
 
-def timeout_upnp_discovery(task_id: int, device_id: int) -> bool:
+def timeout_upnp_discovery(task_id: int, base_id: int) -> bool:
     """Fail an unfinished UPnP discovery task. Return true iff it was unfinished."""
     now = DateTime.now(TimeZone.utc)
     with Session(engine) as session:
-        task = session.get(DeviceTask, task_id)
-        if task is None or task.device_id != device_id or task.method != 'discover_upnp':
+        task = session.get(BaseTask, task_id)
+        if task is None or task.base_id != base_id or task.method != 'discover_upnp':
             raise Berror(f"B60563 invalid UPnP discovery task {task_id}")
         statement = (
-            sqlalchemy.update(DeviceTask)
-            .where(DeviceTask.id == task_id)
-            .where(DeviceTask.device_id == device_id)
+            sqlalchemy.update(BaseTask)
+            .where(BaseTask.id == task_id)
+            .where(BaseTask.base_id == base_id)
             .where(
-                DeviceTask.status.in_(
-                    [DeviceTaskStatus.QUEUED, DeviceTaskStatus.ASSIGNED],
+                BaseTask.status.in_(
+                    [BaseTaskStatus.QUEUED, BaseTaskStatus.ASSIGNED],
                 ),
             )
-            .values(status=DeviceTaskStatus.FAILED, finished_at=now)
+            .values(status=BaseTaskStatus.FAILED, finished_at=now)
         )
         result = session.exec(statement)
         if result.rowcount != 1:
             session.rollback()
             return False
-        device = session.get(Device, device_id)
-        if device is None:
+        base = session.get(Base, base_id)
+        if base is None:
             session.rollback()
-            raise Berror(f"B60564 device {device_id} not found")
-        device.upnp_igd_url = 'failed'
-        device.upnp_igd_date = now
-        session.add(device)
+            raise Berror(f"B60564 base {base_id} not found")
+        base.upnp_igd_url = 'failed'
+        base.upnp_igd_date = now
+        session.add(base)
         session.commit()
         return True
 
 
 ###
-### DB table Telemetry - health data for devices
+### DB table Telemetry - health data for bases
 ###
 
 
 class Telemetry(SQLModel, table=True):
     id: int | None = Field(primary_key=True, default=None)
-    device_id: int = Field(index=True, foreign_key='device.id')
+    base_id: int = Field(index=True, foreign_key='base.id')
     created_at: DateTime = Field(
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
         default_factory=lambda: DateTime.now(TimeZone.utc),
@@ -1106,10 +1106,10 @@ class BasedVer(SQLModel, table=True):
     id: int | None = Field(primary_key=True, default=None)
     commit_date: str = Field(index=True, default='')  # 7-character date; see net.b36datetime()
     # test_level_x must match class Platform() values
-    test_level_init: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.INIT
-    test_level_sysd: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.SYSTEMD
-    test_level_wind: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.WINDOWS
-    test_level_macs: TestLevel = TestLevel.UNTESTED  # where device.platform == Platform.MACOS
+    test_level_init: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.INIT
+    test_level_sysd: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.SYSTEMD
+    test_level_wind: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.WINDOWS
+    test_level_macs: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.MACOS
     used_total: int = 0
     used_fails: int = 0
     code: str = ''  # actual Lua
@@ -1174,7 +1174,7 @@ def check_bbbased_test_levels() -> None:
             logger.error(f"B53565 cannot find a bbbased version")  # should never happen
             return
         for p in Platform:
-            if session.exec(select(Device.id).where(Device.platform == p).limit(1)).first() is None:
+            if session.exec(select(Base.id).where(Base.platform == p).limit(1)).first() is None:
                 continue  # don't warn about platforms for which there are no base routers
             if bv.test_level(p).value < TestLevel.CAN_UPDATE.value:
                 canaries = canary_list(p)
@@ -1184,7 +1184,7 @@ def check_bbbased_test_levels() -> None:
                     logger.warning(
                         f"B15159 {error_msg} because there are no canary testers; add via: "
                         + '''bbadmin sqlite3 .config/bitburrow/data.sqlite'''
-                        + ''' "UPDATE device SET min_test_level = 'UNTESTED' '''
+                        + ''' "UPDATE base SET min_test_level = 'UNTESTED' '''
                         + '''WHERE subd IS 'y99g';"'''
                     )
                 else:
@@ -1193,20 +1193,20 @@ def check_bbbased_test_levels() -> None:
 
 
 def newest_approved_ver(
-    device: Device,
+    base: Base,
     session: Session,
 ) -> BasedVer | None:
-    """Return the newest BasedVer which has an approved test level for this Device."""
+    """Return the newest BasedVer which has an approved test level for this Base."""
     statement = select(BasedVer).order_by(BasedVer.commit_date.desc())
     bvs = session.exec(statement).all()
-    if device.platform:
+    if base.platform:
         for bv in bvs:
-            if bv.test_level(device.platform).value >= device.min_test_level.value:
+            if bv.test_level(base.platform).value >= base.min_test_level.value:
                 return bv
-    else:  # unknown platform, e.g. new devices: approved if *any* platform is tested
+    else:  # unknown platform, e.g. new bases: approved if *any* platform is tested
         # ChatGPT thinks should require INIT and SYSTEMD approval, but not all hubs have these
         for bv in bvs:
-            if any(bv.test_level(p).value >= device.min_test_level.value for p in any_platform):
+            if any(bv.test_level(p).value >= base.min_test_level.value for p in any_platform):
                 return bv
     return None
 
@@ -1217,33 +1217,31 @@ def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
     with Session(engine, expire_on_commit=False) as session:
         # use DB transactions to avoid inaccurate totals caused by overlapping requests
         session.connection().exec_driver_sql('BEGIN IMMEDIATE')  # Sqlite transaction
-        device: Device = session.exec(select(Device).where(Device.subd == subd)).one_or_none()
-        if device is None:
+        base: Base = session.exec(select(Base).where(Base.subd == subd)).one_or_none()
+        if base is None:
             raise Berror(f"B41474 cannot find subd {subd}")
         now = DateTime.now(TimeZone.utc)
-        update_deadline = device.update_deadline.replace(tzinfo=TimeZone.utc)
-        if device.next_file_version and update_deadline > now:  # update is in progress
-            statement = select(BasedVer).where(BasedVer.commit_date == device.next_file_version[:7])
+        update_deadline = base.update_deadline.replace(tzinfo=TimeZone.utc)
+        if base.next_file_version and update_deadline > now:  # update is in progress
+            statement = select(BasedVer).where(BasedVer.commit_date == base.next_file_version[:7])
             bv: BasedVer | None = session.exec(statement).one_or_none()
             if bv is None:
-                raise Berror(f"B95637 missing BasedVer for {device.next_file_version}")
+                raise Berror(f"B95637 missing BasedVer for {base.next_file_version}")
             session.commit()
             # test levels may have changed since the first download; keep its version and deadline
-            return bv, device.next_file_version
-        statement = select(Device).where(
-            Device.next_file_version != '', Device.update_deadline <= now
-        )
+            return bv, base.next_file_version
+        statement = select(Base).where(Base.next_file_version != '', Base.update_deadline <= now)
         # account for expired attempts before replacing a target or choosing another commit
-        for updating_device in session.exec(statement).all():
-            next_fv = updating_device.next_file_version
+        for updating_base in session.exec(statement).all():
+            next_fv = updating_base.next_file_version
             statement = select(BasedVer).where(BasedVer.commit_date == next_fv[:7])
             bv = session.exec(statement).one_or_none()
             if bv is None:
                 e = f"B63745 missing BasedVer for {next_fv}"
-                logger.warning(util.front_berror_code(e, updating_device.subd))
+                logger.warning(util.front_berror_code(e, updating_base.subd))
             else:
                 e = f"B10537 failed to update to {next_fv} before the deadline"
-                logger.info(util.front_berror_code(e, updating_device.subd))
+                logger.info(util.front_berror_code(e, updating_base.subd))
                 bv.used_total += 1
                 bv.used_fails += 1
                 if bv.used_fails >= 7 and bv.used_fails * 2 >= bv.used_total:
@@ -1252,21 +1250,21 @@ def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
                     for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
                         setattr(bv, f'test_level_{p.value}', TestLevel.FAILED)
                 session.add(bv)
-            updating_device.next_file_version = ''  # count this attempt only once
-            session.add(updating_device)
+            updating_base.next_file_version = ''  # count this attempt only once
+            session.add(updating_base)
         session.flush()  # keep the SQLite transaction active while choosing an approved version
-        bv = newest_approved_ver(device, session)
+        bv = newest_approved_ver(base, session)
         if bv is None:
             session.commit()  # retain timeout accounting even if no approved version remains
-            raise Berror(f"B95159 no bbbased version approved ({device.min_test_level=})")
-        device.next_file_version = bv.file_version()  # freeze this download's test levels
-        device.update_deadline = DateTime.now(TimeZone.utc) + TimeDelta(minutes=11)
-        session.add(device)
+            raise Berror(f"B95159 no bbbased version approved ({base.min_test_level=})")
+        base.next_file_version = bv.file_version()  # freeze this download's test levels
+        base.update_deadline = DateTime.now(TimeZone.utc) + TimeDelta(minutes=11)
+        session.add(base)
         session.commit()
-        return bv, device.next_file_version
+        return bv, base.next_file_version
 
 
-def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
+def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
     """This is long and complex. Handle with care. Note that, to reduce code complexity, versioning
     logic for updates is intentionally imprecise in some low-impact places, e.g. a
     past-deadline-update *may* count as successful."""
@@ -1281,12 +1279,12 @@ def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
     enqueue_update_task = False
     with Session(engine) as session:
         session.connection().exec_driver_sql('BEGIN IMMEDIATE')  # Sqlite transaction
-        device: Device = session.get(Device, device_id)
-        if device is None:
-            raise Berror(f"B56665 cannot find device {device_id}")
+        base: Base = session.get(Base, base_id)
+        if base is None:
+            raise Berror(f"B56665 cannot find base {base_id}")
         ## 1. store telemetry; as of 2026-05-19, adds around 99 KB per base per day to DB size
         telemetry = Telemetry(
-            device_id=device.id,
+            base_id=base.id,
             created_at=DateTime.now(TimeZone.utc),
             ip=ip,
             uptime=uptime,
@@ -1307,7 +1305,7 @@ def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
             os_version_id=os_release.get('VERSION_ID'),
         )
         session.add(telemetry)  # don't session.commit() here (would end transaction)
-        ## 2. set device.platform if needed
+        ## 2. set base.platform if needed
         try:
             platform = Platform(telem_data.get('platform'))
         except (TypeError, ValueError):
@@ -1317,40 +1315,40 @@ def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 platform = Platform.SYSTEMD
             e = f"B42419 cannot read platform; using '{platform}' from os_id"  # bug in bbbased.lua
             logger.warning(util.front_berror_code(e, subd, ip))
-        if device.platform != platform:
-            if device.platform is not None:
-                e = f"B14954 platform changed from {device.platform} to {platform}"
+        if base.platform != platform:
+            if base.platform is not None:
+                e = f"B14954 platform changed from {base.platform} to {platform}"
                 logger.warning(util.front_berror_code(e, subd, ip))
-            device.platform = platform
+            base.platform = platform
         ## 3. process file_version provided by the base router
         ping_fv = telem_data.get('file_version', None)  # full file_version reported by base router
         if not ping_fv or not isinstance(ping_fv, str) or len(ping_fv) != len(default_fv):
             e = f"B89068 invalid file_version: {ping_fv}"
             logger.warning(util.front_berror_code(e, subd, ip))
             ping_fv = default_fv
-        elif ping_fv != device.file_version:
-            if ping_fv > device.file_version:
-                e = f"B00672 updated from {device.file_version} to {ping_fv}"
+        elif ping_fv != base.file_version:
+            if ping_fv > base.file_version:
+                e = f"B00672 updated from {base.file_version} to {ping_fv}"
                 logger.info(util.front_berror_code(e, subd, ip))
             else:
-                e = f"B05553 unintended backport from {device.file_version} to {ping_fv}"
+                e = f"B05553 unintended backport from {base.file_version} to {ping_fv}"
                 logger.warning(util.front_berror_code(e, subd, ip))
-            device.file_version = ping_fv
-            if device.next_file_version and ping_fv != device.next_file_version:
-                e = f"B97229 downloaded {device.next_file_version} but reports {ping_fv}"
+            base.file_version = ping_fv
+            if base.next_file_version and ping_fv != base.next_file_version:
+                e = f"B97229 downloaded {base.next_file_version} but reports {ping_fv}"
                 logger.warning(util.front_berror_code(e, subd, ip))
-        if device.next_file_version and ping_fv == device.next_file_version:
+        if base.next_file_version and ping_fv == base.next_file_version:
             # confirm the exact download, even if unchanged or past due; clear only once
             statement = select(BasedVer).where(BasedVer.commit_date == ping_fv[:7])
             bv: BasedVer | None = session.exec(statement).one_or_none()
             if bv is None:
-                e = f"B05150 missing BasedVer for {device.next_file_version}"
+                e = f"B05150 missing BasedVer for {base.next_file_version}"
                 logger.warning(util.front_berror_code(e, subd, ip))
             else:
                 bv.used_total += 1
                 session.add(bv)
-            device.next_file_version = ''
-        session.add(device)  # don't session.commit() here (would end transaction)
+            base.next_file_version = ''
+        session.add(base)  # don't session.commit() here (would end transaction)
         ping_commit = ping_fv[0:7]
         tls = ping_fv[8:]  # test levels, (string of Platform values)
         try:
@@ -1386,7 +1384,7 @@ def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
             e = f"B12284 unknown version bbbased {ping_fv}"
             logger.warning(util.front_berror_code(e, subd, ip))
         ## 5. enqueue bbbased update if ready
-        approved_bv = newest_approved_ver(device, session)
+        approved_bv = newest_approved_ver(base, session)
         if approved_bv is None:
             e = f"B74409 no approved bbbased version available on {platform}"
             logger.debug(util.front_berror_code(e, subd, ip))
@@ -1406,7 +1404,7 @@ def process_ping(device_id: int, ip: str, telem_data: dict, subd: str) -> None:
     # enqueue_task() opens another session, so release our transaction first
     if enqueue_update_task:
         task_id = enqueue_task(
-            device_id=device_id,
+            base_id=base_id,
             method='update',
             args={'path': bbbased_path},
             priority=5,
@@ -1499,7 +1497,7 @@ def update_wg_show():
 
 
 def get_conf(intf_id) -> tuple:
-    """Return config details for one WireGuard interface on one device (a .conf file of data)."""
+    """Return config details for one WireGuard interface on one base (a .conf file of data)."""
     interface = dict()
     peers = list()
     # WireGuard config file docs: https://git.zx2c4.com/wireguard-tools/about/src/man/wg-quick.8
@@ -1740,113 +1738,111 @@ def hub_intf_exists(session):
     return session.exec(select(Intf).where(Intf.id == hub_id)).first() is not None
 
 
-def new_device_subd(session, device: Device) -> None:
+def new_base_subd(session, base: Base) -> None:
     # a domain name that begins with a digit is legal but occasionally problematic;
     # up to 439,040 base routers; Linux probably can't handle nearly that many anyhow
     subd = lambda _: (lk.generate_login_key_letters(1) + lk.generate_login_key(3)).lower()
-    set_unique_value(session, device, 'subd', retry=200, valuef=subd)
+    set_unique_value(session, base, 'subd', retry=200, valuef=subd)
 
 
 def create_hub_if_missing(session):
     """Don't call before needed in case conf.get('frontend.wg_port') is changed."""
     if not hub_intf_exists(session):
-        # create the hub Device
-        hub_device = Device(account_id=None, name="BitBurrow hub")
-        new_device_subd(session, hub_device)
-        session.add(hub_device)
+        # create the hub Base
+        hub_base = Base(account_id=None, name="BitBurrow hub")
+        new_base_subd(session, hub_base)
+        session.add(hub_base)
         session.commit()
-        assert hub_device.id == hub_id, f"B12466 unexpected {hub_device.id=}"
+        assert hub_base.id == hub_id, f"B12466 unexpected {hub_base.id=}"
         # create the hub Intf
-        hub_intf_id = new_intf(hub_device.id, base_is_hub=True)
+        hub_intf_id = new_intf(hub_base.id, base_is_hub=True)
         assert hub_intf_id == hub_id, f"B49296 unexpected {hub_intf_id=}"
         # launch WireGuard server (will be done at at startup from here on)
         hub_conf = get_conf(intf_id=hub_id)
         methodize(hub_conf, 'local.linux')
 
 
-def new_device(account_id, is_base: bool, name: str) -> str:
-    """Create a new device and return its subd."""
+def new_base(account_id, is_base: bool, name: str) -> str:
+    """Create a new base and return its subd."""
     with Session(engine) as session:
         if is_base:
             create_hub_if_missing(session)  # in case this is the first base router
-        device = Device(account_id=account_id)
-        new_device_subd(session, device)
-        session.add(device)
-        session.flush()  # make device.id available
+        base = Base(account_id=account_id)
+        new_base_subd(session, base)
+        session.add(base)
+        session.flush()  # make base.id available
         if (
-            device.id != hub_id
-            and session.exec(
-                select(Device.id).where(Device.id != hub_id, Device.id != device.id)
-            ).first()
+            base.id != hub_id
+            and session.exec(select(Base.id).where(Base.id != hub_id, Base.id != base.id)).first()
             is None
-        ):  # the *first* device must be a canary tester; see also berror code 15159
-            device.min_test_level = TestLevel.UNTESTED
-        device.name = name
+        ):  # the *first* base must be a canary tester; see also berror code 15159
+            base.min_test_level = TestLevel.UNTESTED
+        base.name = name
         session.commit()  # save the name and test level before new_intf() opens another session
-        if is_base:  # create an Intf for a WireGuard connection between the new device and the hub
-            hub_peer_id = new_intf(device_id=device.id, base_intf_id=hub_id)
-            logger.info(f"B16979 base {device.subd} completed adopt0c (Device {device.id} created)")
+        if is_base:  # create an Intf for a WireGuard connection between the new base and the hub
+            hub_peer_id = new_intf(base_id=base.id, base_intf_id=hub_id)
+            logger.info(f"B16979 base {base.subd} completed adopt0c (Base {base.id} created)")
         else:
-            logger.debug(f"B04560 device {device.id} created")
-        return device.subd
+            logger.debug(f"B04560 base {base.id} created")
+        return base.subd
 
 
-def get_device_by_ott_id(lsid: int) -> Device:
+def get_base_by_ott_id(lsid: int) -> Base:
     with Session(engine) as session:
         try:
-            return session.exec(select(Device).where(Device.ott_id == lsid)).one()
+            return session.exec(select(Base).where(Base.ott_id == lsid)).one()
         except sqlalchemy.exc.NoResultFound:
-            raise Berror(f"B65142 device for OTT {lsid} not found")
+            raise Berror(f"B65142 base for OTT {lsid} not found")
         except sqlalchemy.exc.MultipleResultsFound:
-            raise Berror(f"B05298 multiple devices found for OTT {lsid}")
+            raise Berror(f"B05298 multiple bases found for OTT {lsid}")
 
 
 @contextmanager
-def device_by_subd(subd: str, account_id: int | None = None):
-    """Yield a device and commit changes. With account_id, enforce setup access."""
+def base_by_subd(subd: str, account_id: int | None = None):
+    """Yield a base and commit changes. With account_id, enforce setup access."""
     # 'expire_on_commit=False' keeps fields loaded
     with Session(engine, expire_on_commit=False) as session:
-        statement = select(Device).where(Device.subd == subd)
+        statement = select(Base).where(Base.subd == subd)
         if account_id is not None:
             account = session.exec(select(Account).where(Account.id == account_id)).one()
-            statement = statement.where(Device.id != hub_id)  # the hub is not a setup target
+            statement = statement.where(Base.id != hub_id)  # the hub is not a setup target
             if account.kind != AccountKind.ADMIN:
-                statement = statement.where(Device.account_id == account_id)
+                statement = statement.where(Base.account_id == account_id)
         try:
-            device = session.exec(statement).one_or_none()
+            base = session.exec(statement).one_or_none()
         except sqlalchemy.exc.MultipleResultsFound:
-            raise Berror(f"B53274 multiple devices found for subd {subd}")
-        if device is None and account_id is None:
-            raise Berror(f"B59719 device for subd {subd} not found")
+            raise Berror(f"B53274 multiple bases found for subd {subd}")
+        if base is None and account_id is None:
+            raise Berror(f"B59719 base for subd {subd} not found")
         try:
-            yield device
+            yield base
             session.commit()
         except Exception:
             session.rollback()
             raise
 
 
-def iter_get_device_by_account_id(aid: int | None):
-    """Yield each device for account aid."""
+def iter_get_base_by_account_id(aid: int | None):
+    """Yield each base for account aid."""
     with Session(engine) as session:
         if aid is None:
-            statement = select(Device).where(Device.id != hub_id)  # don't show hub device
+            statement = select(Base).where(Base.id != hub_id)  # don't show the hub row
         else:
-            statement = select(Device).where(Device.account_id == aid)
-        for device in session.exec(statement):
-            yield device
+            statement = select(Base).where(Base.account_id == aid)
+        for base in session.exec(statement):
+            yield base
 
 
-def delete_device(id: int) -> None:
+def delete_base(id: int) -> None:
     with Session(engine) as session:
-        device: Device = session.get(Device, id)
-        if device is None:
-            logger.error(f"B54609 cannot find device {id} in delete_device()")
+        base: Base = session.get(Base, id)
+        if base is None:
+            logger.error(f"B54609 cannot find base {id} in delete_base()")
             return
-        ott_id = device.ott_id
-        intf_ids = session.exec(select(Intf.id).where(Intf.device_id == id)).all()
-        session.exec(delete(Telemetry).where(Telemetry.device_id == id))
-        session.exec(delete(DeviceTask).where(DeviceTask.device_id == id))
+        ott_id = base.ott_id
+        intf_ids = session.exec(select(Intf.id).where(Intf.base_id == id)).all()
+        session.exec(delete(Telemetry).where(Telemetry.base_id == id))
+        session.exec(delete(BaseTask).where(BaseTask.base_id == id))
         if intf_ids:
             session.exec(update(Account).where(Account.intf_id.in_(intf_ids)).values(intf_id=None))
             session.exec(
@@ -1854,50 +1850,48 @@ def delete_device(id: int) -> None:
                 .where(Intf.base_intf_id.in_(intf_ids))
                 .values(base_intf_id=None)  # clear 'pointer' to peer Intf we're about to delete
             )
-            session.exec(delete(Intf).where(Intf.device_id == id))
-        logger.info(f"B74506 deleting Device {device.subd} (id {id})")
-        session.delete(device)
+            session.exec(delete(Intf).where(Intf.base_id == id))
+        logger.info(f"B74506 deleting Base {base.subd} (id {id})")
+        session.delete(base)
         if ott_id is not None:
             ott = session.get(LoginSession, ott_id)
-            if ott is not None and ott.kind == LoginSessionKind.DEVICE_OTT:
+            if ott is not None and ott.kind == LoginSessionKind.BASE_OTT:
                 session.delete(ott)
         session.commit()
 
 
-def get_adopt5c_code(device_id, api_path: str, regenerate: bool = False) -> str:
+def get_adopt5c_code(base_id, api_path: str, regenerate: bool = False) -> str:
     """Return a shell script, e.g. for /etc/rc.local, to begin adopting a BitBurrow base router"""
     if not hasattr(get_adopt5c_code, 'cache'):
         get_adopt5c_code.cache = dict()
         get_adopt5c_code.cache_lock = threading.Lock()
     now = DateTime.now(TimeZone.utc)
     with get_adopt5c_code.cache_lock:
-        for cached_device_id, (expires_at, _) in list(get_adopt5c_code.cache.items()):
+        for cached_base_id, (expires_at, _) in list(get_adopt5c_code.cache.items()):
             if expires_at <= now:
-                del get_adopt5c_code.cache[cached_device_id]
+                del get_adopt5c_code.cache[cached_base_id]
         with Session(engine) as session:
-            device: Device = session.exec(
-                select(Device).where(Device.id == device_id)
-            ).one_or_none()
-            if not device:
-                raise Berror(f"B24371 cannot find device {device_id}")
+            base: Base = session.exec(select(Base).where(Base.id == base_id)).one_or_none()
+            if not base:
+                raise Berror(f"B24371 cannot find base {base_id}")
 
             def create_new_ott():
                 server_token_timedelta = TimeDelta(
                     minutes=45
                 )  # max time for base router to call API
                 # if changing max time above, search: tag_ott_valid_for
-                token, lsid = new_login_session(device.account_id, server_token_timedelta)
-                device.ott_id = lsid
+                token, lsid = new_login_session(base.account_id, server_token_timedelta)
+                base.ott_id = lsid
                 session.commit()
-                logger.info(f"B87566 base {device.subd} completed adopt5a (OTT {lsid} created)")
+                logger.info(f"B87566 base {base.subd} completed adopt5a (OTT {lsid} created)")
                 # note: if token[0] or token[22] is '-', echo still just echos, i.e. it
                 # doesn't complain about an invalid option :-)
                 value = (  # should be mirrored in delete_adopt5c_code(); search: tag_adopt5c_code
                     util.fix_lan_overlap_shell_code()  # avoid gzbify() OpenSSL dependency
-                    + f'T=/tmp/{ott_filename(device.subd)}\n'
+                    + f'T=/tmp/{ott_filename(base.subd)}\n'
                     + f'echo {token[0:22]}>$T\n'
                     + f'echo {token[22:]}>>$T\n'
-                    + f'U={conf.base_url()}{api_path.format(subd=device.subd)}\n'
+                    + f'U={conf.base_url()}{api_path.format(subd=base.subd)}\n'
                     + f'(curl $U || wget -O- $U) |sh\n'
                 )
                 # try to make sure delete_adopt5c_code() in bbbased.lua will work
@@ -1905,59 +1899,59 @@ def get_adopt5c_code(device_id, api_path: str, regenerate: bool = False) -> str:
                 cache_ttl = TimeDelta(
                     hours=1
                 )  # cache expires after 60 minutes and is purged on access
-                get_adopt5c_code.cache[device_id] = (now + cache_ttl, value)
+                get_adopt5c_code.cache[base_id] = (now + cache_ttl, value)
                 return value
 
             if regenerate:  # create a new OTT no matter what
-                get_adopt5c_code.cache.pop(device_id, None)
-                if device.ott_id is not None:  # invalidate former OTT
-                    log_out(device.ott_id)
-                    device.ott_id = None
+                get_adopt5c_code.cache.pop(base_id, None)
+                if base.ott_id is not None:  # invalidate former OTT
+                    log_out(base.ott_id)
+                    base.ott_id = None
                 return create_new_ott()
             ls: LoginSession | None = None
-            if device.ott_id is not None:  # device has OTT id
+            if base.ott_id is not None:  # base has OTT id
                 ls = session.exec(
-                    select(LoginSession).where(LoginSession.id == device.ott_id)
+                    select(LoginSession).where(LoginSession.id == base.ott_id)
                 ).one_or_none()
-                if not ls:  # couldn't find OTT, so clear its id from device
-                    logger.warning(f"B82963 device {device_id} OTT id seems to not exist")
-                    device.ott_id = None
+                if not ls:  # couldn't find OTT, so clear its id from base
+                    logger.warning(f"B82963 base {base_id} OTT id seems to not exist")
+                    base.ott_id = None
                     session.commit()
                 else:  # OTT exists
                     if ls.valid_until.replace(tzinfo=TimeZone.utc) <= now:
-                        if device.adopt_state() >= 'adopt6c':
+                        if base.adopt_state() >= 'adopt6c':
                             # unlikely or impossible to get here, but it's fine
                             return "(code has already been processed)"
                         else:
                             return "(code has expired)"
                     # valid OTT exists
-                    assert ls.kind == LoginSessionKind.DEVICE_OTT
-                    cached = get_adopt5c_code.cache.get(device_id)
+                    assert ls.kind == LoginSessionKind.BASE_OTT
+                    cached = get_adopt5c_code.cache.get(base_id)
                     if cached is None:
-                        logger.warning(f"B21159 device {device_id} cached OTT lost; hub restarted?")
+                        logger.warning(f"B21159 base {base_id} cached OTT lost; hub restarted?")
                         return "(unable to display)"
                     else:
                         expires_at, value = cached  # expires_at was checked above
                         return value
             # no OTT
-            if device.adopt_state() >= 'adopt6c':  # OTT does not exist, but base is adopted
+            if base.adopt_state() >= 'adopt6c':  # OTT does not exist, but base is adopted
                 return "(code has been used and accepted)"
             else:
                 return create_new_ott()
 
 
-def store_adopt6c_pubkey(device_id, auth_pubkey: str):
+def store_adopt6c_pubkey(base_id, auth_pubkey: str):
     with Session(engine) as session:
         try:
-            device: Device = session.exec(select(Device).where(Device.id == device_id)).one()
+            base: Base = session.exec(select(Base).where(Base.id == base_id)).one()
         except sqlalchemy.exc.NoResultFound:
-            raise Berror(f"B49534 device {device_id} not found")
-        device.auth_pubkey = auth_pubkey
-        session.add(device)
+            raise Berror(f"B49534 base {base_id} not found")
+        base.auth_pubkey = auth_pubkey
+        session.add(base)
         session.commit()
 
 
-def store_wg_pubkey(device_id, wg_pubkey: str) -> tuple[dict, list[dict]]:
+def store_wg_pubkey(base_id, wg_pubkey: str) -> tuple[dict, list[dict]]:
     """Activate the base's hub peer and return get_conf() for its local interface."""
     try:
         key = base64.b64decode(wg_pubkey, validate=True)
@@ -1967,16 +1961,16 @@ def store_wg_pubkey(device_id, wg_pubkey: str) -> tuple[dict, list[dict]]:
         raise Berror("B63892 invalid WireGuard public key")
     with Session(engine) as session:
         try:
-            device: Device = session.exec(select(Device).where(Device.id == device_id)).one()
+            base: Base = session.exec(select(Base).where(Base.id == base_id)).one()
         except sqlalchemy.exc.NoResultFound:
-            raise Berror(f"B99176 device {device_id} not found")
-        statement = select(Intf).where(Intf.device_id == device.id, Intf.base_intf_id == hub_id)
+            raise Berror(f"B99176 base {base_id} not found")
+        statement = select(Intf).where(Intf.base_id == base.id, Intf.base_intf_id == hub_id)
         try:
             intf: Intf = session.exec(statement).one()
         except sqlalchemy.exc.NoResultFound:
-            raise Berror(f"B92660 wgbb{device.subd}1 not found")
+            raise Berror(f"B92660 wgbb{base.subd}1 not found")
         except sqlalchemy.exc.MultipleResultsFound:
-            raise Berror(f"B59694 multiple wgbb{device.subd}1 found")
+            raise Berror(f"B59694 multiple wgbb{base.subd}1 found")
         if intf.wg_pubkey and intf.wg_pubkey != wg_pubkey:
             hub_intf = session.get(Intf, intf.base_intf_id)
             net.sudo_wg(['set', hub_intf.name, 'peer', intf.wg_pubkey, 'remove'])  # removed old key
@@ -1988,13 +1982,13 @@ def store_wg_pubkey(device_id, wg_pubkey: str) -> tuple[dict, list[dict]]:
         return get_conf(intf.id)
 
 
-def hub_peer_id(device_id) -> int | None:
-    """Return the id of the intf on the device which connects to the hub, or None if unmanaged."""
+def hub_peer_id(base_id) -> int | None:
+    """Return the id of the intf on the base which connects to the hub, or None if unmanaged."""
     with Session(engine) as session:
         try:
             intf = session.exec(
                 select(Intf).where(
-                    Intf.device_id == device_id,
+                    Intf.base_id == base_id,
                     Intf.base_intf_id == hub_id,
                 )
             ).one()

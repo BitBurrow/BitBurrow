@@ -15,14 +15,15 @@ import hub.util as util
 # 1. update your SQLModel classes (note that the migration below will not fill in default
 #      values for new fields)
 # 2. increment db_schema_version below
-# 3. run bbhub and verify that it does this correctly:
+# 3. append data/schema changes to migrate_versions(); see version 48 → 49
+# 4. run bbhub and verify that it does this correctly:
 #    * copy `data.sqlite` to `data.1.sqlite`
 #    * build a fresh schema file
 #    * copy column intersections from the old DB
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 48
+db_schema_version = 49
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -91,36 +92,32 @@ def copy_data_from_old_db_to_new(new_db_path: str, old_db_path: str) -> None:
             conn.execute('''DETACH DATABASE old_db;''')
 
 
-def migrate(db_path: str) -> None:
-    if not os.path.exists(db_path):
-        return  # not an error because it may have not been created yet
-    with sqlite_conn(db_path) as conn:
-        row = conn.execute('''PRAGMA user_version;''').fetchone()
-        current_version = int(row[0] if row and row[0] is not None else 0)
-    if current_version >= db_schema_version:
-        return
-    logger.info(f"B49255 migrating database from version {current_version} to {db_schema_version}")
+@contextmanager
+def temporary_db(db_path: str):
+    """Reserve a private temporary DB beside the original, and remove it on exit."""
     with tempfile.NamedTemporaryFile(
-        dir=os.path.dirname(db_path),  # in the same directory
-        prefix='data-',
-        suffix=".sqlite",
-        delete=False,
-        mode="w",
+        dir=os.path.dirname(db_path), prefix='data-', suffix='.sqlite', delete=False
     ) as f:
         tmp_path = f.name
-    engine = create_engine(f'sqlite:///{tmp_path}')
-    SQLModel.metadata.create_all(engine)
-    with sqlite_conn(tmp_path) as conn:
-        conn.execute(f'''PRAGMA user_version = {int(db_schema_version)};''')
-    copy_data_from_old_db_to_new(tmp_path, db_path)
-    util.rotate_backups(db_path, tmp_path)
-    if current_version < 23:  # version 22 → 23: renamed 2 Intf data fields
+    try:
+        yield tmp_path
+    finally:
+        for suffix in ('-journal', '-wal', '-shm', ''):
+            try:
+                os.remove(tmp_path + suffix)
+            except FileNotFoundError:
+                pass
+
+
+def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
+    """Run migration sections with version < section_version <= target."""
+    # migrate() calls this twice: 49+ on the stored schema, then pre-49 on the rebuilt schema.
+    if version < 23 <= target:  # version 22 → 23: renamed 2 Intf data fields
         with sqlite_conn(db_path) as conn:
             conn.execute('''ALTER TABLE "Intf" RENAME COLUMN "privkey" TO "wg_privkey";''')
             conn.execute('''ALTER TABLE "Intf" RENAME COLUMN "pubkey" TO "wg_pubkey";''')
-        current_version = 23
-    if current_version < 27:  # version 26 → 27: added Device.subd
-        engine = create_engine(f"sqlite:///{db_path}")
+        version = 23
+    if version < 27 <= target:  # version 26 → 27: added Device.subd
         with Session(engine) as session:
             statement = select(db.Intf.device_id).where(db.Intf.base_intf_id == db.hub_id)
             device_ids = session.exec(statement.distinct()).all()
@@ -131,16 +128,14 @@ def migrate(db_path: str) -> None:
                     continue
                 db.set_unique_value(session, device, "subd", retry=200, valuef=subd)
             session.commit()
-        current_version = 27
-    if current_version < 30:  # version 29 → 30: add LoginSession.kind
-        engine = create_engine(f"sqlite:///{db_path}")
+        version = 27
+    if version < 30 <= target:  # version 29 → 30: add LoginSession.kind
         with Session(engine) as session:
             statement = update(db.LoginSession).values(kind=db.LoginSessionKind.COOKIE)
             session.exec(statement)
             session.commit()
-        current_version = 30
-    if current_version < 32:  # version 31 → 32: add 2 Device fields
-        engine = create_engine(f"sqlite:///{db_path}")
+        version = 30
+    if version < 32 <= target:  # version 31 → 32: add 2 Device fields
         with Session(engine) as session:
             statement = update(db.Device).values(
                 last_endpoint=None,
@@ -148,16 +143,14 @@ def migrate(db_path: str) -> None:
             )
             session.exec(statement)
             session.commit()
-        current_version = 32
-    if current_version < 33:  # version 32 → 33: update Device table
-        engine = create_engine(f"sqlite:///{db_path}")
+        version = 32
+    if version < 33 <= target:  # version 32 → 33: update Device table
         with Session(engine) as session:
             statement = update(db.Device).values(min_test_level=db.TestLevel.CAN_UPDATE)
             session.exec(statement)
             session.commit()
-        current_version = 33
-    if current_version < 36:  # version 35 → 36: add long-poll timeout tuning fields
-        engine = create_engine(f"sqlite:///{db_path}")
+        version = 33
+    if version < 36 <= target:  # version 35 → 36: add long-poll timeout tuning fields
         with Session(engine) as session:
             statement = update(db.Device).values(
                 long_poll_safe=25,  # see tag_long_poll_min_time
@@ -166,9 +159,8 @@ def migrate(db_path: str) -> None:
             )
             session.exec(statement)
             session.commit()
-        current_version = 36
-    if current_version < 43:  # version 42 → 43: add Intf.name
-        engine = create_engine(f"sqlite:///{db_path}")
+        version = 36
+    if version < 43 <= target:  # version 42 → 43: add Intf.name
         with Session(engine) as session:
             statement = select(db.Intf, db.Device.subd).join(
                 db.Device,
@@ -177,12 +169,11 @@ def migrate(db_path: str) -> None:
             for intf, subd in session.exec(statement):
                 intf.name = f'{db.wgif_prefix}{subd}{intf.id}'
             session.commit()
-        current_version = 43
-    if current_version < 44:  # version 43 → 44: recalculate all Intf address fields
+        version = 43
+    if version < 44 <= target:  # version 43 → 44: recalculate all Intf address fields
         import ipaddress
         import secrets
 
-        engine = create_engine(f"sqlite:///{db_path}")
         with Session(engine) as session:
             intfs = {intf.id: intf for intf in session.exec(select(db.Intf))}
             # calculate each multi-peer network once, before updating its clients
@@ -215,9 +206,8 @@ def migrate(db_path: str) -> None:
                 intf.ipv6_base = base_intf.ipv6_base
                 intf.host_bits = base_intf.host_bits
             session.commit()
-        current_version = 44
-    if current_version < 46:  # version 45 → 46: add 3 Device columns
-        engine = create_engine(f"sqlite:///{db_path}")
+        version = 44
+    if version < 46 <= target:  # version 45 → 46: add Device columns (before Device → Base rename)
         with Session(engine) as session:
             statement = update(db.Device).values(
                 file_version=db.default_fv,
@@ -238,7 +228,72 @@ def migrate(db_path: str) -> None:
             #    )
             #    WHERE json_type(other, '$.signature') = 'text';
             #    SQL
-        current_version = 46
-    # if current_version < ...
+        version = 46
+    if version < 49 <= target:  # version 48 → 49: rename 'device' to 'base' globally
+        # new approach for this section and future migrations:
+        # db_path is a private copy of the STORED schema, before the generic rebuild;
+        # rename tables/columns and transform stored data here so the generic name-based
+        # copier can preserve it; add a column here first if a data UPDATE needs it;
+        # the rebuild afterward creates the latest columns, indexes and constraints;
+        with sqlite_conn(db_path) as conn:
+            conn.execute('BEGIN IMMEDIATE;')  # include the schema changes in one transaction
+            tables = {
+                r[0] for r in conn.execute('''SELECT name FROM sqlite_master WHERE type='table';''')
+            }
+            columns = {r[1] for r in conn.execute('PRAGMA table_info(account);')}
+            if 'parent_id' in columns:
+                conn.execute('''UPDATE account SET parent_id=NULL
+                    WHERE parent_id=0 AND NOT EXISTS (SELECT 1 FROM account WHERE id=0);''')
+            for old_table, table in (('device', 'base'), ('devicetask', 'basetask')):
+                if old_table in tables:
+                    conn.execute(f'ALTER TABLE "{old_table}" RENAME TO "{table}";')
+            for table in ('intf', 'basetask', 'telemetry'):
+                columns = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}");')}
+                if 'device_id' in columns:
+                    conn.execute(f'ALTER TABLE "{table}" RENAME COLUMN device_id TO base_id;')
+            # Older legacy schemas may predate LoginSession.kind; their old section
+            # initializes it after rebuilding.
+            columns = {r[1] for r in conn.execute('PRAGMA table_info(loginsession);')}
+            if 'kind' in columns:
+                conn.execute('''UPDATE loginsession SET kind='BASE_OTT' WHERE kind='DEVICE_OTT';''')
+        version = 49
+    # if version < ... <= target:
     #     ...
-    #     current_version = ...
+    #     version = ...
+
+
+def migrate(db_path: str) -> None:
+    if not os.path.exists(db_path):
+        return  # not an error because it may have not been created yet
+    db_path = os.path.abspath(db_path)  # temporary files and backups must share this directory
+    with sqlite_conn(db_path) as conn:
+        row = conn.execute('PRAGMA user_version;').fetchone()
+        version = int(row[0] if row and row[0] is not None else 0)
+    if version >= db_schema_version:
+        return
+    legacy_version = 48  # last version whose sections run *after* rebuilding
+    logger.info(f"B49255 migrating database from version {version} to {db_schema_version}")
+    with temporary_db(db_path) as working_path, temporary_db(db_path) as rebuilt_path:
+        with sqlite_conn(db_path) as source, sqlite_conn(working_path) as working:
+            source.backup(working)  # include committed WAL data in the snapshot
+            working.execute('PRAGMA journal_mode=DELETE;')  # keep the snapshot in one file
+        engine = create_engine(f'sqlite:///{working_path}')
+        try:
+            migrate_versions(working_path, max(version, legacy_version), db_schema_version, engine)
+        finally:
+            engine.dispose()
+        engine = create_engine(f'sqlite:///{rebuilt_path}')
+        try:
+            SQLModel.metadata.create_all(engine)
+            copy_data_from_old_db_to_new(rebuilt_path, working_path)
+            migrate_versions(rebuilt_path, version, legacy_version, engine)
+        finally:
+            engine.dispose()
+        with sqlite_conn(rebuilt_path) as conn:
+            invalid_fk = conn.execute('PRAGMA foreign_key_check;').fetchone()
+            if invalid_fk is not None:
+                raise util.Berror(
+                    f"B12048 migrated database has an invalid foreign key: {invalid_fk}"
+                )
+            conn.execute(f'PRAGMA user_version = {int(db_schema_version)};')
+        util.rotate_backups(db_path, rebuilt_path)

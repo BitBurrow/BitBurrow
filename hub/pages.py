@@ -89,7 +89,7 @@ def confirm(client: Client):
     login_key = db.new_account(
         kind=db.AccountKind.NONE,  # in DB but disabled until confirmed
         valid_for=TimeDelta(days=1),  # expire in 1 day if not confirmed
-        parent_account_id=aid,  # id of invite code used
+        parent_id=aid,  # id of invite code used
     )
     lk_element.set_value(lk.styled_login_key(login_key))
 
@@ -216,17 +216,17 @@ def home(client: Client):
         rows = list()
         now = DateTime.now(TimeZone.utc)
         id_to_query = None if kind == db.AccountKind.ADMIN else aid
-        for device in db.iter_get_device_by_account_id(aid=id_to_query):
+        for base in db.iter_get_base_by_account_id(aid=id_to_query):
             new_row = {
-                'id': device.id,
-                'login': device.account.login,
-                'name': device.name,
-                'subd': device.subd,
-                'fqdn': f'{device.subd}.{conf.get('frontend.domain')}' if device.subd else '-',
+                'id': base.id,
+                'login': base.account.login,
+                'name': base.name,
+                'subd': base.subd,
+                'fqdn': f'{base.subd}.{conf.get('frontend.domain')}' if base.subd else '-',
             }
-            if device.last_endpoint:
-                new_row['last_ip'] = device.last_endpoint
-                last_seen = now - DateTime.fromtimestamp(device.last_handshake, TimeZone.utc)
+            if base.last_endpoint:
+                new_row['last_ip'] = base.last_endpoint
+                last_seen = now - DateTime.fromtimestamp(base.last_handshake, TimeZone.utc)
                 if last_seen < TimeDelta(minutes=4):
                     new_row['last_seen'] = "just now"
                 else:
@@ -313,7 +313,7 @@ def home(client: Client):
             return
         button.disable()
         try:
-            db.delete_device(card['id'])
+            db.delete_base(card['id'])
             nonlocal cards
             cards = build_rows()
             render_cards()
@@ -323,7 +323,7 @@ def home(client: Client):
 
     async def on_add_item():
         base_name = idelem['base_name'].value[:70] or f'Base {lk.generate_login_key(3)}'
-        subd = db.new_device(account_id=aid, is_base=True, name=base_name)
+        subd = db.new_base(account_id=aid, is_base=True, name=base_name)
         ui.navigate.to(f'/setup/{subd}')
 
     render_cards()
@@ -340,9 +340,9 @@ def setup(client: Client, subd: str):
         lsid, aid, kind = auth.require_login(client)
     except db.CredentialsError:
         return
-    with db.device_by_subd(subd, aid) as device:
-        if not device:
-            sections = uif.parse_markdown_sections('device-not-found')
+    with db.base_by_subd(subd, aid) as base:
+        if not base:
+            sections = uif.parse_markdown_sections('base-not-found')
             if lk.sanitize_subd(subd) != subd:
                 subd = ''  # avoid '{{ ' injection and don't show different subd if invalid format
             for i, s in enumerate(sections):
@@ -359,8 +359,8 @@ def setup(client: Client, subd: str):
         if upnp_status_label is not None:
             upnp_status_label.set_text(message)
 
-    def upnp_result_text(current_device: db.Device) -> str:
-        result = current_device.upnp_igd_url
+    def upnp_result_text(current_base: db.Base) -> str:
+        result = current_base.upnp_igd_url
         if result == 'disabled':
             return "UPnP discovery is disabled for this base router."
         if result == 'unavailable':
@@ -375,8 +375,8 @@ def setup(client: Client, subd: str):
         controller_ip = urllib.parse.unquote(controller_ip).split('%', 1)[0]
         return f"UPnP is available. Controller IP address: {controller_ip}"
 
-    def upnp_result_is_recent(current_device: db.Device) -> bool:
-        attempted = current_device.upnp_igd_date
+    def upnp_result_is_recent(current_base: db.Base) -> bool:
+        attempted = current_base.upnp_igd_date
         if attempted is None:
             return False
         if attempted.tzinfo is None or attempted.tzinfo.utcoffset(attempted) is None:
@@ -390,15 +390,15 @@ def setup(client: Client, subd: str):
             return
         upnp_running = True
         try:
-            with db.device_by_subd(subd, aid) as current_device:
-                if current_device is None:
+            with db.base_by_subd(subd, aid) as current_base:
+                if current_base is None:
                     show_upnp_status("The base router could not be found.")
                     return
-            if current_device.upnp_igd_url == 'disabled':
-                show_upnp_status(upnp_result_text(current_device))
+            if current_base.upnp_igd_url == 'disabled':
+                show_upnp_status(upnp_result_text(current_base))
                 return
-            if upnp_result_is_recent(current_device):
-                show_upnp_status(upnp_result_text(current_device))
+            if upnp_result_is_recent(current_base):
+                show_upnp_status(upnp_result_text(current_base))
                 return
             show_upnp_status("Checking whether UPnP is available…")
             try:  # enqueue UPnP discovery task
@@ -407,7 +407,7 @@ def setup(client: Client, subd: str):
                 if not pcap:
                     raise Berror("B60561 UPnP discovery packet capture is unavailable")
                 task_id = db.enqueue_task(
-                    device_id=current_device.id,
+                    base_id=current_base.id,
                     method='discover_upnp',
                     args={'pcap': base64.b64encode(pcap).decode('ascii')},
                     priority=8,
@@ -415,32 +415,32 @@ def setup(client: Client, subd: str):
                 )
             except Berror as e:
                 logger.warning(str(e))
-                db.set_upnp_igd_result(current_device.id, 'failed')
+                db.set_upnp_igd_result(current_base.id, 'failed')
                 show_upnp_status("Could not determine whether UPnP is available.")
                 return
             deadline = asyncio.get_running_loop().time() + 30
             while asyncio.get_running_loop().time() < deadline:
-                task_status = db.get_device_task_status(task_id, current_device.id)
-                if task_status in (db.DeviceTaskStatus.DONE, db.DeviceTaskStatus.FAILED):
-                    with db.device_by_subd(subd, aid) as current_device:
-                        if current_device is None:
+                task_status = db.get_base_task_status(task_id, current_base.id)
+                if task_status in (db.BaseTaskStatus.DONE, db.BaseTaskStatus.FAILED):
+                    with db.base_by_subd(subd, aid) as current_base:
+                        if current_base is None:
                             show_upnp_status("The base router could not be found.")
                         else:
-                            show_upnp_status(upnp_result_text(current_device))
+                            show_upnp_status(upnp_result_text(current_base))
                     return
                 if task_status is None:
-                    db.set_upnp_igd_result(current_device.id, 'failed')
+                    db.set_upnp_igd_result(current_base.id, 'failed')
                     show_upnp_status("Could not determine whether UPnP is available.")
                     return
                 await asyncio.sleep(0.25)
-            if db.timeout_upnp_discovery(task_id, current_device.id):
+            if db.timeout_upnp_discovery(task_id, current_base.id):
                 message = f"UPnP discovery task {task_id} timed out"
-                logger.info(f"B60568 base {current_device.subd} {message}")
-            with db.device_by_subd(subd, aid) as current_device:
-                if current_device is None:
+                logger.info(f"B60568 base {current_base.subd} {message}")
+            with db.base_by_subd(subd, aid) as current_base:
+                if current_base is None:
                     show_upnp_status("The base router could not be found.")
                 else:
-                    show_upnp_status(upnp_result_text(current_device))
+                    show_upnp_status(upnp_result_text(current_base))
         finally:
             upnp_running = False
 
@@ -534,19 +534,19 @@ def setup(client: Client, subd: str):
 
     def set_adopt5c_code(obj):
         adopt5c_code_obj['value'] = obj
-        obj.set_content(db.get_adopt5c_code(device.id, api.adopt5l_route))
+        obj.set_content(db.get_adopt5c_code(base.id, api.adopt5l_route))
 
     async def on_regenerate_adopt5c_code():
         obj = adopt5c_code_obj['value']
         if obj is None:
             return
-        with db.device_by_subd(subd, aid) as current_device:
-            if current_device is None:
+        with db.base_by_subd(subd, aid) as current_base:
+            if current_base is None:
                 ui.notify("This base router could not be found.")
                 return
-        if current_device.adopt_state() >= 'adopt6c':
+        if current_base.adopt_state() >= 'adopt6c':
             # note: if base is up, this is a race because next ping will invalidate the OTT
-            # search: tag_invalidate_device_ott
+            # search: tag_invalidate_base_ott
             text = adopt_idelem['dialogs']['adopt5c_regenerate']
             with ui.dialog() as dialog, ui.card().classes('max-w-xl'):
                 ui.label(text['message']).classes('text-subtitle2')
@@ -556,7 +556,7 @@ def setup(client: Client, subd: str):
                     button('confirm', True).props('flat color=negative')
             if not await dialog:
                 return
-        obj.set_content(db.get_adopt5c_code(device.id, api.adopt5l_route, regenerate=True))
+        obj.set_content(db.get_adopt5c_code(base.id, api.adopt5l_route, regenerate=True))
 
     def set_adopt5c_regenerate(obj):
         obj.on(
@@ -586,8 +586,8 @@ def setup(client: Client, subd: str):
             adopt_idelem = uif.render_stepper(
                 'adopt',
                 idelem_lambdas,
-                initial_path=device.setup_ui_path,
-                on_path_change=lambda path: db.set_setup_ui_path(device.id, path),
+                initial_path=base.setup_ui_path,
+                on_path_change=lambda path: db.set_setup_ui_path(base.id, path),
             )
         with ui.tab_panel('enable'):
             with ui.card().classes('w-full max-w-5xl mb-4'):

@@ -34,7 +34,7 @@ logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, 
 active_long_polls = 0
 active_long_polls_lock = asyncio.Lock()
 
-adopt5l_route = '/5l/{subd}'  # download adopt5p.sh  (list of adopt stages in class Device())
+adopt5l_route = '/5l/{subd}'  # download adopt5p.sh  (list of adopt stages in class Base())
 adopt5s_route = '/5s/{subd}'  # download bbbased.lua
 log_err_route = '/er/{subd}'  # errors from base router
 jsonrpc_route = '/api/v1'
@@ -251,9 +251,9 @@ class UpnpDiscoveryTaskResult:
             e = f"B60566 UPnP IGD control URL: {igd['control_url']}{selected}"
             logger.info(util.front_berror_code(e, subd, ip))
 
-    def finish(self, device) -> None:
-        device.upnp_igd_url = self.upnp_igd_url
-        device.upnp_igd_date = DateTime.now(TimeZone.utc)
+    def finish(self, base) -> None:
+        base.upnp_igd_url = self.upnp_igd_url
+        base.upnp_igd_date = DateTime.now(TimeZone.utc)
 
 
 ###
@@ -322,11 +322,11 @@ def adopt6c(
     ip = request.client.host if request.client else '(unknown)'
     try:
         # authenticate
-        lsid, aid, kind = db.get_account_by_token(token, db.LoginSessionKind.DEVICE_OTT)
+        lsid, aid, kind = db.get_account_by_token(token, db.LoginSessionKind.BASE_OTT)
         # verify subd
-        device = db.get_device_by_ott_id(lsid)
-        if device.subd != subd:
-            raise Berror(f"B88940 subd mismatch for OTT {lsid} ({device.subd} != {subd})")
+        base = db.get_base_by_ott_id(lsid)
+        if base.subd != subd:
+            raise Berror(f"B88940 subd mismatch for OTT {lsid} ({base.subd} != {subd})")
         # validate auth_pubkey before storing it
         try:
             public_key = serialization.load_pem_public_key(auth_pubkey.encode("utf-8"))
@@ -337,13 +337,13 @@ def adopt6c(
         if public_key.key_size < 2048:
             raise Berror("B99756 auth_pubkey too small")
         # store public keys
-        db.store_adopt6c_pubkey(device.id, auth_pubkey)
+        db.store_adopt6c_pubkey(base.id, auth_pubkey)
     except (Berror, db.CredentialsError) as e:
         logger.warning(f"{e} (base {subd} at {ip})")
         raise BaseError("B87908 invalid adopt6c request")  # for security, give generic API response
     else:
         logger.info(f"B70924 base {subd} completed adopt6c from {ip}")
-    # keep OTT valid until client confirms handshake; search: tag_invalidate_device_ott
+    # keep OTT valid until client confirms handshake; search: tag_invalidate_base_ott
     return BaseResult(subd=subd, status="ok")
 
 
@@ -570,11 +570,11 @@ async def ping(
     ping_now = DateTime.now(TimeZone.utc)
     completed_full_wait = False
     wait_seconds = 25
-    with db.device_by_subd(subd) as device:
+    with db.base_by_subd(subd) as base:
         try:
             payload = await verify_signed_request(
                 request=request,
-                auth_pubkey_pem=device.auth_pubkey,
+                auth_pubkey_pem=base.auth_pubkey,
                 allow_sha256_fallback=True,
             )
             params = payload['params']
@@ -583,17 +583,17 @@ async def ping(
         except (Berror, db.CredentialsError) as e:
             logger.warning(util.front_berror_code(e, subd, ip))
             raise BaseError("B23086 invalid ping request")  # generic API response for security
-        if device.ott_id is not None:
-            db.log_out(device.ott_id)
-            device.ott_id = None  # search: tag_invalidate_device_ott
-            logger.info(f"B51437 base {device.subd} completed adopt6e from {ip}")
-        device.last_endpoint = ip
-        device.last_handshake = int(ping_now.timestamp())
-        wait_seconds = device.long_poll_probe or device.long_poll_safe
-        device_id = device.id
-    try:  # close the outer device transaction before process_ping() reserves the SQLite writer
+        if base.ott_id is not None:
+            db.log_out(base.ott_id)
+            base.ott_id = None  # search: tag_invalidate_base_ott
+            logger.info(f"B51437 base {base.subd} completed adopt6e from {ip}")
+        base.last_endpoint = ip
+        base.last_handshake = int(ping_now.timestamp())
+        wait_seconds = base.long_poll_probe or base.long_poll_safe
+        base_id = base.id
+    try:  # close the outer base transaction before process_ping() reserves the SQLite writer
         await run_in_threadpool(  # don't block; https://fastapi.tiangolo.com/async/#other-utility-functions
-            db.process_ping, device_id=device_id, ip=ip, telem_data=telemetry, subd=subd
+            db.process_ping, base_id=base_id, ip=ip, telem_data=telemetry, subd=subd
         )
     except Berror as e:
         logger.warning(util.front_berror_code(e, subd, ip))
@@ -617,7 +617,7 @@ async def ping(
                 remaining = round((wait_until - now).total_seconds())
                 logger.info(f'B88349 base {subd} connection disconnected ({remaining}s remaining)')
                 return BaseResult(subd=subd, status='ok')
-            task = db.next_task(device_id, unstale=stale_tasks_check)
+            task = db.next_task(base_id, unstale=stale_tasks_check)
             stale_tasks_check = False  # avoid unnecessary DB activity
             if task:
                 return BaseResult(
@@ -633,8 +633,8 @@ async def ping(
         async with active_long_polls_lock:
             active_long_polls -= 1
         if completed_full_wait:
-            with db.device_by_subd(subd) as device:
-                db.record_long_poll_clean(device)
+            with db.base_by_subd(subd) as base:
+                db.record_long_poll_clean(base)
 
 
 @jsonrpc_entrypoint.method(errors=[BaseError])
@@ -647,11 +647,11 @@ async def task_result(
     output: str = Body(...),
 ) -> BaseResult:
     ip = request.client.host if request.client else '(unknown)'
-    with db.device_by_subd(subd) as device:
+    with db.base_by_subd(subd) as base:
         try:
             payload = await verify_signed_request(
                 request=request,
-                auth_pubkey_pem=device.auth_pubkey,
+                auth_pubkey_pem=base.auth_pubkey,
                 allow_sha256_fallback=True,
             )
             params = payload['params']
@@ -668,22 +668,22 @@ async def task_result(
             if processor:
                 ok = processor.ok
                 output = processor.output
-            status = db.DeviceTaskStatus.DONE if ok else db.DeviceTaskStatus.FAILED
+            status = db.BaseTaskStatus.DONE if ok else db.BaseTaskStatus.FAILED
             try:
                 newly_finished = db.finish_task_result(
-                    int(task_id), status, device_id=device.id, method=task_method
+                    int(task_id), status, base_id=base.id, method=task_method
                 )
             except ValueError:
                 raise Berror(f"B72809 invalid task_id: {task_id}")
             if processor and newly_finished:
-                processor.finish(device)
+                processor.finish(base)
             status = 'succeeded' if ok else 'failed'
             e = f"B35214 finished task {task_id} {task_method} {status}: {repr(output[:100])}"
             (logger.debug if ok else logger.info)(util.front_berror_code(e, subd, ip))
         except (Berror, db.CredentialsError) as e:
             logger.warning(f"{e} (base {subd} at {ip})")
             raise BaseError("B34089 invalid task_result request")
-        # device.telemetry = ...
+        # base.telemetry = ...
     if task_method == 'rce' and newly_finished:
         await util.write_to_pipe(
             int(task_id),
@@ -701,11 +701,11 @@ async def wg(
 ) -> BaseResult:
     """Store the base's WireGuard key and return its interface and peer configuration."""
     ip = request.client.host if request.client else '(unknown)'
-    with db.device_by_subd(subd) as device:
+    with db.base_by_subd(subd) as base:
         try:
             payload = await verify_signed_request(
                 request=request,
-                auth_pubkey_pem=device.auth_pubkey,
+                auth_pubkey_pem=base.auth_pubkey,
                 allow_sha256_fallback=True,
             )
             params = payload['params']
@@ -713,7 +713,7 @@ async def wg(
                 raise Berror(f"B71924 subd mismatch: {params.get('subd')} != {subd}")
             if params.get('pubkey') != pubkey:
                 raise Berror("B21788 pubkey mismatch")
-            interface, peers = db.store_wg_pubkey(device.id, pubkey)
+            interface, peers = db.store_wg_pubkey(base.id, pubkey)
             interface.pop('PrivateKey', None)  # never used on base, and causes Berror 27754 if sent
             wg_conf = {'Interface': interface, 'Peers': peers}
         except (Berror, db.CredentialsError) as e:

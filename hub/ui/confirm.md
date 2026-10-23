@@ -7,7 +7,7 @@
 For security reasons, this login key will not be shown again. Copy it to a safe place,
 such as secure notes or a password manager. You may also write it on the bottom of the
 new base router if that location is physically secure. If you lose this login key,
-you will no longer be able to make changes to your BitBurrow devices.
+you will no longer be able to make changes to your BitBurrow base devices.
 
 After clicking 'Continue' below, you will be logged in. To log in later, return to the
 'Welcome' page and choose 'Log in' from the menu in the top-right corner.
