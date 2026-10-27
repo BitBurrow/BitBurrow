@@ -33,14 +33,18 @@ test "x$SUDO_USER" != "xroot" || (echo "Run this script as a normal user using '
 SUDO_USER_HOME=$(eval echo "~$SUDO_USER")
 
 ## install dependencies
-sudo apt update
-sudo apt install -y wget ansible
+if ! command -v wget >/dev/null || ! command -v ansible-playbook >/dev/null; then
+  sudo apt update
+  sudo apt install -y wget ansible
+fi
 
 ## create Ansible script that does most of the installing
 mkdir -p "$SUDO_USER_HOME/hub/"
 cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
 ---
 - hosts: localhost
+  connection: local  # don't use Ansible over ssh
+  gather_facts: false  # save time; not needed for these tasks
   become: true
   tasks:
 
@@ -197,6 +201,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
   - name: Create config file with given domain, ip
     command:
       cmd: "{{ bbhub }} generate-config {{ domain }} {{ ip }}"
+      creates: /home/bitburrow/.config/bitburrow/config.yaml
     become_user: bitburrow
     when: domain is defined
 
@@ -320,41 +325,44 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       state: file
       suffix: .sh
     register: certbot_tmp
+    changed_when: false  # just a temp file
 
   - name: Wildcard TLS cert 🦶2--build certbot script
     command:
       cmd: "{{ bbhub }} tls-cert-script"
     become_user: bitburrow
     register: certbot_script
+    changed_when: false
 
   - name: Wildcard TLS cert 🦶3--write temp file
     copy:
       dest: "{{ certbot_tmp.path }}"
       content: "{{ certbot_script.stdout }}"
       mode: "0700"
+    changed_when: false
 
   - name: Wildcard TLS cert 🦶4--run script
     shell: |-
+      set -e
+      certbot_setup_script=/root/.cache/bitburrow/certbot-setup.done.sh
+      if cmp -s {{ certbot_tmp.path }} "$certbot_setup_script"; then
+        exit 0
+      fi
       {{ certbot_tmp.path }}
+      install -D --mode 0600 {{ certbot_tmp.path }} "$certbot_setup_script"
+      echo BBSETUP_TLS_CHANGED
+    register: certbot_run
+    changed_when: "'BBSETUP_TLS_CHANGED' in certbot_run.stdout_lines"
 
   - name: Wildcard TLS cert 🦶5--clean up
     file:
       path: "{{ certbot_tmp.path }}"
       state: absent
+    changed_when: false
 _EOF3703_
 
-## enable `ssh localhost` and run Ansible script
+## run Ansible script locally
 cat <<"_EOF6471_" |sudo --user $SUDO_USER bash -s -- "$domain" "$ip"
-mkdir -p ~/.ssh/
-if test ! -f ~/.ssh/id_ed25519; then
-    ssh-keygen -q -f ~/.ssh/id_ed25519 -N '' -t ed25519
-fi
-if ! (grep $(cat ~/.ssh/id_ed25519.pub |awk '{print $2}') ~/.ssh/authorized_keys); then
-    cat ~/.ssh/id_ed25519.pub >>~/.ssh/authorized_keys
-    echo "* $(cat /etc/ssh/ssh_host_ecdsa_key.pub)" >>~/.ssh/known_hosts
-fi
-chmod go-w ~ ~/.ssh
-chmod ugo-x,go-w ~/.ssh/authorized_keys
 mkdir -p ~/hub/ && cd $_
 if test "x$1" = "x"; then
   ansible-playbook -i localhost, install.yaml

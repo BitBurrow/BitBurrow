@@ -603,8 +603,9 @@ def tls_cert_script():  # script to run certbot for wildcard TLS cert
                 --preferred-challenge=dns \
                 --register-unsafely-without-email \
                 -d '*.'{domain} -d {domain} \
-                --server https://acme-v02.api.letsencrypt.org/directory \
-                && sudo touch /etc/letsencrypt/{domain}.registered
+                --server https://acme-v02.api.letsencrypt.org/directory
+            # if certbot fails, the 'set -e' will stop here; the former '&&' won't
+            sudo touch /etc/letsencrypt/{domain}.registered
         fi
         # fix permissions so bbhub can read cert
         sudo setfacl -Rm d:user:bitburrow:rx,user:bitburrow:rx /etc/letsencrypt/
