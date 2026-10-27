@@ -155,24 +155,36 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
     become_user: bitburrow
     register: rfbrowser_dryrun
     changed_when: false
+    failed_when: >-
+      rfbrowser_dryrun.rc not in [0, 1] or
+      (rfbrowser_dryrun.rc == 1 and 'Missing system dependencies (' not in rfbrowser_dryrun.stdout) or
+      'Cannot install dependencies' in rfbrowser_dryrun.stdout
 
   - name: Install bbhub 🦶6--extract RF dependencies list from output
     set_fact:
-      rfbrowser_apt_sudo_cmd: >-
+      rfbrowser_missing_deps: >-
         {{
-          (rfbrowser_dryrun.stdout
-            | regex_search('^sudo -- sh -c .apt-get[^\r\n]*"$', multiline=True))
-          | mandatory('Could not find a matching apt-get line')
+          rfbrowser_dryrun.stdout
+            | regex_findall('^[ \t]+([a-z0-9][a-z0-9+.:-]*)\r?$', multiline=True)
         }}
 
-  - name: Install bbhub 🦶7--install Robot Framework dependencies
-    shell: |-
-      {{ rfbrowser_apt_sudo_cmd }}
-    register: rfbrowser_apt_install
-    changed_when: >-
-      '0 upgraded, 0 newly installed' not in (rfbrowser_apt_install.stdout | default(''))
-    when:
-      - rfbrowser_apt_sudo_cmd | length > 0
+  - name: Install bbhub 🦶7--check that the RF dependencies output was recognized
+    assert:
+      that:
+        - >-
+          rfbrowser_missing_deps | length > 0 or
+          'All system dependencies are installed.' in rfbrowser_dryrun.stdout
+      fail_msg: |
+        Could not recognize the RF dependencies in dry-run output.
+        ******* stdout: \n{{ rfbrowser_dryrun.stdout }}
+        ******* stderr: \n{{ rfbrowser_dryrun.stderr }}
+  
+  - name: Install bbhub 🦶8--install Robot Framework dependencies
+    apt:
+      name: "{{ rfbrowser_missing_deps }}"
+      state: present
+      install_recommends: false
+    when: rfbrowser_missing_deps | length > 0
 
   - name: Define bbhub path
     set_fact:
