@@ -267,6 +267,10 @@ def migrate(db_path: str) -> None:
         return  # not an error because it may have not been created yet
     db_path = os.path.abspath(db_path)  # temporary files and backups must share this directory
     with sqlite_conn(db_path) as conn:
+        has_tables = conn.execute('''SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1;''').fetchone()
+        if has_tables is None:
+            return
         row = conn.execute('PRAGMA user_version;').fetchone()
         version = int(row[0] if row and row[0] is not None else 0)
     if version >= db_schema_version:

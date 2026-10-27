@@ -463,7 +463,13 @@ def entry_point():
             util.mkdir_r(os.path.dirname(db_file))
             migrate_db.migrate(db_file)
             db.engine = create_engine(f'sqlite:///{db_file}', echo=args.create_engine_echo)
-            SQLModel.metadata.create_all(db.engine)
+            with db.engine.begin() as conn:
+                conn.exec_driver_sql('BEGIN IMMEDIATE;')
+                has_tables = conn.exec_driver_sql('''SELECT 1 FROM sqlite_master
+                    WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1;''').first()
+                SQLModel.metadata.create_all(conn)
+                if has_tables is None:  # include SQLite schema changes in the transaction
+                    conn.exec_driver_sql(f'PRAGMA user_version = {migrate_db.db_schema_version};')
         if args.command == 'migrate-config':
             conf.save(args.config_file)
             print(f"Config file migrated: {args.config_file}")
