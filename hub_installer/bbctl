@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -e
+
+usage() {
+    cat <<EOF
+Usage:
+  $0 init LXC_NAME
+  $0 install LXC_NAME HUB_DOMAIN HUB_IP
+  $0 setup LXC_NAME [COMMAND [ARGS...]]
+  $0 admin LXC_NAME [COMMAND [ARGS...]]
+  $0 hub LXC_NAME [ARGS...]
+  $0 help
+EOF
+}
+
+case ${1:-} in
+    help|'') usage; exit 0 ;;
+    init|setup|admin|hub|install) ;;
+    *) usage >&2; exit 1 ;;
+esac
+[[ $# -ge 2 ]] || { usage >&2; exit 1; }
+command=$1
+lxc_name=$2
+shift 2
+
+case $command in
+    init)
+        [[ $# -eq 0 ]] || { usage >&2; exit 1; }
+        lxc launch ubuntu: "$lxc_name"
+        ;;
+    install)
+        [[ $# -eq 2 ]] || { usage >&2; exit 1; }
+        lxc exec "$lxc_name" -- sudo --user ubuntu -i sh -c \
+            'test -e bbsetup || wget -O bbsetup https://raw.githubusercontent.com/BitBurrow/BitBurrow/main/hub_installer/bbsetup'
+        lxc exec "$lxc_name" -- sudo --user ubuntu -i sudo bash bbsetup install "$@"
+        ;;
+    setup)
+        lxc exec "$lxc_name" -- sudo --user ubuntu -i "$@"
+        ;;
+    admin)
+        lxc exec "$lxc_name" -- sudo --user bitburrow -i "$@"
+        ;;
+    hub)
+        lxc exec "$lxc_name" -- sudo --user bitburrow -i \
+            /home/bitburrow/bitburrow/.venv/bin/bbhub "$@"
+        ;;
+esac
