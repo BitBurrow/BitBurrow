@@ -97,7 +97,7 @@ def insert_item_before(existing_item: str, new_key: str, new_value: str):
     insert_item_after(existing_item, new_key, new_value, before_not_after=True)
 
 
-def migrate(domain='', public_ip=''):  # update config data to current format
+def migrate():  # update config data to current format
     if (cfv := get('programmatic_use_only')) < 5078:
         raise Berror(f"B79322 invalid config_file_version: {cfv}")
     if cfv != config_fv:
@@ -156,13 +156,13 @@ def migrate(domain='', public_ip=''):  # update config data to current format
         insert_item_before('programmatic_use_only', 'help', new_branch)
         # section: frontend
         new_branch = yaml.safe_load(textwrap.dedent(f'''
-                    domain: {domain}
+                    domain: vxm.example.org
                     site_code: {site_code}
                     web_port: 8443
                     web_proto: https
                     wg_port: {wg_port}
                     ips:
-                    - {public_ip}
+                    - 203.0.113.9
                 ''').lstrip())
         insert_item_before('programmatic_use_only', 'frontend', new_branch)
         # section: backend
@@ -264,7 +264,7 @@ def save(path: str):
     util.rotate_backups(path, tmp_path)
 
 
-def generate(path, domain, public_ip):
+def generate(path):
     global config
     config_file_template = 'programmatic_use_only: 5078'
     # note we safe_load() and then dump() the YAML so we can migrate() and also to
@@ -273,7 +273,7 @@ def generate(path, domain, public_ip):
         config = yaml.safe_load(config_file_template)
     except (yaml.parser.ParserError, yaml.scanner.ScannerError) as e:
         raise Berror(f"B06494 cannot parse YAML data: {e}")
-    migrate(domain, public_ip)
+    migrate()
     try:
         old_umask = os.umask(0o077)  # create a file with 0600 permissions
         util.mkdir_r(os.path.dirname(path))

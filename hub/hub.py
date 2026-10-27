@@ -86,14 +86,6 @@ def cli(return_help_text=False):
         "generate-config",
         help="Create a new config file with specified domain and public IP address",
     )
-    p_generate_config.add_argument(
-        "gc_domain",
-        type=str,
-    )
-    p_generate_config.add_argument(
-        "gc_public_ip",
-        type=str,
-    )
     subparsers.add_parser(
         "migrate-config",
         help="Migrate an existing config file to the current version. Make a backup "
@@ -449,7 +441,7 @@ def entry_point():
     try:
         args = cli()
         if args.command == 'generate-config':
-            conf.generate(args.config_file, args.gc_domain, args.gc_public_ip)
+            conf.generate(args.config_file)
             print(f"Config file generated: {args.config_file}")
             sys.exit(0)
         conf.load(args.config_file)

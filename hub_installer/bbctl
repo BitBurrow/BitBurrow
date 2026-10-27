@@ -4,18 +4,20 @@ set -e
 usage() {
     cat <<EOF
 Usage:
-  $0 init LXC_NAME
-  $0 install LXC_NAME HUB_DOMAIN HUB_IP
-  $0 setup LXC_NAME [COMMAND [ARGS...]]
-  $0 admin LXC_NAME [COMMAND [ARGS...]]
-  $0 hub LXC_NAME [ARGS...]
-  $0 help
+  bbctl init LXC_NAME
+  bbctl phase1 LXC_NAME
+  bbctl phase3 LXC_NAME
+  bbctl setup LXC_NAME [COMMAND [ARGS...]]
+  bbctl admin LXC_NAME [COMMAND [ARGS...]]
+  bbctl hub LXC_NAME [ARGS...]
+  bbctl upgrade LXC_NAME
+  bbctl help
 EOF
 }
 
 case ${1:-} in
     help|'') usage; exit 0 ;;
-    init|setup|admin|hub|install) ;;
+    init|phase1|phase3|setup|admin|hub|upgrade) ;;
     *) usage >&2; exit 1 ;;
 esac
 [[ $# -ge 2 ]] || { usage >&2; exit 1; }
@@ -28,11 +30,16 @@ case $command in
         [[ $# -eq 0 ]] || { usage >&2; exit 1; }
         lxc launch ubuntu: "$lxc_name"
         ;;
-    install)
-        [[ $# -eq 2 ]] || { usage >&2; exit 1; }
+    phase1)
+        [[ $# -eq 0 ]] || { usage >&2; exit 1; }
         lxc exec "$lxc_name" -- sudo --user ubuntu -i sh -c \
             'test -e bbsetup || wget -O bbsetup https://raw.githubusercontent.com/BitBurrow/BitBurrow/main/hub_installer/bbsetup'
-        lxc exec "$lxc_name" -- sudo --user ubuntu -i sudo bash bbsetup install "$@"
+        lxc exec "$lxc_name" -- sudo --user ubuntu -i sudo bash bbsetup phase1
+        ;;
+    phase3)
+        [[ $# -eq 0 ]] || { usage >&2; exit 1; }
+        lxc exec "$lxc_name" -- sudo --user ubuntu -i sudo bash bbsetup phase3
+        lxc exec "$lxc_name" -- sudo --user bitburrow -i /home/bitburrow/bitburrow/.venv/bin/bbhub test all
         ;;
     setup)
         lxc exec "$lxc_name" -- sudo --user ubuntu -i "$@"
@@ -41,7 +48,10 @@ case $command in
         lxc exec "$lxc_name" -- sudo --user bitburrow -i "$@"
         ;;
     hub)
-        lxc exec "$lxc_name" -- sudo --user bitburrow -i \
-            /home/bitburrow/bitburrow/.venv/bin/bbhub "$@"
+        lxc exec "$lxc_name" -- sudo --user bitburrow -i /home/bitburrow/bitburrow/.venv/bin/bbhub "$@"
+        ;;
+    upgrade)
+        [[ $# -eq 0 ]] || { usage >&2; exit 1; }
+        lxc exec "$lxc_name" -- sudo --user ubuntu -i sudo bash bbsetup phase3
         ;;
 esac

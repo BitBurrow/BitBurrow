@@ -1,31 +1,10 @@
 #!/bin/bash
 # cSpell:disable  # don't spell check this file
-
-set -e # exit script if anything fails
-
-usage() {
-  echo "Usage:"
-  echo "  $0 install YOUR_HUB_DOMAIN YOUR_HUB_IP"
-  echo "  $0 upgrade"
-}
-
-mode="${1:-}"
-case "$mode" in
-  install)
-    [ $# -eq 3 ] || { usage >&2; exit 1; }
-    domain="$2"
-    ip="$3"
-    ;;
-  upgrade)
-    [ $# -eq 1 ] || { usage >&2; exit 1; }
-    domain=""
-    ip=""
-    ;;
-  *)
-    usage >&2
-    exit 1
-    ;;
-esac
+set -e
+[[ $# -eq 1 && ( $1 == phase1 || $1 == phase3 ) ]] || exit 1
+# phase1 → install hub, generate a config file template
+# phase2 → edit config.yaml, run port-forward-script (not this file)
+# phase3 → do phase1, systemd service, BIND, Certbot"
 
 ## verify $SUDO_USER
 test "x$SUDO_USER" != "x" || (echo "Run this script as a normal user using 'sudo'."; false)
@@ -198,12 +177,11 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       bbhub: /home/bitburrow/bitburrow/.venv/bin/bbhub
     changed_when: false
 
-  - name: Create config file with given domain, ip
+  - name: Create config file template
     command:
-      cmd: "{{ bbhub }} generate-config {{ domain }} {{ ip }}"
+      cmd: "{{ bbhub }} generate-config"
       creates: /home/bitburrow/.config/bitburrow/config.yaml
     become_user: bitburrow
-    when: domain is defined
 
   - name: Create systemd service file
     copy:
@@ -233,6 +211,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
         WantedBy=multi-user.target
       dest: /etc/systemd/system/bitburrow.service
       mode: '0660'
+    when: phase != 'phase1'
 
   - name: Enable systemd service file
     # debugging: sudo systemctl status bitburrow
@@ -242,13 +221,14 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       enabled: yes
       state: started
       masked: false
+    when: phase != 'phase1'
 
   - name: Install BIND 🦶1--install
     apt:
       name:
       - bind9
       state: latest
-    when: domain is defined
+    when: phase != 'phase1'
 
   - name: Install BIND 🦶2--options file
     # changes from default BIND named.conf.options file:
@@ -268,7 +248,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
         };
       dest: /etc/bind/named.conf.options
     register: bind_options
-    when: domain is defined
+    when: phase != 'phase1'
 
   - name: Install BIND 🦶3--add zone config
     blockinfile:
@@ -281,7 +261,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
         };
       path: /etc/bind/named.conf.local
     register: bind_zone_config
-    when: domain is defined
+    when: phase != 'phase1'
 
   - name: Install BIND 🦶4--add zone file
     # re CAA record, see https://letsencrypt.org/docs/caa/
@@ -308,7 +288,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       owner: bind
       group: bind
     register: bind_zone_file
-    when: domain is defined
+    when: phase != 'phase1'
 
   - name: Install BIND 🦶5--restart
     # debugging: sudo named-checkconf  # should display nothing
@@ -318,7 +298,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       name: bind9
       enabled: yes
       state: restarted
-    when: (domain is defined) and (bind_options.changed or bind_zone_config.changed or bind_zone_file.changed)
+    when: (phase != 'phase1') and (bind_options.changed or bind_zone_config.changed or bind_zone_file.changed)
 
   - name: Wildcard TLS cert 🦶1--create temp file
     tempfile:
@@ -326,6 +306,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       suffix: .sh
     register: certbot_tmp
     changed_when: false  # just a temp file
+    when: phase != 'phase1'
 
   - name: Wildcard TLS cert 🦶2--build certbot script
     command:
@@ -333,6 +314,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
     become_user: bitburrow
     register: certbot_script
     changed_when: false
+    when: phase != 'phase1'
 
   - name: Wildcard TLS cert 🦶3--write temp file
     copy:
@@ -340,6 +322,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       content: "{{ certbot_script.stdout }}"
       mode: "0700"
     changed_when: false
+    when: phase != 'phase1'
 
   - name: Wildcard TLS cert 🦶4--run script
     shell: |-
@@ -353,20 +336,18 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       echo BBSETUP_TLS_CHANGED
     register: certbot_run
     changed_when: "'BBSETUP_TLS_CHANGED' in certbot_run.stdout_lines"
+    when: phase != 'phase1'
 
   - name: Wildcard TLS cert 🦶5--clean up
     file:
       path: "{{ certbot_tmp.path }}"
       state: absent
     changed_when: false
+    when: phase != 'phase1'
 _EOF3703_
 
 ## run Ansible script locally
-cat <<"_EOF6471_" |sudo --user $SUDO_USER bash -s -- "$domain" "$ip"
+cat <<"_EOF6471_" |sudo --user $SUDO_USER bash -s -- "$1"
 mkdir -p ~/hub/ && cd $_
-if test "x$1" = "x"; then
-  ansible-playbook -i localhost, install.yaml
-else
-  ansible-playbook -i localhost, install.yaml --extra-vars "domain=$1 ip=$2"
-fi
+ansible-playbook -i localhost, install.yaml --extra-vars "phase=$1"
 _EOF6471_
