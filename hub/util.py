@@ -583,7 +583,7 @@ def tls_cert_script():  # script to run certbot for wildcard TLS cert
         # debugging: sudo certbot renew --dry-run
         # debugging: sudo systemctl list-timers snap.certbot.renew.timer
         # to delete an old domain: sudo certbot delete --cert-name vxm.example.org -n
-        cat <<"_EOF9981_" |sudo -u bind tee /opt/certbot_hook.sh  # hook file
+        cat <<"_EOF9981_" |sudo tee /opt/certbot_hook.sh  # hook file
         #!/bin/bash
         DNS_ZONE={domain}
         HOST='_acme-challenge'
@@ -595,6 +595,7 @@ def tls_cert_script():  # script to run certbot for wildcard TLS cert
         EOM
         sleep 5
         _EOF9981_
+        sudo chown root:bind /opt/certbot_hook.sh
         sudo chmod 770 /opt/certbot_hook.sh  # 550 will cause tee to fail on next run
         if ! [ -f /etc/letsencrypt/{domain}.registered ]; then  # once it completes successfully, never run again
             sudo certbot certonly -n --agree-tos \
