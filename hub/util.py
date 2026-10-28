@@ -105,6 +105,10 @@ integrity_tests_yaml = r'''
 - id: bind_soa
   cmd: dig @{public_ip} SOA {domain} +short |keep_only '^\S*'
   expected: '{domain}.'
+# domain SOA record over TCP
+- id: bind_tcp_soa
+  cmd: dig @{public_ip} SOA {domain} +short +tcp |keep_only '^\S* \S*'
+  expected: '{domain}. root.localhost.'
 # global SOA record
 - id: global_soa
   cmd: dig SOA {domain} +short |keep_only '^\S*'
@@ -526,7 +530,7 @@ def pipe_path(subd: str, sequence_id: str):  # share FIFO between bbhub daemon a
 
 def port_forward_script():
     frontp = conf.get('frontend.web_proto')
-    backp = conf.get('frontend.web_proto')
+    backp = conf.get('backend.web_proto')
     # note: all backslashes and non-f-string {} must be doubled
     script = f'''
         #!/bin/bash
