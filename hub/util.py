@@ -528,38 +528,67 @@ def pipe_path(subd: str, sequence_id: str):  # share FIFO between bbhub daemon a
     return f'/tmp/bbhub_rce_{subd}{sequence_id}'
 
 
+def dnsdist_conf():
+    domain = conf.get('frontend.domain')
+    if domain != (clean_domain := domain.lower().rstrip('.')):
+        raise Berror(f"B38018 invalid domain '{domain}'; you probably want '{clean_domain}'")
+    labels = domain.split('.')
+    if len(domain) > 253:
+        raise Berror(f"B76960 domain '{domain}' too long")
+    if any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels):
+        raise Berror(f"B55948 invalid domain '{domain}'")
+    addresses = re.findall(
+        r'\binet\s+([0-9.]+)/\d+', net.ip(['-4', '-o', 'addr', 'show', 'dev', 'eth0'])
+    )
+    if len(addresses) != 1:
+        raise Berror(f"B15272 expected one IPv4 address on eth0; found {len(addresses)}")
+    pool = domain.replace('-', '--').replace('.', '-')  # escape hyphens to avoid name collisions
+    script = f'''
+        newServer({{
+            address = '{addresses[0]}:53',
+            name = 'bind-{pool}',
+            pool = '{pool}',
+            checkName = '{domain}.',
+            checkType = 'SOA',
+            mustResolve = true,
+        }})
+        local suffix = newSuffixMatchNode()
+        suffix:add('{domain}.')
+        addAction(SuffixMatchNodeRule(suffix), PoolAction('{pool}'))
+    '''
+    print(textwrap.dedent(script).strip())
+
+
 def port_forward_script():
     frontp = conf.get('frontend.web_proto')
     backp = conf.get('backend.web_proto')
     # note: all backslashes and non-f-string {} must be doubled
     script = f'''
         #!/bin/bash
+        set -euo pipefail
         ##
-        vmname={net.run_external('hostname', '--short')}
+        vmname={net.run_external(['hostname', '--short'])}
         using_tls_proxy={'true' if (frontp == 'https' and backp == 'http') else 'false'}
-        ##
-        ## Configure port forwarding from host to container for BitBurrow hub
-        ##
         if [ $using_tls_proxy != true ]; then
+            echo "# configuring port forwarding from host to container for web"
+            lxc config device remove $vmname web_port >/dev/null || true  # idempotent
             lxc config device add $vmname web_port proxy \\
                 listen=tcp:0.0.0.0:{conf.get('frontend.web_port')} \\
                 connect=tcp:127.0.0.1:{conf.get('backend.web_port')}
         fi
+        echo "# configuring port forwarding from host to container for WireGuard"
+        lxc config device remove $vmname wgport >/dev/null || true  # idempotent
         lxc config device add $vmname wgport proxy \\
             listen=udp:0.0.0.0:{conf.get('frontend.wg_port')} \\
             connect=udp:127.0.0.1:{conf.get('backend.wg_port')}
-        lxc config device add $vmname udpdns proxy \\
-            listen=udp:{conf.get('frontend.ips')[0]}:53 connect=udp:127.0.0.1:53
-        lxc config device add $vmname tcpdns proxy \\
-            listen=tcp:{conf.get('frontend.ips')[0]}:53 connect=tcp:127.0.0.1:53
-        ##
-        ## Allow tracking of WireGuard connection IPs for DDNS and logging of client IP
-        ## addresses; otherwise all connections appear to be from 127.0.0.1; from
-        ## https://discuss.linuxcontainers.org/t/making-sure-that-ips-connected-to-the-containers-gameserver-proxy-shows-users-real-ip/8032/5
-        ##
+        echo "# configuring connection tracking for DDNS, logging"
+        # without this, all connections appear to be from 127.0.0.1; from
+        # https://discuss.linuxcontainers.org/t/making-sure-that-ips-connected-to-the-containers-gameserver-proxy-shows-users-real-ip/8032/5
         vmipv4=$(lxc exec $vmname -- ip -4 -o addr show dev eth0 |awk '{{print $4}}' |cut -d/ -f1)
         lxc stop $vmname
-        lxc config device override $vmname eth0 ipv4.address=$vmipv4
+        trap 'lxc start "$vmname" || true' EXIT  # restart container on failure
+        lxc config device set $vmname eth0 ipv4.address=$vmipv4 >/dev/null ||
+            lxc config device override $vmname eth0 ipv4.address=$vmipv4  # idempotent
         if [ $using_tls_proxy != true ]; then
             lxc config device set $vmname web_port nat=true \\
                 listen=tcp:{conf.get('frontend.ips')[0]}:{conf.get('frontend.web_port')} \\
@@ -569,6 +598,67 @@ def port_forward_script():
             listen=udp:{conf.get('frontend.ips')[0]}:{conf.get('frontend.wg_port')} \\
             connect=udp:0.0.0.0:{conf.get('backend.wg_port')}
         lxc start $vmname
+        trap - EXIT
+        echo "# tagging so we can identify BitBurrow LXCs"
+        lxc config set "$vmname" user.application bitburrow
+        bitburrow_lxcs=$(lxc list type=container user.application=bitburrow --columns n --format csv)
+        if [ -z "$bitburrow_lxcs" ]; then
+            echo "Error: no running BitBurrow containers found" >&2
+            exit 1
+        fi
+        lxc_count=$(wc -l <<< "$bitburrow_lxcs")
+        if [ "$lxc_count" -eq 1 ]; then
+            echo "# configuring port forwarding from host to container for DDNS for $vmname"
+            trap 'echo "Failed to listen on port 53; try: sudo systemctl disable --now dnsdist"' ERR
+            lxc config device remove $vmname udpdns >/dev/null || true  # idempotent
+            lxc config device add "$vmname" udpdns proxy \\
+                listen=udp:{conf.get('frontend.ips')[0]}:53 connect=udp:127.0.0.1:53
+            lxc config device remove $vmname tcpdns >/dev/null || true  # idempotent
+            lxc config device add "$vmname" tcpdns proxy \\
+                listen=tcp:{conf.get('frontend.ips')[0]}:53 connect=tcp:127.0.0.1:53
+            trap - ERR
+        else
+            if [ -e /tmp/dnsdist.conf ] || [ -L /tmp/dnsdist.conf ]; then
+                echo "Error: /tmp/dnsdist.conf already exists" >&2
+                exit 1
+            fi
+            for lxc_name in $bitburrow_lxcs; do
+                lxc_ips=$(bbctl hub "$lxc_name" get-conf frontend.ips)
+                if [ "$lxc_ips" != "{conf.get('frontend.ips')[0]}" ]; then
+                    echo "Error: $lxc_name has frontend.ips '$lxc_ips'; expected '{conf.get('frontend.ips')[0]}'."
+                    exit 1
+                fi
+            done
+            set -o noclobber
+            cat > /tmp/dnsdist.conf <<'DNSDIST_CONFIG'
+        setLocal('{conf.get('frontend.ips')[0]}:53')
+        setACL({{'0.0.0.0/0', '::/0'}})
+        addAction(NotRule(OpcodeRule(DNSOpcode.Query)), DropAction())
+        addAction(NotRule(QClassRule(DNSClass.IN)), DropAction())
+        addAction(
+            OrRule({{QTypeRule(DNSQType.AXFR), QTypeRule(DNSQType.IXFR)}}),
+            RCodeAction(DNSRCode.REFUSED, {{ra = false}})
+        )
+        DNSDIST_CONFIG
+            set +o noclobber
+            for lxc_name in $bitburrow_lxcs; do
+                echo "# configuring port forwarding from host to container for DDNS for $lxc_name"
+                lxc exec "$lxc_name" -- sudo --user bitburrow -i /home/bitburrow/bitburrow/.venv/bin/bbhub dnsdist-conf >> /tmp/dnsdist.conf
+                lxc config device remove "$lxc_name" udpdns 2>/dev/null || true
+                lxc config device remove "$lxc_name" tcpdns 2>/dev/null || true
+            done
+            cat >> /tmp/dnsdist.conf <<'DNSDIST_CONFIG'
+        addAction(AllRule(), RCodeAction(DNSRCode.REFUSED, {{ra = false}}))
+        DNSDIST_CONFIG
+            cat <<'INSTRUCTIONS'
+        Install and configure dnsdist by running:
+            sudo apt install -y dnsdist
+            dnsdist --check-config -C /tmp/dnsdist.conf
+            sudo install -m 644 /tmp/dnsdist.conf /etc/dnsdist/dnsdist.conf && rm /tmp/dnsdist.conf
+            sudo systemctl enable dnsdist
+            sudo systemctl restart dnsdist
+        INSTRUCTIONS
+        fi
     '''
     print(textwrap.dedent(script).strip())
 

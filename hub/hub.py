@@ -115,6 +115,10 @@ def cli(return_help_text=False):
         "tls-cert-script",
         help="Print a Bash script for installing and configuring Certbot",
     )
+    p_dnsdist_conf = subparsers.add_parser(
+        "dnsdist-conf",
+        help="Print dnsdist configuration for this hub",
+    )
     p_test = subparsers.add_parser(
         "test",
         help="Run internal test TEST.",
@@ -516,6 +520,9 @@ def entry_point():
             sys.exit(0)
         elif args.command == 'tls-cert-script':
             util.tls_cert_script()
+            sys.exit(0)
+        elif args.command == 'dnsdist-conf':
+            util.dnsdist_conf()
             sys.exit(0)
         elif args.command == 'test':
             sys.exit(0 if util.integrity_test_by_id(args.test_name) else 1)
