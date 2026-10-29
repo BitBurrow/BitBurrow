@@ -571,13 +571,13 @@ def port_forward_script():
         using_tls_proxy={'true' if (frontp == 'https' and backp == 'http') else 'false'}
         if [ $using_tls_proxy != true ]; then
             echo "# configuring port forwarding from host to container for web"
-            lxc config device remove $vmname web_port >/dev/null || true  # idempotent
+            lxc config device remove $vmname web_port >/dev/null 2>&1 || true  # idempotent
             lxc config device add $vmname web_port proxy \\
                 listen=tcp:0.0.0.0:{conf.get('frontend.web_port')} \\
                 connect=tcp:127.0.0.1:{conf.get('backend.web_port')}
         fi
         echo "# configuring port forwarding from host to container for WireGuard"
-        lxc config device remove $vmname wgport >/dev/null || true  # idempotent
+        lxc config device remove $vmname wgport >/dev/null 2>&1 || true  # idempotent
         lxc config device add $vmname wgport proxy \\
             listen=udp:0.0.0.0:{conf.get('frontend.wg_port')} \\
             connect=udp:127.0.0.1:{conf.get('backend.wg_port')}
@@ -587,7 +587,7 @@ def port_forward_script():
         vmipv4=$(lxc exec $vmname -- ip -4 -o addr show dev eth0 |awk '{{print $4}}' |cut -d/ -f1)
         lxc stop $vmname
         trap 'lxc start "$vmname" || true' EXIT  # restart container on failure
-        lxc config device set $vmname eth0 ipv4.address=$vmipv4 >/dev/null ||
+        lxc config device set $vmname eth0 ipv4.address=$vmipv4 >/dev/null 2>&1 ||
             lxc config device override $vmname eth0 ipv4.address=$vmipv4  # idempotent
         if [ $using_tls_proxy != true ]; then
             lxc config device set $vmname web_port nat=true \\
@@ -610,10 +610,10 @@ def port_forward_script():
         if [ "$lxc_count" -eq 1 ]; then
             echo "# configuring port forwarding from host to container for DDNS for $vmname"
             trap 'echo "Failed to listen on port 53; try: sudo systemctl disable --now dnsdist"' ERR
-            lxc config device remove $vmname udpdns >/dev/null || true  # idempotent
+            lxc config device remove $vmname udpdns >/dev/null 2>&1 || true  # idempotent
             lxc config device add "$vmname" udpdns proxy \\
                 listen=udp:{conf.get('frontend.ips')[0]}:53 connect=udp:127.0.0.1:53
-            lxc config device remove $vmname tcpdns >/dev/null || true  # idempotent
+            lxc config device remove $vmname tcpdns >/dev/null 2>&1 || true  # idempotent
             lxc config device add "$vmname" tcpdns proxy \\
                 listen=tcp:{conf.get('frontend.ips')[0]}:53 connect=tcp:127.0.0.1:53
             trap - ERR
@@ -644,8 +644,8 @@ def port_forward_script():
             for lxc_name in $bitburrow_lxcs; do
                 echo "# configuring port forwarding from host to container for DDNS for $lxc_name"
                 lxc exec "$lxc_name" -- sudo --user bitburrow -i /home/bitburrow/bitburrow/.venv/bin/bbhub dnsdist-conf >> /tmp/dnsdist.conf
-                lxc config device remove "$lxc_name" udpdns 2>/dev/null || true
-                lxc config device remove "$lxc_name" tcpdns 2>/dev/null || true
+                lxc config device remove "$lxc_name" udpdns >/dev/null 2>&1 || true
+                lxc config device remove "$lxc_name" tcpdns >/dev/null 2>&1 || true
             done
             cat >> /tmp/dnsdist.conf <<'DNSDIST_CONFIG'
         addAction(AllRule(), RCodeAction(DNSRCode.REFUSED, {{ra = false}}))
