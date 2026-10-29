@@ -183,6 +183,21 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       creates: /home/bitburrow/.config/bitburrow/config.yaml
     become_user: bitburrow
 
+  - name: Retrieve values from config.yaml
+    command:
+      argv: ["{{ bbhub }}", get-conf, "frontend.{{ item }}"]
+    loop: [domain, ips]
+    register: frontend_config
+    changed_when: false
+    become_user: bitburrow
+    when: phase != 'phase1'
+
+  - name: Set variables retrieved above
+    set_fact:
+      domain: "{{ frontend_config.results[0].stdout }}"
+      ip: "{{ frontend_config.results[1].stdout }}"
+    when: phase != 'phase1'
+
   - name: Create systemd service file
     copy:
       content: |

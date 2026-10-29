@@ -124,6 +124,14 @@ def cli(return_help_text=False):
         nargs="?",
         default="all",
     )
+    p_get_conf = subparsers.add_parser(
+        "get-conf",
+        help="Retrieve the value for CPATH from config.yaml.",
+    )
+    p_get_conf.add_argument(
+        "cpath",
+        nargs="?",
+    )
     subparsers.add_parser(
         "serve",
         help="Listen on port(s) specified in the config file.",
@@ -511,6 +519,14 @@ def entry_point():
             sys.exit(0)
         elif args.command == 'test':
             sys.exit(0 if util.integrity_test_by_id(args.test_name) else 1)
+        elif args.command == 'get-conf':
+            value = conf.get(args.cpath)
+            if isinstance(value, list):
+                for v in value:
+                    print(str(v))
+            else:
+                print(str(value))
+            sys.exit(0)
         # args.command == 'serve':
         if conf.get('backend.web_proto') == 'https':
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
