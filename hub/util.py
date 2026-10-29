@@ -568,6 +568,10 @@ def port_forward_script():
         set -euo pipefail
         ##
         vmname={net.run_external(['hostname', '--short'])}
+        lxc_config_device_set() {{
+            lxc config device set "$vmname" "$@" >/dev/null 2>&1 ||
+                lxc config device override "$vmname" "$@"  # inherited device
+        }}
         using_tls_proxy={'true' if (frontp == 'https' and backp == 'http') else 'false'}
         if [ $using_tls_proxy != true ]; then
             echo "# configuring port forwarding from host to container for web"
@@ -587,14 +591,13 @@ def port_forward_script():
         vmipv4=$(lxc exec $vmname -- ip -4 -o addr show dev eth0 |awk '{{print $4}}' |cut -d/ -f1)
         lxc stop $vmname
         trap 'lxc start "$vmname" || true' EXIT  # restart container on failure
-        lxc config device set $vmname eth0 ipv4.address=$vmipv4 >/dev/null 2>&1 ||
-            lxc config device override $vmname eth0 ipv4.address=$vmipv4  # idempotent
+        lxc_config_device_set eth0 ipv4.address=$vmipv4
         if [ $using_tls_proxy != true ]; then
-            lxc config device set $vmname web_port nat=true \\
+            lxc_config_device_set web_port nat=true \\
                 listen=tcp:{conf.get('midtier.ip')}:{conf.get('frontend.web_port')} \\
                 connect=tcp:0.0.0.0:{conf.get('backend.web_port')}
         fi
-        lxc config device set $vmname wgport nat=true \\
+        lxc_config_device_set wgport nat=true \\
             listen=udp:{conf.get('midtier.ip')}:{conf.get('frontend.wg_port')} \\
             connect=udp:0.0.0.0:{conf.get('backend.wg_port')}
         lxc start $vmname
