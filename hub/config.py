@@ -18,7 +18,7 @@ config = None
 #        the section with the 2 lines `cfv += 1` and `set('programmatic_use_only', cfv)`.
 # 2. increment config_fv below
 # 3. test
-config_fv = 5080  # version of the config file key structure
+config_fv = 5081  # version of the config file key structure
 
 
 def get(cpath: str):  # parse config path, e.g. get('frontend.ips')[0]
@@ -208,7 +208,20 @@ def migrate():  # update config data to current format
         insert_item_after('backend.ip', 'host_bits', host_bits)
         cfv += 1
         set('programmatic_use_only', cfv)
-    # if cfv == 5080:  # migrate in-memory to next version
+    if cfv == 5080:  # migrate in-memory to next version
+        insert_item_before(
+            'help.backend',
+            'midtier',
+            {
+                'ip': "Internet-facing IP of BitBurrow's container's host; often same as "
+                + "frontend.ips[0]; if different, be sure to set up forwarding for specified "
+                + "ports from the public IP to the container host"
+            },
+        )
+        insert_item_before('backend', 'midtier', {'ip': get('frontend.ips')[0]})
+        cfv += 1
+        set('programmatic_use_only', cfv)
+    # if cfv == 5081:  # migrate in-memory to next version
     #     ...
     #     cfv += 1
     #     set('programmatic_use_only', cfv)

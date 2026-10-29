@@ -84,7 +84,7 @@ def cli(return_help_text=False):
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
     p_generate_config = subparsers.add_parser(
         "generate-config",
-        help="Create a new config file with specified domain and public IP address",
+        help="Create a new config file.",
     )
     subparsers.add_parser(
         "migrate-config",

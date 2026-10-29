@@ -591,11 +591,11 @@ def port_forward_script():
             lxc config device override $vmname eth0 ipv4.address=$vmipv4  # idempotent
         if [ $using_tls_proxy != true ]; then
             lxc config device set $vmname web_port nat=true \\
-                listen=tcp:{conf.get('frontend.ips')[0]}:{conf.get('frontend.web_port')} \\
+                listen=tcp:{conf.get('midtier.ip')}:{conf.get('frontend.web_port')} \\
                 connect=tcp:0.0.0.0:{conf.get('backend.web_port')}
         fi
         lxc config device set $vmname wgport nat=true \\
-            listen=udp:{conf.get('frontend.ips')[0]}:{conf.get('frontend.wg_port')} \\
+            listen=udp:{conf.get('midtier.ip')}:{conf.get('frontend.wg_port')} \\
             connect=udp:0.0.0.0:{conf.get('backend.wg_port')}
         lxc start $vmname
         trap - EXIT
@@ -612,10 +612,10 @@ def port_forward_script():
             trap 'echo "Failed to listen on port 53; try: sudo systemctl disable --now dnsdist"' ERR
             lxc config device remove $vmname udpdns >/dev/null 2>&1 || true  # idempotent
             lxc config device add "$vmname" udpdns proxy \\
-                listen=udp:{conf.get('frontend.ips')[0]}:53 connect=udp:127.0.0.1:53
+                listen=udp:{conf.get('midtier.ip')}:53 connect=udp:127.0.0.1:53
             lxc config device remove $vmname tcpdns >/dev/null 2>&1 || true  # idempotent
             lxc config device add "$vmname" tcpdns proxy \\
-                listen=tcp:{conf.get('frontend.ips')[0]}:53 connect=tcp:127.0.0.1:53
+                listen=tcp:{conf.get('midtier.ip')}:53 connect=tcp:127.0.0.1:53
             trap - ERR
         else
             if [ -e /tmp/dnsdist.conf ] || [ -L /tmp/dnsdist.conf ]; then
@@ -623,15 +623,17 @@ def port_forward_script():
                 exit 1
             fi
             for lxc_name in $bitburrow_lxcs; do
-                lxc_ips=$(bbctl hub "$lxc_name" get-conf frontend.ips)
-                if [ "$lxc_ips" != "{conf.get('frontend.ips')[0]}" ]; then
-                    echo "Error: $lxc_name has frontend.ips '$lxc_ips'; expected '{conf.get('frontend.ips')[0]}'."
+                lxc_ip=$(bbctl hub "$lxc_name" get-conf midtier.ip)
+                # ChatGPT: [P1] lxc_ips was unset; set -u aborted every multi-hub run. Use lxc_ip.
+                # ChatGPT: https://www.gnu.org/software/bash/manual/html_node/The-Set-Builtin.html
+                if [ "$lxc_ip" != "{conf.get('midtier.ip')}" ]; then
+                    echo "Error: $lxc_name has midtier.ip '$lxc_ip'; expected '{conf.get('midtier.ip')}'."
                     exit 1
                 fi
             done
             set -o noclobber
             cat > /tmp/dnsdist.conf <<'DNSDIST_CONFIG'
-        setLocal('{conf.get('frontend.ips')[0]}:53')
+        setLocal('{conf.get('midtier.ip')}:53')
         setACL({{'0.0.0.0/0', '::/0'}})
         addAction(NotRule(OpcodeRule(DNSOpcode.Query)), DropAction())
         addAction(NotRule(QClassRule(DNSClass.IN)), DropAction())
