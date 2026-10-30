@@ -185,17 +185,20 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
 
   - name: Retrieve values from config.yaml
     command:
-      argv: ["{{ bbhub }}", get-conf, "frontend.{{ item }}"]
-    loop: [domain, ips]
-    register: frontend_config
+      argv: ["{{ bbhub }}", get-conf, "{{ item }}"]
+    loop: [frontend.domain, frontend.ips, backend.tsig_key]
+    register: bbconfigs
     changed_when: false
     become_user: bitburrow
+    no_log: true
     when: phase != 'phase1'
 
   - name: Set variables retrieved above
     set_fact:
-      domain: "{{ frontend_config.results[0].stdout }}"
-      ip: "{{ frontend_config.results[1].stdout }}"
+      domain: "{{ bbconfigs.results[0].stdout }}"
+      ip: "{{ bbconfigs.results[1].stdout_lines[0] }}"
+      tsig_key: "{{ bbconfigs.results[2].stdout }}"
+    no_log: true
     when: phase != 'phase1'
 
   - name: Create systemd service file
@@ -265,20 +268,57 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
     register: bind_options
     when: phase != 'phase1'
 
-  - name: Install BIND 🦶3--add zone config
+  - name: Install BIND 🦶3--save TSIG key file
+    copy:
+      content: "{{ tsig_key }}\n"
+      dest: /etc/bind/bitburrow-ddns.key
+      owner: root
+      group: bind
+      mode: '0640'
+    register: bind_tsig_key
+    no_log: true
+    diff: false
+    when: phase != 'phase1'
+
+  - name: Install BIND 🦶4--add zone config
     blockinfile:
       block: |
+        include "/etc/bind/bitburrow-ddns.key";
+        zone "_bitburrow-session" {
+          type master;
+          file "/var/cache/bind/db.bitburrow-session";
+          allow-query { none; };
+          allow-transfer { none; };
+          update-policy local;
+        };
         zone "{{ domain }}" {
           type master;
           file "/var/cache/bind/db.{{ domain }}";
           allow-transfer { none; };
-          update-policy local;
+          update-policy {
+            grant local-ddns. name _acme-challenge.{{ domain }}. ANY;
+            grant bitburrow-ddns. wildcard *.{{ domain }}. A AAAA;
+          };
         };
       path: /etc/bind/named.conf.local
     register: bind_zone_config
     when: phase != 'phase1'
 
-  - name: Install BIND 🦶4--add zone file
+  - name: Install BIND 🦶5--add session zone file
+    copy:
+      content: |
+        $TTL 3600
+        @ IN SOA localhost. root.localhost. (1 3600 600 86400 3600)
+        @ IN NS localhost.
+      dest: /var/cache/bind/db.bitburrow-session
+      force: false
+      mode: '0644'
+      owner: bind
+      group: bind
+    register: bind_session_zone
+    when: phase != 'phase1'
+
+  - name: Install BIND 🦶6--add zone file
     # re CAA record, see https://letsencrypt.org/docs/caa/
     # FIXME: support ACME-CAA - https://www.devever.net/~hl/acme-caa-live and https://news.ycombinator.com/item?id=34035148
     copy:
@@ -305,15 +345,23 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
     register: bind_zone_file
     when: phase != 'phase1'
 
-  - name: Install BIND 🦶5--restart
+  - name: Install BIND 🦶7--check configuration
+    command: named-checkconf -z
+    changed_when: false
+    when: phase != 'phase1'
+
+  - name: Install BIND 🦶8--restart
     # debugging: sudo named-checkconf  # should display nothing
-    # debugging: printf "zone vxm.example.org\nupdate delete testa.vxm.example.org.\nupdate add testa.vxm.example.org. 600 IN A 9.9.9.9\nsend\n" |sudo -u bind /usr/bin/nsupdate -l  # substitute your domain; see that no errors are displayed
+    # debugging: printf "server 127.0.0.1\nzone vxm.example.org\nupdate delete testa.vxm.example.org. A\nupdate add testa.vxm.example.org. 600 IN A 9.9.9.9\nsend\n" |sudo nsupdate -k /etc/bind/bitburrow-ddns.key  # substitute your domain; see that no errors are displayed
     # debugging: dig @127.0.0.1 testa.vxm.example.org +short  # again, substitute your domain
     systemd:
       name: bind9
       enabled: yes
-      state: restarted
-    when: (phase != 'phase1') and (bind_options.changed or bind_zone_config.changed or bind_zone_file.changed)
+      state: >-
+        {{ 'restarted' if (bind_options.changed or bind_zone_config.changed or
+           bind_zone_file.changed or bind_session_zone.changed or bind_tsig_key.changed)
+           else 'started' }}
+    when: phase != 'phase1'
 
   - name: Wildcard TLS cert 🦶1--create temp file
     tempfile:

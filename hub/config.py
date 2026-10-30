@@ -1,3 +1,4 @@
+import base64
 import logging
 import ipaddress
 import os
@@ -20,7 +21,7 @@ config = None
 #        the section with the 2 lines `cfv += 1` and `set('programmatic_use_only', cfv)`.
 # 2. increment config_fv below
 # 3. test
-config_fv = 5081  # version of the config file key structure
+config_fv = 5082  # version of the config file key structure
 
 
 def get(cpath: str):  # parse config path, e.g. get('frontend.ips')[0]
@@ -99,11 +100,12 @@ def insert_item_before(existing_item: str, new_key: str, new_value: str):
     insert_item_after(existing_item, new_key, new_value, before_not_after=True)
 
 
-def migrate():  # update config data to current format
-    if (cfv := get('programmatic_use_only')) < 5078:
-        raise Berror(f"B79322 invalid config_file_version: {cfv}")
-    if cfv != config_fv:
-        logger.debug(f"B93350 migrate() from {cfv} to {config_fv}")
+def migrate() -> int:  # update config data to current format; return pre-migration version
+    if (from_fv := get('programmatic_use_only')) < 5078:
+        raise Berror(f"B79322 invalid config_file_version: {from_fv}")
+    if from_fv != config_fv:
+        logger.debug(f"B93350 migrate() from {from_fv} to {config_fv}")
+    cfv = from_fv  # track current version as we migrate up through history of changes
     if cfv == 5078:  # migrate in-memory to next version
         base62_digits = string.ascii_uppercase + string.ascii_lowercase + string.digits
         site_code = '/' + ''.join(secrets.choice(base62_digits) for _ in range(8))
@@ -211,24 +213,35 @@ def migrate():  # update config data to current format
         cfv += 1
         set('programmatic_use_only', cfv)
     if cfv == 5080:  # migrate in-memory to next version
-        insert_item_before(
-            'help.backend',
-            'midtier',
-            {
-                'ip': "Internet-facing IP of BitBurrow's container's host; often same as "
-                + "frontend.ips[0]; if different, be sure to set up forwarding for specified "
-                + "ports from the public IP to the container host"
-            },
-        )
+        new_branch = yaml.safe_load(textwrap.dedent(f'''
+                    Internet-facing IP of BitBurrow's container's host; often same as
+                    frontend.ips[0]; if different, be sure to set up forwarding for specified
+                    ports from the public IP to the container host
+                ''').lstrip())
+        insert_item_before('help.backend', 'midtier', new_branch)
         insert_item_before('backend', 'midtier', {'ip': get('frontend.ips')[0]})
         cfv += 1
         set('programmatic_use_only', cfv)
-    # if cfv == 5081:  # migrate in-memory to next version
+    if cfv == 5081:  # migrate in-memory to next version
+        secret = base64.b64encode(secrets.token_bytes(32)).decode('ascii')
+        compact_tsig = f'key "bitburrow-ddns"{{algorithm hmac-sha256;secret "{secret}";}};'
+        # or via `tsig-keygen -a hmac-sha256 bitburrow-ddns` but it may not be installed
+        new_branch = yaml.safe_load(textwrap.dedent(f'''
+                    A TSIG key used by BitBurrow to authenticate with the BIND DNS server used
+                    for dynamic DNS. This is generated automatically, but can be manually generated
+                    via `tsig-keygen -a hmac-sha256 bitburrow-ddns`.
+                ''').lstrip())
+        insert_item_after('help.backend.hub_bloc', 'tsig_key', new_branch)
+        insert_item_after('backend.hub_bloc', 'tsig_key', compact_tsig)
+        cfv += 1
+        set('programmatic_use_only', cfv)
+    # if cfv == 5082:  # migrate in-memory to next version
     #     ...
     #     cfv += 1
     #     set('programmatic_use_only', cfv)
     if cfv != config_fv:
         raise Berror(f"B87851 invalid config_file_version: {cfv}")
+    return from_fv
 
 
 def load(path: str):
@@ -242,13 +255,13 @@ def load(path: str):
         raise Berror(f"B76167 cannot read configuration file: {path}")
     except (yaml.parser.ParserError, yaml.scanner.ScannerError) as e:
         raise Berror(f"B60933 cannot parse configuration file: {e}")
-    migrate()
+    from_fv = migrate()
 
     def validate_domain(domain: str, cpath: str) -> None:
         if domain != (clean_domain := domain.lower().rstrip('.')):
             raise Berror(f"B38018 invalid {cpath} '{domain}'; try '{clean_domain}'")
         labels = domain.split('.')
-        if len(domain) > 253:
+        if len(domain) > (253 - len('_acme-challenge.')):
             raise Berror(f"B76960 {cpath} '{domain}' too long")
         if any(
             not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels
@@ -296,6 +309,8 @@ def load(path: str):
     validate_port(get('backend.web_port'), 'backend.web_port')
     validate_port(get('backend.wg_port'), 'backend.wg_port')
     validate_site_code(get('frontend.site_code'), 'fontend.site_code')
+    if from_fv <= 5081:  # if migration includes generating backend.tsig_key, save it to disk
+        save(path)
 
 
 def is_loaded():
