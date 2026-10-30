@@ -1,5 +1,7 @@
 import logging
+import ipaddress
 import os
+import re
 import secrets
 import string
 import tempfile
@@ -241,13 +243,59 @@ def load(path: str):
     except (yaml.parser.ParserError, yaml.scanner.ScannerError) as e:
         raise Berror(f"B60933 cannot parse configuration file: {e}")
     migrate()
-    site_code = get('frontend.site_code')
-    if (
-        not isinstance(site_code, str)
-        or len(site_code) == 1
-        or (site_code and (not site_code.startswith('/') or site_code.endswith('/')))
-    ):
-        raise Berror(f"B58427 invalid site_code '{site_code}'")
+
+    def validate_domain(domain: str, cpath: str) -> None:
+        if domain != (clean_domain := domain.lower().rstrip('.')):
+            raise Berror(f"B38018 invalid {cpath} '{domain}'; try '{clean_domain}'")
+        labels = domain.split('.')
+        if len(domain) > 253:
+            raise Berror(f"B76960 {cpath} '{domain}' too long")
+        if any(
+            not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels
+        ):
+            raise Berror(f"B55948 invalid characters in {cpath} '{domain}'")
+
+    def validate_ip(ip: str, cpath: str) -> None:
+        if not isinstance(ip, str):
+            raise Berror(f"B67218 invalid {cpath} address '{ip}' in {path}")
+        try:
+            a = ipaddress.ip_address(ip)
+            if a == ipaddress.IPv4Address('203.0.113.9'):
+                raise Berror(f"B10034 {cpath} address '{ip}' in {path} is the example address")
+            if a.version != 4:  # IPv6 support has not been investigated
+                raise Berror(f"B00319 unsupported IPv6 address '{ip}' in {cpath} in {path}")
+            if isinstance(a, ipaddress.IPv6Address) and a.scope_id is not None:
+                if not re.fullmatch(r'[a-zA-Z0-9_.-]+', a.scope_id):  # no shell command injection
+                    raise Berror(f"B66639 invalid {cpath} scope_id '{a.scope_id}' in {path}")
+        except ValueError:
+            raise Berror(f"B12550 invalid {cpath} address '{ip}' in {path}")
+
+    def validate_ips(ips: list, cpath: str):
+        if not isinstance(ips, list) or not ips:
+            raise Berror(f"B34603 {cpath} must be a nonempty list in {path}")
+        for ip in ips:
+            validate_ip(ip, cpath)
+
+    def validate_port(port: int, cpath: str) -> None:
+        if not isinstance(port, int) or port < 2 or port > 65535:  # 'True' parses to 1
+            raise Berror(f"B98953 invalid {cpath} port '{port}' in {path}")
+
+    def validate_site_code(site_code: str, cpath: str):
+        if not isinstance(site_code, str):
+            raise Berror(f"B85729 invalid {cpath} '{site_code}'")
+        if not re.fullmatch(r'[/A-Za-z0-9%!$&\'\(\)\*\+,;=:@_~-]*', site_code):
+            raise Berror(f"B58427 invalid {cpath} characters in '{site_code}'")
+        if site_code and (not site_code.startswith('/') or site_code.endswith('/')):
+            raise Berror(f"B27489 '{cpath} must begin with '/' and not end with '/'")
+
+    validate_domain(get('frontend.domain'), 'frontend.domain')
+    validate_ips(get('frontend.ips'), 'frontend.ips')
+    validate_ip(get('midtier.ip'), 'midtier.ip')
+    validate_port(get('frontend.web_port'), 'frontend.web_port')
+    validate_port(get('frontend.wg_port'), 'frontend.wg_port')
+    validate_port(get('backend.web_port'), 'backend.web_port')
+    validate_port(get('backend.wg_port'), 'backend.wg_port')
+    validate_site_code(get('frontend.site_code'), 'fontend.site_code')
 
 
 def is_loaded():

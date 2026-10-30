@@ -530,13 +530,6 @@ def pipe_path(subd: str, sequence_id: str):  # share FIFO between bbhub daemon a
 
 def dnsdist_conf():
     domain = conf.get('frontend.domain')
-    if domain != (clean_domain := domain.lower().rstrip('.')):
-        raise Berror(f"B38018 invalid domain '{domain}'; you probably want '{clean_domain}'")
-    labels = domain.split('.')
-    if len(domain) > 253:
-        raise Berror(f"B76960 domain '{domain}' too long")
-    if any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels):
-        raise Berror(f"B55948 invalid domain '{domain}'")
     addresses = re.findall(
         r'\binet\s+([0-9.]+)/\d+', net.ip(['-4', '-o', 'addr', 'show', 'dev', 'eth0'])
     )
@@ -568,11 +561,11 @@ def port_forward_script():
         set -euo pipefail
         ##
         vmname={net.run_external(['hostname', '--short'])}
+        using_tls_proxy={'true' if (frontp == 'https' and backp == 'http') else 'false'}
         lxc_config_device_set() {{
             lxc config device set "$vmname" "$@" >/dev/null 2>&1 ||
                 lxc config device override "$vmname" "$@"  # inherited device
         }}
-        using_tls_proxy={'true' if (frontp == 'https' and backp == 'http') else 'false'}
         if [ $using_tls_proxy != true ]; then
             echo "# configuring port forwarding from host to container for web"
             lxc config device remove $vmname web_port >/dev/null 2>&1 || true  # idempotent
@@ -622,13 +615,12 @@ def port_forward_script():
             trap - ERR
         else
             if [ -e /tmp/dnsdist.conf ] || [ -L /tmp/dnsdist.conf ]; then
-                echo "Error: /tmp/dnsdist.conf already exists" >&2
+                echo "Error: /tmp/dnsdist.conf already exists; remove it and rerun" >&2
                 exit 1
             fi
             for lxc_name in $bitburrow_lxcs; do
-                lxc_ip=$(bbctl hub "$lxc_name" get-conf midtier.ip)
-                # ChatGPT: [P1] lxc_ips was unset; set -u aborted every multi-hub run. Use lxc_ip.
-                # ChatGPT: https://www.gnu.org/software/bash/manual/html_node/The-Set-Builtin.html
+                lxc_ip=$(bbctl hub "$lxc_name" get-conf midtier.ip) ||
+                    {{ echo "Error getting midtier.ip for LXC $lxc_name" >&2; exit 1; }}
                 if [ "$lxc_ip" != "{conf.get('midtier.ip')}" ]; then
                     echo "Error: $lxc_name has midtier.ip '$lxc_ip'; expected '{conf.get('midtier.ip')}'."
                     exit 1
