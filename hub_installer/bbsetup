@@ -112,6 +112,15 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       git_result is failed and
       'Local modifications exist' not in (git_result.msg | default(''))
 
+  - name: Warn about local BitBurrow modifications
+    debug:
+      msg: |
+        ============================================================
+        WARNING: Local modifications exist in "/home/bitburrow/bitburrow/".
+        The repository was not updated.
+        ============================================================
+    when: "'Local modifications exist' in (git_result.msg | default(''))"
+
   - name: Install bbhub 🦶2--configure Poetry so we can find .../bin/bbhub
     command:
       cmd: "{{ poetry }} config virtualenvs.in-project true"
