@@ -1853,16 +1853,9 @@ def update_base_dns(subd: str, ip: str) -> None:
             address = address.ipv4_mapped  # socket peers may use IPv4-mapped IPv6 notation
     kind = 'A' if address.version == 4 else 'AAAA'
     try:
-        match = re.fullmatch(
-            r'\s*key\s*"([^"]+)"\s*\{\s*algorithm\s+([A-Za-z0-9.-]+)\s*;'
-            r'\s*secret\s*"([A-Za-z0-9+/]+={0,2})"\s*;\s*\}\s*;\s*',
-            conf.get('backend.tsig_key'),
-        )
-        if match is None:
-            raise ValueError
-        key = dns.tsig.Key(match[1], match[3], match[2])
+        key = dns.tsig.Key('bitburrow-ddns', conf.get('backend.tsig_key'), dns.tsig.HMAC_SHA256)
     except (TypeError, ValueError, dns.exception.DNSException):
-        raise Berror("B48181 invalid backend.tsig_key; expected tsig-keygen output") from None
+        raise Berror("B48181 invalid backend.tsig_key")
     try:
         update = dns.update.Update(f'{domain}.', keyring=key)
         update.replace(fqdn, 60, kind, str(address))

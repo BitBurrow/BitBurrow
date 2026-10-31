@@ -279,7 +279,11 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
 
   - name: Install BIND 🦶3--save TSIG key file
     copy:
-      content: "{{ tsig_key }}\n"
+      content: |
+        key "bitburrow-ddns" {
+          algorithm hmac-sha256;
+          secret "{{ tsig_key }}";
+        };
       dest: /etc/bind/bitburrow-ddns.key
       owner: root
       group: bind

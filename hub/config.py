@@ -224,15 +224,14 @@ def migrate() -> int:  # update config data to current format; return pre-migrat
         set('programmatic_use_only', cfv)
     if cfv == 5081:  # migrate in-memory to next version
         secret = base64.b64encode(secrets.token_bytes(32)).decode('ascii')
-        compact_tsig = f'key "bitburrow-ddns"{{algorithm hmac-sha256;secret "{secret}";}};'
-        # or via `tsig-keygen -a hmac-sha256 bitburrow-ddns` but it may not be installed
         new_branch = yaml.safe_load(textwrap.dedent(f'''
-                    A TSIG key used by BitBurrow to authenticate with the BIND DNS server used
-                    for dynamic DNS. This is generated automatically, but can be manually generated
-                    via `tsig-keygen -a hmac-sha256 bitburrow-ddns`.
+                    Base64-encoded 32-byte HMAC-SHA256 secret used by BitBurrow to authenticate
+                    dynamic DNS updates with BIND under the key name 'bitburrow-ddns'. Generated
+                    automatically, or manually with
+                    `tsig-keygen -a hmac-sha256 bitburrow-ddns |grep -Eo '[A-Za-z0-9+/=]{44}'`.
                 ''').lstrip())
         insert_item_after('help.backend.hub_bloc', 'tsig_key', new_branch)
-        insert_item_after('backend.hub_bloc', 'tsig_key', compact_tsig)
+        insert_item_after('backend.hub_bloc', 'tsig_key', secret)
         cfv += 1
         set('programmatic_use_only', cfv)
     # if cfv == 5082:  # migrate in-memory to next version
@@ -301,6 +300,10 @@ def load(path: str):
         if site_code and (not site_code.startswith('/') or site_code.endswith('/')):
             raise Berror(f"B27489 '{cpath} must begin with '/' and not end with '/'")
 
+    def validate_tsig_key(key: str, cpath: str) -> None:
+        if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9+/]{43}=', key):
+            raise Berror(f"B65217 {cpath} must be a base64-encoded 32-byte secret in {path}")
+
     validate_domain(get('frontend.domain'), 'frontend.domain')
     validate_ips(get('frontend.ips'), 'frontend.ips')
     validate_ip(get('midtier.ip'), 'midtier.ip')
@@ -309,6 +312,7 @@ def load(path: str):
     validate_port(get('backend.web_port'), 'backend.web_port')
     validate_port(get('backend.wg_port'), 'backend.wg_port')
     validate_site_code(get('frontend.site_code'), 'fontend.site_code')
+    validate_tsig_key(get('backend.tsig_key'), 'backend.tsig_key')
     if from_fv <= 5081:  # if migration includes generating backend.tsig_key, save it to disk
         save(path)
 
