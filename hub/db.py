@@ -2,6 +2,11 @@ import argon2
 import base64
 from contextlib import contextmanager
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
+import dns.exception
+import dns.query
+import dns.rcode
+import dns.tsig
+import dns.update
 import enum
 import fastapi
 import hashlib
@@ -1837,32 +1842,37 @@ def update_base_dns(subd: str, ip: str) -> None:
     """Replace the A or AAAA RRset for a base's current address."""
     domain = conf.get('frontend.domain')
     fqdn = f'{subd}.{domain}.'
-    commands = ['server 127.0.0.1', f'zone {domain}.']
     try:
         address = ipaddress.ip_address(ip)
     except ValueError:
         raise Berror(f"B98125 invalid IP address for DNS update: {ip}") from None
-    if isinstance(address, ipaddress.IPv6Address) and address.scope_id is not None:
+    if isinstance(address, ipaddress.IPv6Address):
         if address.scope_id is not None:
             raise Berror(f"B98126 cannot publish a scoped IPv6 address: {ip}")
         if address.ipv4_mapped is not None:
             address = address.ipv4_mapped  # socket peers may use IPv4-mapped IPv6 notation
     kind = 'A' if address.version == 4 else 'AAAA'
-    commands.extend((f'update delete {fqdn} {kind}', f'update add {fqdn} 60 {kind} {address}'))
     try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8') as key:
-            key.write(conf.get('backend.tsig_key'))  # temporary file has mode 0600
-            key.flush()
-            subprocess.run(
-                ['nsupdate', '-v', '-t', '5', '-k', key.name],
-                input='\n'.join([*commands, 'send', '']),
-                text=True,
-                capture_output=True,  # don't expose key-parser output in logs
-                check=True,
-                timeout=10,
-            )
-    except (OSError, subprocess.SubprocessError) as e:
-        raise Berror(f"B98127 DNS update failed for {fqdn}: {e}") from None
+        match = re.fullmatch(
+            r'\s*key\s*"([^"]+)"\s*\{\s*algorithm\s+([A-Za-z0-9.-]+)\s*;'
+            r'\s*secret\s*"([A-Za-z0-9+/]+={0,2})"\s*;\s*\}\s*;\s*',
+            conf.get('backend.tsig_key'),
+        )
+        if match is None:
+            raise ValueError
+        key = dns.tsig.Key(match[1], match[3], match[2])
+    except (TypeError, ValueError, dns.exception.DNSException):
+        raise Berror("B48181 invalid backend.tsig_key; expected tsig-keygen output") from None
+    try:
+        update = dns.update.Update(f'{domain}.', keyring=key)
+        update.replace(fqdn, 60, kind, str(address))
+        response = dns.query.tcp(update, '127.0.0.1', timeout=5)
+    except (OSError, EOFError, NotImplementedError, dns.exception.DNSException) as e:
+        raise Berror(f"B82060 DNS update failed for {fqdn}: {e}") from None
+    if not response.had_tsig:  # older dnspython may accept unsigned replies to signed requests
+        raise Berror(f"B41683 DNS update failed for {fqdn}: missing TSIG signature")
+    if (rcode := response.rcode()) != dns.rcode.NOERROR:
+        raise Berror(f"B54466 DNS update failed for {fqdn}: {dns.rcode.to_text(rcode)}")
 
 
 def update_base_endpoint(base_id: int, ip: str) -> None:
