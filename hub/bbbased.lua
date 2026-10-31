@@ -51,7 +51,7 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tndq16'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tnrlfk'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -2685,53 +2685,6 @@ local function build_ping_request()
     return request_body
 end
 
-local signature_algorithms = {
-    sha256 = {
-        name = 'rsa-pss-sha256',
-        digest = 'sha256',
-        mgf1 = 'sha256',
-        saltlen = '32',
-    },
-    sha512 = {
-        name = 'rsa-pss-sha512',
-        digest = 'sha512',
-        mgf1 = 'sha512',
-        saltlen = '64',
-    },
-}
-
-local function choose_signature_algorithm()
-    -- prefer RFC 9421 rsa-pss-sha512; fall back to non-standard rsa-pss-sha256
-    local probe_path = make_temp_path()
-    local sig_path = make_temp_path()
-    if not probe_path or not sig_path then
-        remove_paths(probe_path, sig_path)
-        return signature_algorithms.sha256
-    end
-    if not write_text_file(probe_path, 'probe', '0600') then
-        remove_paths(probe_path, sig_path)
-        return signature_algorithms.sha256
-    end
-    local ok = run_command(
-        'openssl dgst -sha512 '
-        .. '-sigopt rsa_padding_mode:pss '
-        .. '-sigopt rsa_mgf1_md:sha512 '
-        .. '-sigopt rsa_pss_saltlen:64 '
-        .. '-sign '
-        .. shell_quote(auth_privkey_path)
-        .. ' -binary -out '
-        .. shell_quote(sig_path)
-        .. ' '
-        .. shell_quote(probe_path),
-        true,
-        true
-    )
-    remove_paths(probe_path, sig_path)
-    if ok then return signature_algorithms.sha512 end
-    log_warning('B41234 OpenSSL lacks rsa-pss-sha512 support; falling back to rsa-pss-sha256')
-    return signature_algorithms.sha256  -- non-standard for RFC 9421
-end
-
 local function send_signed_jsonrpc(request_body)
     -- return response body, or nil on failure
     local result = nil
@@ -2778,7 +2731,6 @@ local function send_signed_jsonrpc(request_body)
         if not nonce_value then break end
         local keyid_value = http_quoted_string_escape(subd)
         local nonce_param_value = http_quoted_string_escape(nonce_value)
-        local sigalg = choose_signature_algorithm()
         local signature_params = '("@method" "@authority" "@target-uri" "content-type" '
                 .. '"content-digest" "date");created='
                 .. created_value
@@ -2786,9 +2738,7 @@ local function send_signed_jsonrpc(request_body)
                 .. keyid_value
                 .. '";nonce="'
                 .. nonce_param_value
-                .. '";alg="'
-                .. sigalg.name
-                .. '"'
+                .. '";alg="rsa-pss-sha512"'
         local signature_input_value = 'sig1=' .. signature_params
         signature_base = '"@method": POST\n'
                 .. '"@authority": ' .. authority .. '\n'
@@ -2801,17 +2751,19 @@ local function send_signed_jsonrpc(request_body)
         write_ok = write_text_file(sig_base_path, signature_base, '0600')
         if not write_ok then break end
         local sign_output = run_command(
-            'openssl dgst -'
-            .. sigalg.digest
-            .. ' -sigopt rsa_padding_mode:pss '
-            .. '-sigopt rsa_mgf1_md:' .. sigalg.mgf1
-            .. ' -sigopt rsa_pss_saltlen:' .. sigalg.saltlen
-            .. ' -sign ' .. shell_quote(auth_privkey_path)
+            'openssl dgst -sha512 '
+            .. '-sigopt rsa_padding_mode:pss '
+            .. '-sigopt rsa_mgf1_md:sha512 '
+            .. '-sigopt rsa_pss_saltlen:64 '
+            .. '-sign ' .. shell_quote(auth_privkey_path)
             .. ' -binary -out ' .. shell_quote(sig_bin_path)
             .. ' ' .. shell_quote(sig_base_path),
             true
         )
-        if not sign_output then break end
+        if not sign_output then
+            log_error("B41234 OpenSSL could not sign request with rsa-pss-sha512")
+            break
+        end
         -- verify:
         -- openssl dgst -sha512 -sigopt rsa_padding_mode:pss -sigopt rsa_mgf1_md:sha512 \
         --     -sigopt rsa_pss_saltlen:64 -verify <tmp-dir>/client_rsapss_pub.pem \

@@ -389,8 +389,6 @@ def parse_signature_input(signature_input: str) -> tuple[int, str, str, str]:
         raise Berror("B22403 keyid too long")
     if not nonce or len(nonce) > 128:
         raise Berror("B22402 invalid nonce")
-    if alg not in ('rsa-pss-sha512', 'rsa-pss-sha256'):
-        raise Berror(f"B85199 unsupported alg {alg}")
     return created, keyid, nonce, alg
 
 
@@ -454,14 +452,10 @@ def verify_signature_bytes(
     signature_base: str,
     auth_pubkey_pem: str,
     alg: str,
-    allow_sha256_fallback: bool,
 ) -> None:
     if alg == 'rsa-pss-sha512':
         hash_alg = hashes.SHA512()
         salt_length = 64
-    elif alg == 'rsa-pss-sha256' and allow_sha256_fallback:
-        hash_alg = hashes.SHA256()
-        salt_length = 32
     elif alg == 'rsa-pss-sha256':
         raise Berror("B89126 rsa-pss-sha256 fallback is disabled")
     else:
@@ -489,7 +483,6 @@ def verify_signature_bytes(
 async def verify_signed_request(
     request: Request,
     auth_pubkey_pem: str,
-    allow_sha256_fallback: bool = True,
     max_skew: int = 300,  # allowed clock time difference in seconds
     nonce_ttl: int = 600,  # in seconds
 ) -> dict:
@@ -547,7 +540,6 @@ async def verify_signed_request(
             signature_base=signature_base,
             auth_pubkey_pem=auth_pubkey_pem,
             alg=alg,
-            allow_sha256_fallback=allow_sha256_fallback,
         )
     except Exception:
         # enable to debug signature issues (search: tag_rfc9421_signature_debug):
@@ -572,11 +564,7 @@ async def ping(
     wait_seconds = 25
     with db.base_by_subd(subd) as base:
         try:
-            payload = await verify_signed_request(
-                request=request,
-                auth_pubkey_pem=base.auth_pubkey,
-                allow_sha256_fallback=True,
-            )
+            payload = await verify_signed_request(request=request, auth_pubkey_pem=base.auth_pubkey)
             params = payload['params']
             if params.get('subd') != subd:
                 raise Berror(f"B33465 subd mismatch: {params.get('subd')} != {subd}")
@@ -649,11 +637,7 @@ async def task_result(
     ip = request.client.host if request.client else '(unknown)'
     with db.base_by_subd(subd) as base:
         try:
-            payload = await verify_signed_request(
-                request=request,
-                auth_pubkey_pem=base.auth_pubkey,
-                allow_sha256_fallback=True,
-            )
+            payload = await verify_signed_request(request=request, auth_pubkey_pem=base.auth_pubkey)
             params = payload['params']
             if params.get('subd') != subd:
                 raise Berror(f"B99725 subd mismatch: {params.get('subd')} != {subd}")
@@ -703,11 +687,7 @@ async def wg(
     ip = request.client.host if request.client else '(unknown)'
     with db.base_by_subd(subd) as base:
         try:
-            payload = await verify_signed_request(
-                request=request,
-                auth_pubkey_pem=base.auth_pubkey,
-                allow_sha256_fallback=True,
-            )
+            payload = await verify_signed_request(request=request, auth_pubkey_pem=base.auth_pubkey)
             params = payload['params']
             if params.get('subd') != subd:
                 raise Berror(f"B71924 subd mismatch: {params.get('subd')} != {subd}")
