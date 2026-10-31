@@ -575,10 +575,11 @@ async def ping(
             db.log_out(base.ott_id)
             base.ott_id = None  # search: tag_invalidate_base_ott
             logger.info(f"B51437 base {base.subd} completed adopt6e from {ip}")
-        base.last_endpoint = ip
         base.last_handshake = int(ping_now.timestamp())
         wait_seconds = base.long_poll_probe or base.long_poll_safe
         base_id = base.id
+    if base.last_endpoint != ip:
+        await run_in_threadpool(db.update_base_endpoint, base_id, ip)
     try:  # close the outer base transaction before process_ping() reserves the SQLite writer
         await run_in_threadpool(  # don't block; https://fastapi.tiangolo.com/async/#other-utility-functions
             db.process_ping, base_id=base_id, ip=ip, telem_data=telemetry, subd=subd

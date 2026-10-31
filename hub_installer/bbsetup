@@ -41,7 +41,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       - python3-poetry  # to install BitBurrow
       - wireguard-tools
       - sqlite3
-      - bind9-dnsutils  # `dig` tool
+      - bind9-dnsutils  # `dig` and `nsupdate` tools
       - tcpdump  # capture packets to replay on base router
       # 'acl' avoids Ansible temp file permissions issue in 'Install bbhub 🦶1--git clone'
       # (note that creating /home/bitburrow/.ansible/tmp doesn't help; we need package 'acl')

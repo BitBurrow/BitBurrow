@@ -1833,6 +1833,51 @@ def iter_get_base_by_account_id(aid: int | None):
             yield base
 
 
+def update_base_dns(subd: str, ip: str) -> None:
+    """Replace the A or AAAA RRset for a base's current address."""
+    domain = conf.get('frontend.domain')
+    fqdn = f'{subd}.{domain}.'
+    commands = ['server 127.0.0.1', f'zone {domain}.']
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        raise Berror(f"B98125 invalid IP address for DNS update: {ip}") from None
+    if isinstance(address, ipaddress.IPv6Address) and address.scope_id is not None:
+        if address.scope_id is not None:
+            raise Berror(f"B98126 cannot publish a scoped IPv6 address: {ip}")
+        if address.ipv4_mapped is not None:
+            address = address.ipv4_mapped  # socket peers may use IPv4-mapped IPv6 notation
+    kind = 'A' if address.version == 4 else 'AAAA'
+    commands.extend((f'update delete {fqdn} {kind}', f'update add {fqdn} 60 {kind} {address}'))
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8') as key:
+            key.write(conf.get('backend.tsig_key'))  # temporary file has mode 0600
+            key.flush()
+            subprocess.run(
+                ['nsupdate', '-v', '-t', '5', '-k', key.name],
+                input='\n'.join([*commands, 'send', '']),
+                text=True,
+                capture_output=True,  # don't expose key-parser output in logs
+                check=True,
+                timeout=10,
+            )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise Berror(f"B98127 DNS update failed for {fqdn}: {e}") from None
+
+
+def update_base_endpoint(base_id: int, ip: str) -> None:
+    with Session(engine) as session:
+        base: Base = session.get(Base, base_id)
+        if base is None:
+            raise Berror(f"B98129 cannot update endpoint for deleted base {base_id}")
+        update_base_dns(base.subd, ip)
+        previous_ip, subd = base.last_endpoint, base.subd
+        base.last_endpoint = ip  # failures leave the old value, so the next ping retries
+        session.add(base)
+        session.commit()
+        logger.info(f"B98128 base {subd} IP changed from {previous_ip} to {ip}")
+
+
 def delete_base(id: int) -> None:
     with Session(engine) as session:
         base: Base = session.get(Base, id)

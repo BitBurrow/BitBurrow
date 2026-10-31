@@ -23,7 +23,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 49
+db_schema_version = 50
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -257,6 +257,10 @@ def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
             if 'kind' in columns:
                 conn.execute('''UPDATE loginsession SET kind='BASE_OTT' WHERE kind='DEVICE_OTT';''')
         version = 49
+    if version < 50 <= target:  # version 49 → 50: force DNS update on each base's next ping
+        with sqlite_conn(db_path) as conn:
+            conn.execute('UPDATE base SET last_endpoint=?;', ('0.0.0.0',))
+        version = 50
     # if version < ... <= target:
     #     ...
     #     version = ...
