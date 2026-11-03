@@ -35,6 +35,7 @@ fastapi-jsonrpc = "^3.5.0"
 cryptography = ">=48"
 miniupnpc = "^2.3.3"
 dnspython = "^2.9.1"
+httpx2 = "^2.16.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^26.3.1"
