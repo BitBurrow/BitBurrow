@@ -1934,16 +1934,11 @@ def get_adopt5c_code(base_id, api_path: str, regenerate: bool = False) -> str:
                 logger.info(f"B87566 base {base.subd} completed adopt5a (OTT {lsid} created)")
                 # note: if token[0] or token[22] is '-', echo still just echos, i.e. it
                 # doesn't complain about an invalid option :-)
-                value = (  # should be mirrored in delete_adopt5c_code(); search: tag_adopt5c_code
-                    util.fix_lan_overlap_shell_code()  # avoid gzbify() OpenSSL dependency
-                    + f'T=/tmp/{ott_filename(base.subd)}\n'
-                    + f'echo {token[0:22]}>$T\n'
-                    + f'echo {token[22:]}>>$T\n'
-                    + f'U={conf.base_url()}{api_path.format(subd=base.subd)}\n'
-                    + f'(curl $U || wget -O- $U) |sh\n'
+                value = util.adopt5c_shell_code(
+                    token,
+                    ott_filename(base.subd),
+                    conf.base_url() + api_path.format(subd=base.subd),
                 )
-                # try to make sure delete_adopt5c_code() in bbbased.lua will work
-                util.verify_adopt5c_code_prefixes(value)  # logs errors; should we fail too?
                 cache_ttl = TimeDelta(
                     hours=1
                 )  # cache expires after 60 minutes and is purged on access

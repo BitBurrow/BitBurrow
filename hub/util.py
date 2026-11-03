@@ -11,8 +11,6 @@ import subprocess
 import sys
 import textwrap
 import yaml
-import hub.config as conf
-import hub.net as net
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -28,6 +26,10 @@ class Berror(Exception):
     """
 
     pass
+
+
+import hub.config as conf  # uses util.Berror()
+import hub.net as net  # uses util.Berror()
 
 
 def front_berror_code(e: Exception, subd: str, ip: str = None) -> str:
@@ -243,191 +245,16 @@ def fix_lan_overlap_shell_code() -> str:
     )
 
 
-async def test_fix_lan_overlap_shell_code() -> None:
-    def lan_overlap_if_body() -> str:
-        code = fix_lan_overlap_shell_code()
-        prefix = 'if ip -4 addr |{\n'
-        suffix = '\n}; then\n'
-        start = code.index(prefix) + len(prefix)
-        end = code.index(suffix, start)
-        return code[start:end]
-
-    cases = [
-        (
-            """\
-1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
-    inet 127.0.0.1/8 scope host lo
-2: wan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
-    inet 192.168.8.20/24 brd 192.168.8.255 scope global wan
-3: lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
-    inet 192.168.8.1/24 brd 192.168.8.255 scope global lan
-""",
-            'overlap',
-        ),
-        (
-            """\
-1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
-    inet 127.0.0.1/8 scope host lo
-2: wan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
-    inet 10.0.5.22/24 brd 10.0.5.255 scope global wan
-3: lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
-    inet 192.168.1.1/24 brd 192.168.1.255 scope global lan
-4: guest: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
-    inet 10.0.5.1/24 brd 10.0.5.255 scope global guest
-""",
-            'overlap',
-        ),
-        (
-            """\
-1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
-    inet 127.0.0.1/8 scope host lo
-2: wan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
-    inet 192.168.8.20/24 brd 192.168.8.255 scope global wan
-3: lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
-    inet 192.168.1.1/24 brd 192.168.1.255 scope global lan
-""",
-            'no-overlap',
-        ),
-        (
-            """\
-1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
-    inet 127.0.0.1/8 scope host lo
-2: lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
-    inet 192.168.1.1/24 brd 192.168.1.255 scope global lan
-""",
-            'no-overlap',
-        ),
-        (
-            """\
-1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
-    inet 127.0.0.1/8 scope host lo
-2: wan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
-    inet 192.168.8.120/24 brd 192.168.8.255 scope global wan
-3: lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
-    inet 192.168.8.1/24 brd 192.168.8.255 scope global lan
-""",
-            'overlap',
-        ),
-        (
-            """\
-1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
-    inet 127.0.0.1/8 scope host lo
-2: vpn: <POINTOPOINT,UP,LOWER_UP> mtu 1420
-    inet 127.0.0.2/8 scope global vpn
-""",
-            'no-overlap',
-        ),
-        (
-            '',
-            'no-overlap',
-        ),
-        (
-            """\
-1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
-    inet 127.0.0.1/8 scope host lo
-       valid_lft forever preferred_lft forever
-11: br-lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default qlen 1000
-    inet 192.168.196.1/24 brd 192.168.196.255 scope global br-lan
-       valid_lft forever preferred_lft forever
-13: eth0.2@eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1600 qdisc noqueue state UP group default qlen 1000
-    inet 192.168.1.101/24 brd 192.168.1.255 scope global eth0.2
-       valid_lft forever preferred_lft forever
-16: wgbb1: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN group default qlen 1000
-    inet 172.24.188.39/32 scope global wgbb1
-       valid_lft forever preferred_lft forever
-""",
-            'no-overlap',
-        ),
-        (
-            """\
-1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
-    inet 127.0.0.1/8 scope host lo
-       valid_lft forever preferred_lft forever
-2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
-    inet 192.168.1.66/24 brd 192.168.1.255 scope global eth0
-       valid_lft forever preferred_lft forever
-5: br-lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default qlen 1000
-    inet 192.168.8.1/24 brd 192.168.8.255 scope global br-lan
-       valid_lft forever preferred_lft forever
-26: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN group default qlen 1000
-    inet 10.79.112.222/32 brd 255.255.255.255 scope global wg0
-       valid_lft forever preferred_lft forever
-""",
-            'no-overlap',
-        ),
-        (
-            """\
-1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
-    inet 127.0.0.1/8 scope host lo
-       valid_lft forever preferred_lft forever
-2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
-    inet 192.168.8.51/24 brd 192.168.1.255 scope global eth0
-       valid_lft forever preferred_lft forever
-5: br-lan: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default qlen 1000
-    inet 192.168.8.1/24 brd 192.168.8.255 scope global br-lan
-       valid_lft forever preferred_lft forever
-""",
-            'overlap',
-        ),
-    ]
-    body = lan_overlap_if_body()
-    for test_num, (ip_out, expected) in enumerate(cases):
-        script = (
-            'if (\n'
-            + body
-            + '\n); then\n'
-            + "  echo overlap\n"
-            + 'else\n'
-            + "  echo no-overlap\n"
-            + 'fi\n'
-        )
-        for shell in ['bash', 'sh']:
-            args = [shell, '-c', script]
-            result = await net.run_external_async(args, input=ip_out)
-            if expected != result:
-                logger.error(
-                    f"B65449 fix_lan_overlap test {test_num} failed: "
-                    + f"expected '{expected}', got '{result}' (using {shell})"
-                )
-
-
-def verify_adopt5c_code_prefixes(adopt5c_code):
-    """Return true iff Lua prefixes match the start of adopt5c_code lines."""
-    lua_path = os.path.join(project_root_path, 'hub/bbbased.lua')
-    adopt5c_lines = adopt5c_code.splitlines()
-    in_prefixes = False
-    with open(lua_path, encoding='utf-8') as f:
-        for line_num, line in enumerate(f):
-            line = line.split('--', 1)[0].strip()
-            if not in_prefixes:
-                if line == 'local prefixes = {':
-                    in_prefixes = True
-                    line_offset = line_num + 1  # file offset of first prefix line
-                continue
-            if line == '}':
-                break
-            if not line or not line.endswith(','):
-                logger.error(f"B27184 malformed prefixes line in {lua_path}: {line}")
-                return False
-            value = line[:-1].strip()
-            if len(value) < 2 or value[0] != "'" or value[-1] != "'":
-                logger.error(f"B88758 malformed prefixes line in {lua_path}: {line}")
-                return False
-            try:
-                rline = line_num - line_offset
-                have = adopt5c_lines[rline][0 : len(value) - 2]
-                if have != value[1:-1]:
-                    logger.error(
-                        f"B70722 adopt5c_code line {rline}"
-                        + f" begins '{have}', expecting '{value[1:-1]}'"
-                    )
-            except IndexError:
-                logger.error(f"B67971 {len(adopt5c_lines)=}, {rline=}")
-                return False
-        if not in_prefixes:
-            logger.error(f"B61331 no prefixes found in {lua_path}")
-            return False
-    return True
+def adopt5c_shell_code(token: str, ott_filename: str, download_url: str) -> str:
+    """Build the adoption script without configuration or database access."""
+    return (  # should be mirrored in delete_adopt5c_code(); search: tag_adopt5c_code
+        fix_lan_overlap_shell_code()  # avoid gzbify() OpenSSL dependency
+        + f'T=/tmp/{ott_filename}\n'
+        + f'echo {token[0:22]}>$T\n'
+        + f'echo {token[22:]}>>$T\n'
+        + f'U={download_url}\n'
+        + '(curl $U || wget -O- $U) |sh\n'
+    )
 
 
 def gzip_base64(s: str, wrap: int = 76, prefix: str = '', postfix: str = '\n') -> str:
