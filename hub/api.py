@@ -579,7 +579,10 @@ async def ping(
         wait_seconds = base.long_poll_probe or base.long_poll_safe
         base_id = base.id
     if base.last_endpoint != ip:
-        await run_in_threadpool(db.update_base_endpoint, base_id, ip)
+        try:
+            await run_in_threadpool(db.update_base_endpoint, base_id, ip)
+        except Berror as e:
+            logger.warning(util.front_berror_code(e, subd, ip))
     try:  # close the outer base transaction before process_ping() reserves the SQLite writer
         await run_in_threadpool(  # don't block; https://fastapi.tiangolo.com/async/#other-utility-functions
             db.process_ping, base_id=base_id, ip=ip, telem_data=telemetry, subd=subd
