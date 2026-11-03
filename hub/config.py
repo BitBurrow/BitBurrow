@@ -304,6 +304,10 @@ def load(path: str):
         if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9+/]{43}=', key):
             raise Berror(f"B65217 {cpath} must be a base64-encoded 32-byte secret in {path}")
 
+    def validate_web_proto(key: str, cpath: str) -> None:
+        if key != 'http' and key != 'https':
+            raise Berror(f"B51358 {cpath} must be 'http' or 'https' in {path}")
+
     validate_domain(get('frontend.domain'), 'frontend.domain')
     validate_ips(get('frontend.ips'), 'frontend.ips')
     validate_ip(get('midtier.ip'), 'midtier.ip')
@@ -313,6 +317,8 @@ def load(path: str):
     validate_port(get('backend.wg_port'), 'backend.wg_port')
     validate_site_code(get('frontend.site_code'), 'fontend.site_code')
     validate_tsig_key(get('backend.tsig_key'), 'backend.tsig_key')
+    validate_web_proto(get('frontend.web_proto'), 'frontend.web_proto')
+    validate_web_proto(get('backend.web_proto'), 'backend.web_proto')
     if from_fv <= 5081:  # if migration includes generating backend.tsig_key, save it to disk
         save(path)
 

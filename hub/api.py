@@ -263,16 +263,6 @@ class UpnpDiscoveryTaskResult:
 rpc_error_context = contextvars.ContextVar('rpc_error_context')
 
 
-@contextlib.asynccontextmanager
-async def preserve_rpc_error_context(context):
-    # fastapi-jsonrpc clears its own context before calling the exception handler
-    token = rpc_error_context.set(context)
-    try:
-        yield
-    finally:
-        rpc_error_context.reset(token)
-
-
 class BitBurrowEntrypoint(jsonrpc.Entrypoint):
     async def handle_exception(self, exc: Exception) -> dict:
         if isinstance(exc, Berror):
@@ -288,6 +278,16 @@ class BitBurrowEntrypoint(jsonrpc.Entrypoint):
             context.http_response.headers['Cache-Control'] = 'no-store'
             return jsonrpc.InternalError().get_resp()
         return await super().handle_exception(exc)
+
+
+@contextlib.asynccontextmanager
+async def preserve_rpc_error_context(context):
+    # fastapi-jsonrpc clears its own context before calling the exception handler
+    token = rpc_error_context.set(context)
+    try:
+        yield
+    finally:
+        rpc_error_context.reset(token)
 
 
 jsonrpc_entrypoint = BitBurrowEntrypoint(jsonrpc_route, middlewares=[preserve_rpc_error_context])

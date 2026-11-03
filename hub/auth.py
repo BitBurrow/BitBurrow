@@ -1,24 +1,29 @@
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 from fastapi import Request, Response, Body, APIRouter
 from fastapi.responses import RedirectResponse
+import json
 import logging
 from nicegui import ui, app, Client
-import os
 import hub.config as conf
 import hub.db as db
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
+router = APIRouter()
+app.include_router(router)  # FastAPI >= 0.137 supports routes added after inclusion
 
-SECURE_COOKIES = bool(int(os.environ.get('SECURE_COOKIES', '0')))
-CSRF_COOKIE_NAME = '__Host-csrf' if SECURE_COOKIES else 'csrf'
-CSRF_HEADER = 'x-csrf-token'
-SESSION_COOKIE_NAME = '__Host-session' if SECURE_COOKIES else 'session'
+
+def secure_cookies() -> bool:
+    return conf.get('frontend.web_proto') == 'https'
+
+
+def cookie_name(name: str) -> str:
+    return f'__Host-{name}' if secure_cookies() else name
 
 
 def is_logged_in(client: Client):
     """If the client is logged in, redirect client browser."""
-    token = client.request.cookies.get(SESSION_COOKIE_NAME)
+    token = client.request.cookies.get(cookie_name('session'))
     try:
         lsid, aid, kind = db.get_account_by_token(token, db.LoginSessionKind.COOKIE)
     except db.CredentialsError:
@@ -28,7 +33,7 @@ def is_logged_in(client: Client):
 
 def require_login(client: Client, redirect: str = '/login') -> tuple[int, int, db.AccountKind]:
     """If the client is logged in, return tuple about user, else redirect client browser."""
-    token = client.request.cookies.get(SESSION_COOKIE_NAME)
+    token = client.request.cookies.get(cookie_name('session'))
     try:
         lsid, aid, kind = db.get_account_by_token(token, db.LoginSessionKind.COOKIE)
     except db.CredentialsError:
@@ -38,17 +43,14 @@ def require_login(client: Client, redirect: str = '/login') -> tuple[int, int, d
     return lsid, aid, kind  # LoginSession.id, Account.id, kind
 
 
-router = APIRouter()
-
-
 def set_session_cookie(response: Response, token: str, max_age: int = 0):
     # docs: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#attributes
     kwargs = dict(
-        key=SESSION_COOKIE_NAME,
+        key=cookie_name('session'),
         value=token,
         httponly=True,
         samesite='strict',
-        secure=SECURE_COOKIES,
+        secure=secure_cookies(),
         path='/',  # __Host- cookies require this path even when the app is mounted.
     )
     if max_age > 0:
@@ -85,7 +87,7 @@ def post_set_session(
 @router.post('/logout')
 def logout(request: Request, redirect: str = Body('/login', embed=True)):
     safe_redirect = sanitize_redirect(redirect, '/login')
-    token = request.cookies.get(SESSION_COOKIE_NAME)
+    token = request.cookies.get(cookie_name('session'))
     if token:
         try:
             lsid, aid, kind = db.get_account_by_token(token, db.LoginSessionKind.COOKIE)
@@ -93,61 +95,75 @@ def logout(request: Request, redirect: str = Body('/login', embed=True)):
         except db.CredentialsError:
             pass  # expired or invalid token
     resp = RedirectResponse(conf.get('frontend.site_code') + safe_redirect, status_code=303)
-    resp.delete_cookie(SESSION_COOKIE_NAME, path='/')
-    resp.delete_cookie(CSRF_COOKIE_NAME, path='/')
+    resp.delete_cookie(cookie_name('session'), path='/', secure=secure_cookies())
+    resp.delete_cookie(cookie_name('csrf'), path='/', secure=secure_cookies())
     return resp
 
 
-app.include_router(router)
-
-
 def js_fetch_post(path: str, payload: dict) -> str:
+    site_code = conf.get('frontend.site_code')
+    options = {
+        'path': site_code + path,
+        'siteRoot': site_code + '/',
+        'csrfName': cookie_name('csrf'),
+        'secureCookie': secure_cookies(),
+        'payload': payload,
+    }
     js = '''
         (async () => {
+          const {path, siteRoot, csrfName, secureCookie, payload} = JSON.parse(__OPTIONS__);
           function getCookie(name) {
-            const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()\\[\\]\\\\\\/\\+^])/g, '\\\\$1') + '=([^;]*)'));
-            return m ? decodeURIComponent(m[1]) : null;
+            const prefix = name + '=';
+            const cookie = document.cookie.split(';')
+              .map(part => part.trimStart())
+              .find(part => part.startsWith(prefix));
+            return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : null;
           }
-          async function ensureCsrf() {
-            if (!getCookie('{CSRF_COOKIE_NAME}')) {
-            await fetch('{site_root}', { credentials: 'same-origin' }); // prime CSRF cookie
+          async function ensureCsrf(force = false) {
+            if (force) {
+              // __Host- cookies require Secure even when being deleted
+              const secure = secureCookie ? '; Secure' : '';
+              document.cookie = `${csrfName}=; Max-Age=0; Path=/${secure}`;
+              if (getCookie(csrfName)) return null;
+            }
+            let csrf = getCookie(csrfName);
+            if (force || !csrf) {
+              await fetch(siteRoot, {credentials: 'same-origin', cache: 'no-store'});
+              csrf = getCookie(csrfName);
+            }
+            return csrf;
+          }
+          async function postOnce(csrf) {
+            return fetch(path, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json', 'x-csrf-token': csrf || ''},
+              credentials: 'same-origin',
+              body: JSON.stringify(payload)
+            });
+          }
+          let csrf = await ensureCsrf();
+          let response = await postOnce(csrf);
+          if (response.status === 403) {
+            // a 403 response may already have replaced the cookie
+            let nextCsrf = getCookie(csrfName);
+            if (!nextCsrf || nextCsrf === csrf) {
+              nextCsrf = await ensureCsrf(true);
+            }
+            if (nextCsrf) {
+              response = await postOnce(nextCsrf);
+            } else {
+              console.error('Could not refresh the CSRF cookie; request was not retried.');
             }
           }
-          async function postOnce() {
-            const csrf = getCookie('{CSRF_COOKIE_NAME}') || '';
-            const res = await fetch('{path}', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                '{CSRF_HEADER}': csrf
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify({payload})
-            });
-            return res;
-          }
-          await ensureCsrf();
-          let r = await postOnce();
-          if (r.status === 403) {
-            await ensureCsrf();
-            r = await postOnce(); // retry once after priming
-          }
-          if (r.redirected) {
-            window.location.href = r.url;
+          if (response.redirected) {
+            window.location.href = response.url;
           } else {
-            // Optional: surface errors
-            const t = await r.text();
-            console.log('POST {path} ->', r.status, t);
+            const text = await response.text();
+            console.log('POST', path, '->', response.status, text);
           }
         })();
     '''
-    return (  # f-strings don't like JS
-        js.replace('{path}', conf.get('frontend.site_code') + path)
-        .replace('{site_root}', conf.get('frontend.site_code') + '/')
-        .replace('{payload}', str(payload))
-        .replace('{CSRF_COOKIE_NAME}', CSRF_COOKIE_NAME)
-        .replace('{CSRF_HEADER}', CSRF_HEADER)
-    )
+    return js.replace('__OPTIONS__', json.dumps(json.dumps(options, allow_nan=False)))
 
 
 def set_login_cookie(
