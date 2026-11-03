@@ -6,11 +6,13 @@ import logging
 from nicegui import ui, app, Client
 import hub.config as conf
 import hub.db as db
+import hub.csrf as csrf
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 router = APIRouter()
 app.include_router(router)  # FastAPI >= 0.137 supports routes added after inclusion
+app.add_middleware(csrf.OriginMiddleware)  # only browser routes need this guard, not base API
 
 
 def secure_cookies() -> bool:
@@ -96,70 +98,36 @@ def logout(request: Request, redirect: str = Body('/login', embed=True)):
             pass  # expired or invalid token
     resp = RedirectResponse(conf.get('frontend.site_code') + safe_redirect, status_code=303)
     resp.delete_cookie(cookie_name('session'), path='/', secure=secure_cookies())
-    resp.delete_cookie(cookie_name('csrf'), path='/', secure=secure_cookies())
     return resp
 
 
 def js_fetch_post(path: str, payload: dict) -> str:
-    site_code = conf.get('frontend.site_code')
     options = {
-        'path': site_code + path,
-        'siteRoot': site_code + '/',
-        'csrfName': cookie_name('csrf'),
-        'secureCookie': secure_cookies(),
+        'path': conf.get('frontend.site_code') + path,
         'payload': payload,
     }
     js = '''
         (async () => {
-          const {path, siteRoot, csrfName, secureCookie, payload} = JSON.parse(__OPTIONS__);
-          function getCookie(name) {
-            const prefix = name + '=';
-            const cookie = document.cookie.split(';')
-              .map(part => part.trimStart())
-              .find(part => part.startsWith(prefix));
-            return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : null;
-          }
-          async function ensureCsrf(force = false) {
-            if (force) {
-              // __Host- cookies require Secure even when being deleted
-              const secure = secureCookie ? '; Secure' : '';
-              document.cookie = `${csrfName}=; Max-Age=0; Path=/${secure}`;
-              if (getCookie(csrfName)) return null;
-            }
-            let csrf = getCookie(csrfName);
-            if (force || !csrf) {
-              await fetch(siteRoot, {credentials: 'same-origin', cache: 'no-store'});
-              csrf = getCookie(csrfName);
-            }
-            return csrf;
-          }
-          async function postOnce(csrf) {
-            return fetch(path, {
+          const {path, payload} = JSON.parse(__OPTIONS__);
+          try {
+            const response = await fetch(path, {
               method: 'POST',
-              headers: {'Content-Type': 'application/json', 'x-csrf-token': csrf || ''},
+              headers: {'Content-Type': 'application/json'},
               credentials: 'same-origin',
               body: JSON.stringify(payload)
             });
-          }
-          let csrf = await ensureCsrf();
-          let response = await postOnce(csrf);
-          if (response.status === 403) {
-            // a 403 response may already have replaced the cookie
-            let nextCsrf = getCookie(csrfName);
-            if (!nextCsrf || nextCsrf === csrf) {
-              nextCsrf = await ensureCsrf(true);
-            }
-            if (nextCsrf) {
-              response = await postOnce(nextCsrf);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            if (response.redirected) {
+              window.location.href = response.url;
             } else {
-              console.error('Could not refresh the CSRF cookie; request was not retried.');
+              console.log('POST', path, '->', response.status);
             }
-          }
-          if (response.redirected) {
-            window.location.href = response.url;
-          } else {
-            const text = await response.text();
-            console.log('POST', path, '->', response.status, text);
+          } catch (error) {
+            console.error('POST', path, 'failed:', error);
+            Quasar.Notify.create({
+              type: 'negative',
+              message: 'Could not complete the request. Please reload the page and try again.'
+            });
           }
         })();
     '''

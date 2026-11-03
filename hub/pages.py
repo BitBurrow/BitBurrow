@@ -1,6 +1,7 @@
 import asyncio
 import base64
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
+import fastapi
 import json
 import logging
 import urllib.parse
@@ -12,6 +13,7 @@ import hub.login_key as lk
 import hub.auth as auth
 import hub.config as conf
 import hub.util as util
+import hub.csrf as csrf
 
 Berror = util.Berror
 logger = logging.getLogger(__name__)
@@ -63,7 +65,7 @@ def welcome(client: Client):
 ###
 
 
-@ui.page('/confirm')
+@ui.page('/confirm', dependencies=[fastapi.Depends(csrf.require_same_origin)])
 def confirm(client: Client):
     if auth.is_logged_in(client):
         ui.navigate.to('/home')
@@ -73,6 +75,7 @@ def confirm(client: Client):
         ui.navigate.to('/welcome')
         return
     try:  # validate (no other way to confirm that user came via /welcome)
+        # same-origin check ('dependencies=...') may be redundant given the check below
         aid = db.validate_login_key(qparam_invite, allowed_kinds=db.invite)
     except db.CredentialsError:  # send them back to /welcome
         ui.navigate.to(f'/welcome?invite={qparam_invite}')
@@ -334,7 +337,8 @@ def home(client: Client):
 ###
 
 
-@ui.page('/setup/{subd}')
+# require same-origin check ('dependencies=...') here because adoption token is created
+@ui.page('/setup/{subd}', dependencies=[fastapi.Depends(csrf.require_same_origin)])
 def setup(client: Client, subd: str):
     try:
         lsid, aid, kind = auth.require_login(client)
