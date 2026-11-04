@@ -571,18 +571,17 @@ def entry_point():
         logger.error(f"B14242 DB error (may need to increase db_schema_version): {e}")
         sys.exit(1)
     try:
-        version_details = f'{util.app_version()}:{migrate_db.db_schema_version}:{conf.config_fv}'
-        version_string = f'{util.read_versions_yaml()['hub/']['version']} ({version_details})'
+        version_details = f'{util.app_version()}/{migrate_db.db_schema_version}/{conf.config_fv}'
+        k = db.AccountKind
+        counts = '/'.join(str(db.account_count(t)) for t in [k.ADMIN, k.MANAGER, k.USER, k.INVITE])
         address_list = net.all_local_ips(conf.get('backend.ip'), ipv6_enclosure='[]')
         logger.info(f"❚ Starting BitBurrow hub")
-        logger.info(f"❚   version string: {version_string}")
-        logger.info(f"❚   admin accounts: {db.account_count(db.AccountKind.ADMIN)}")
-        logger.info(f"❚   invites: {db.account_count(db.AccountKind.INVITE)}")
-        logger.info(f"❚   manager accounts: {db.account_count(db.AccountKind.MANAGER)}")
-        logger.info(f"❚   user accounts: {db.account_count(db.AccountKind.USER)}")
+        logger.info(f"❚   frontend URL: {conf.base_url()}/welcome")
+        logger.info(f"❚   version: {util.read_versions_yaml()['hub/']['version']}")
+        logger.info(f"❚     details: {version_details}")
+        logger.info(f"❚   accounts (admin/manager/user/invite): {counts}")
         for address in address_list:
             logger.info(f"❚   listening on: {scheme}://{address}:{conf.get('backend.web_port')}")
-        logger.info(f"❚   frontend URL: {conf.base_url()}/welcome")
     except sqlalchemy.exc.OperationalError as e:
         logger.error(f"B50313 DB error (may need to increase db_schema_version): {e}")
         sys.exit(1)
