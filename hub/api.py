@@ -133,8 +133,12 @@ async def log_error(subd: str, request: Request) -> Response:
             return  # already logged above; don't log the "ping rejected: ..."
     else:
         message = f"base {subd} {disp}"
-    if message[0] == 'B' and message[1:6] == '20392':  # avoid git_hooks/ Berror code dup detection
-        logger.info(message)  # use logger.info() for base daemon startup message
+    if message[0] == 'B' and message[1:6] == '20392':
+        logger.info(message)  # INFO for base daemon startup message
+    elif message[0] == 'B' and message[1:6] == '82691':
+        logger.info(message)  # INFO for base "curl failed ..."
+    elif message[0] == 'B' and message[1:6] == '84526':
+        logger.info(message)  # INFO for base IPv6 issues
     else:
         logger.warning(message)  # other client errors are warnings here
     return Response(status_code=status.HTTP_204_NO_CONTENT)
