@@ -53,7 +53,7 @@ local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
 local lua_exe = hub_config('lua_exe', '/usr/bin/lua')
-local commit_date = '0tnyxh0'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0tnyxzm'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -2027,7 +2027,8 @@ for _, value in ipairs(arg) do
         set_cli_verb(value)
     end
 end
-if cli_verb == 'install' then
+if not file_version or file_version:sub(1, 7) ~= commit_date then
+    -- normally when cli_verb == 'install'
     local download_version = hub_config('file_version', '')
     if download_version ~= '' then
         if #download_version < 12 or download_version:sub(1, 8) ~= commit_date .. '-'
@@ -4794,10 +4795,6 @@ if cli_verb == 'install' then
         close_log()
         os.exit(13)
     end
-    base_config.file_version = file_version
-    if not mkdir(config_dir, '0700') or not save_base_config(base_config) then
-        log_error("B79420 cannot save installation file_version; continuing installation")
-    end
     -- flock is the only 'install' prerequisite, but it's probably already installed
     install_one_of('flock util-linux', 'flock')  -- ignore errors and hope it works anyhow
     local install_dir = find_install_dir()
@@ -4833,6 +4830,13 @@ install_one_of('openssl openssl-util', 'openssl')
 --
 
 mkdir(config_dir, '0700')
+-- service wrapper holds the daemon lock before Lua reads base.conf or writes this version
+if base_config.file_version ~= file_version then
+    base_config.file_version = file_version
+    if not save_base_config(base_config) then
+        log_error("B79420 cannot save file_version; continuing startup")
+    end
+end
 restore_wg()  -- use saved settings before any hub API call
 if not ensure_auth_keys() then
     log_error("B60585 cannot continue without key files; exiting")
