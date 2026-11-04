@@ -23,6 +23,7 @@ HUB_CONFIG_EOF
 packager_exe=''
 temp_path=''
 bbbased_path=''
+header_path=''
 lua_exe=''
 
 log_error() {
@@ -35,15 +36,21 @@ log_error() {
     return 0
 }
 
+can_download() {
+    command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1
+}
+
 download() {
     echo "downloading $1 $2" >&2
     if command -v curl >/dev/null 2>&1; then
-        curl -f --max-time 120 -o "$2" "$1" >/dev/null 2>&1
-        return $?
+        curl -f --max-time 120 --dump-header "$header_path" -o "$2" "$1" >/dev/null 2>&1 && return 0
+        rm -f "$header_path"
+        curl -f --max-time 120 -o "$2" "$1" >/dev/null 2>&1 && return 0
     fi
     if command -v wget >/dev/null 2>&1; then
-        wget -q -T 120 -O "$2" "$1" >/dev/null 2>&1
-        return $?
+        wget -S -T 120 -O "$2" "$1" >/dev/null 2>"$header_path" && return 0
+        rm -f "$header_path"
+        wget -q -T 120 -O "$2" "$1" >/dev/null 2>&1 && return 0
     fi
     return 1
 }
@@ -96,8 +103,11 @@ run_as_root() {
 find_lua_exe() {
     lua_exe=''
     for cmd in lua luajit lua5.5 lua55 lua5.4 lua54 lua5.3 lua53 lua5.2 lua52 lua5.1 lua51; do
-        if command -v "$cmd" >/dev/null 2>&1; then
-            lua_exe=$cmd
+        if lua_exe=$(command -v "$cmd" 2>/dev/null); then
+            case "$lua_exe" in
+                /*) ;;
+                *) lua_exe="$(pwd)/$lua_exe" ;;
+            esac
             return 0
         fi
     done
@@ -183,7 +193,7 @@ make_temp_path() {
 
 cleanup_temp_path() {
     if [ -n "$bbbased_path" ]; then
-        rm -f "$bbbased_path" 2>/dev/null || true
+        rm -f "$bbbased_path" "$header_path" 2>/dev/null || true
     fi
     if [ -n "$temp_path" ]; then
         rmdir "$temp_path" 2>/dev/null || true
@@ -196,14 +206,15 @@ echo "" >&2  # blank line
 echo "installing BitBurow ..." >&2
 make_temp_path || exit 1
 bbbased_path="$temp_path/bbbased.lua"
+header_path="$temp_path/headers"
 trap cleanup_temp_path 0
 find_packager_exe || true
 
-### install curl or wget
+### install curl or wget; response-header support is best-effort
 echo "installing required packages" >&2
 loop_count=0
 while [ "$loop_count" -le 3 ]; do
-    if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then break; fi
+    if can_download; then break; fi
     if [ "$loop_count" -gt 1 ]; then
         echo "error installing curl and wget; waiting 75 seconds to retry" >&2
         sleep 75
@@ -215,11 +226,14 @@ while [ "$loop_count" -le 3 ]; do
         packager fix-broken >/dev/null 2>&1 || true
     fi
     packager install curl >/dev/null 2>&1 || true
-    if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then break; fi
+    if can_download; then break; fi
     packager install wget >/dev/null 2>&1 || true
-    if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then break; fi
+    if can_download; then break; fi
     loop_count=$((loop_count + 1))
 done
+if ! can_download; then
+    log_error "B78473 cannot install curl or wget; trying the download anyway"
+fi
 
 ### install Lua
 loop_count=0
@@ -262,20 +276,31 @@ fi
 
 ### download Lua script
 loop_count=0
+file_version=''
 while [ "$loop_count" -le 10 ]; do
-    download "$(hub_config download_url)" "$bbbased_path" || true
-    if [ -s "$bbbased_path" ]; then
-        break
+    if download "$(hub_config download_url)" "$bbbased_path" && [ -s "$bbbased_path" ]; then
+        file_version=$(awk '
+            $1 ~ /^HTTP\// { version = "" }
+            tolower($1) == "x-bitburrow-file-version:" { version = $2 }
+            END { sub(/\r$/, "", version); print version }
+        ' "$header_path" 2>/dev/null) || file_version=''
+        break  # a successful download is enough; version metadata is optional
     fi
+    rm -f "$bbbased_path"
     sleep 75
     loop_count=$((loop_count + 1))
 done
 
 ### run Lua script
 if [ -s "$bbbased_path" ]; then
+    hub_config_data="$hub_config_data
+file_version=$file_version
+lua_exe=$lua_exe
+"
     echo "running $lua_exe $bbbased_path install" >&2
     run_as_root env HUBCONF="$hub_config_data" TMPDIR="${TMPDIR:-/tmp}" \
         "$lua_exe" "$bbbased_path" install
 else
     log_error "B29909 cannot download $(hub_config download_url)"
+    exit 1
 fi

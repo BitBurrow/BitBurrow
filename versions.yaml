@@ -1,17 +1,17 @@
 paths:
-  - path: hub/adopt5p.sh
-    version: 0tkuo3w
   - path: hub/bbbased.lua
-    version: 0tnrlfk
+    version: 0tnyxh0
     signature: |-
-      ypI59be9+OKIZuVa+8ssAKH9OsBTT4sNyyh6gfymxNidkpkrXcHdRMJ6RG8vQihg
-      l/4/U+ndnsnhIMCQMLiOkFDoBWwz6Q/VWKj4hxPt5pIWvmFJF/OswkG+KXGOiMMd
-      mCEz31QCphCDpfOl7pQZTfVNlJdJr8XC+oHRehSUHH4JpS/YBee7361YvPZVPnjB
-      JAo4JfVmoXti2NiwP6yYD/cyeA7ZDdeciig5OJfMOJzrjNML+A38d3UZw11vWZPM
-      MWW09B/oBd9J49Zk92MxM7Yzb7GVsn6CxxwtyWGMqWWZ1xZq6n2DHGcCyETi86Gp
-      F7RdnBiy7q1DdWVEWTfIiEqTwAgRZ6Qn4U5S74qvTmt9k24jtYzZWkuPeaGKyBpF
-      iMTxwRjTpHXy1sVbM9hcKmEYciUwoWpGGqzhzo0Aqma258Wl9ootBFNCOcE2jVp9
-      Cnp+5MP300d5nbeCrEHhaDrnSrlfMReD2jhIFZEdLx2AafHg6JFA2VV1O/RzNHUY
+      rwUup8kdOo/L1ORKIFhdeGBn+79DVvBTp/OTTnJ/qA6/mGWAzYOjbq6w0Kprqyar
+      qqQzyuV0I6VmgaIJ0tH8U+105qneNrIH+crztvGuUiAKqKa+bP+hhGaAf8GeJb15
+      4wRd0NSxLYkGP2L0FcjD8A1rb9grQY8+SUS6cUqIs4tTTodzDDKD1wUpyvwiGyrM
+      rpFPm0iHpSi69dO283ZsqOkq/DbAId0tgCpmU79+nKukj9+9M3MjWVDahzBmZHrP
+      TXi/qNNE/WusDC6xIe+tNbQYFTEZKvNePO6wnUVfL50G+mo7OGo2c8TrXQDrrG4v
+      SFc3TPG79LRriznWkJ0XH8oN2UTgdAmNc7K4S4cvX0a+tJUcDFZb7RMK2hl88xgm
+      AgOe2/1IjZhyeY74wy53pXU0JBxDdYwDFDRIWFAKEmb4nCMuPx0XFkGg/wdVX/wb
+      z0/hhJ2wE0dNT75BziD39yOknDYTj4ey9kmGETrNdsrs9ZfEwL3IzGpGgluomwPO
     key_id: 0tlfc1c
+  - path: hub/adopt5p.sh
+    version: 0tnyxh0
   - path: hub/
-    version: 0tnxzvp
+    version: 0tnyxh0

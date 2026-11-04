@@ -39,10 +39,11 @@ local function fail_early(message)
     os.exit(1)
 end
 
-local function hub_config(key)
+local function hub_config(key, default)
     for k, v in hubconf:gmatch('([^\r\n=]+)=([^\r\n]*)') do
         if k == key then return v end
     end
+    if default ~= nil then return default end
     fail_early("B09542 HUBCONF environment variable is missing a value for " .. key)
 end
 
@@ -51,7 +52,8 @@ local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
-local commit_date = '0tnrlfk'  -- updated at commit time via git_hooks/pre-commit
+local lua_exe = hub_config('lua_exe', '/usr/bin/lua')
+local commit_date = '0tnyxh0'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -1944,7 +1946,7 @@ end
 local function read_key_value_file(path)
     local values = {}
     local handle = io.open(path, 'r')
-    if not handle then return values end
+    if not handle then return values end  -- missing or unreadable
     local line_number = 0
     for raw_line in handle:lines() do
         line_number = line_number + 1
@@ -1967,14 +1969,6 @@ end
 
 base_config = read_key_value_file(base_config_path)  -- NOT local (defined near top of this file)
 local file_version = base_config.file_version
-if not file_version or file_version == '' then
-    log_error("B62917 " .. base_config_path .. " is missing file_version")
-    file_version = commit_date .. "-aaaa"
-end
-if file_version:sub(1, 7) ~= commit_date then
-    log_error("B50795 version mismatch: '" .. commit_date .. "' not in '" .. file_version .. "'")
-    file_version = commit_date .. "-aaaa"
-end
 
 --
 -- CLI
@@ -2032,6 +2026,25 @@ for _, value in ipairs(arg) do
     else
         set_cli_verb(value)
     end
+end
+if cli_verb == 'install' then
+    local download_version = hub_config('file_version', '')
+    if download_version ~= '' then
+        if #download_version < 12 or download_version:sub(1, 8) ~= commit_date .. '-'
+                or not download_version:match('^[0-9a-z]+%-[0-9a-z]+$') then
+            log_warning("B47135 invalid installation file_version: " .. download_version)
+        else
+            file_version = download_version
+        end
+    end
+end
+if not file_version or file_version == '' then
+    log_error("B62917 " .. base_config_path .. " is missing file_version")
+    file_version = commit_date .. "-aaaa"
+end
+if file_version:sub(1, 7) ~= commit_date then
+    log_error("B50795 version mismatch: '" .. commit_date .. "' not in '" .. file_version .. "'")
+    file_version = commit_date .. "-aaaa"
 end
 if cli_verb == nil then
     log_error("a verb is required")
@@ -2111,7 +2124,7 @@ local function locked_runner_script(lua_path)
         '    if flock -n 9; then',
         '        rm -f ' .. shell_quote(lock_dir_stop_request_path),
         '        echo $$ > ' .. shell_quote(lock_dir_pid_path),
-        '        exec /usr/bin/lua ' .. shell_quote(lua_path) .. ' daemonize',
+        '        exec ' .. shell_quote(lua_exe) .. ' ' .. shell_quote(lua_path) .. ' daemonize',
         '    fi',
         '    # too noisy: logger -t ' .. shell_quote(bbsubd) .. ' "B04983 waiting for another instance to quit"',
         '    sleep 1',
@@ -2409,6 +2422,9 @@ local function delete_adopt5c_code(path)
     }
     local mode = get_mode(path)
     if not mode then
+        local handle, _, error_code = io.open(path, 'r')
+        if handle then handle:close() end
+        if error_code == 2 then return true end  -- no bootstrap code to remove
         log_error("B70513 cannot get mode for " .. path)
         return nil
     end
@@ -4683,7 +4699,8 @@ local function handle_task(task_id, task_method, task_args)
                 or new_file_version:sub(1, 7) ~= new_commit_date and 'file-version mismatch'
                 or new_commit_date < commit_date and 'downgrade'
         if not invalid_reason then
-            local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' /usr/bin/lua -e '
+            local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' '
+                    .. shell_quote(lua_exe) .. ' -e '
                     .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
             local parse_ok, parse_output, parse_exit_code = run_command(parse_attempt, true, true)
             if not parse_ok then
@@ -4776,6 +4793,10 @@ if cli_verb == 'install' then
     if not set_sleep_method() then
         close_log()
         os.exit(13)
+    end
+    base_config.file_version = file_version
+    if not mkdir(config_dir, '0700') or not save_base_config(base_config) then
+        log_error("B79420 cannot save installation file_version; continuing installation")
     end
     -- flock is the only 'install' prerequisite, but it's probably already installed
     install_one_of('flock util-linux', 'flock')  -- ignore errors and hope it works anyhow
