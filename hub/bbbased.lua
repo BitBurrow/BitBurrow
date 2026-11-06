@@ -53,7 +53,7 @@ local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
 local lua_exe = hub_config('lua_exe', '/usr/bin/lua')
-local commit_date = '0to2wl8'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0to3mxv'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -993,24 +993,6 @@ local function run_command_for(command, max_seconds, merge_stderr, failure_ok)
     if failure then output, exit_code = failure, nil end
     local result, error_output = run_command_result(tostring(command), output, exit_code, failure_ok)
     return result, error_output, exit_code, timed_out
-end
-
-local function wait_until_dead(pid, attempts)
-    -- note: pid must be normalized, e.g. normalize_pid()
-    for _ = 1, attempts do
-        if not is_running(pid) then return true end
-        sleep(0.1)
-    end
-    return not is_running(pid)
-end
-
-local function kill_process(pid)
-    -- note: pid must be normalized, e.g. normalize_pid()
-    if not is_running(pid) then return true end
-    run_command('kill -TERM ' .. pid, true, true)
-    if wait_until_dead(pid, 20) then return true end
-    run_command('kill -KILL ' .. pid, true, true)
-    return wait_until_dead(pid, 20)
 end
 
 local function cleanup_and_exit(exit_code)
@@ -3863,45 +3845,73 @@ local function log_upnp_diagnostic(label, value, max_lines)
     end
 end
 
+local function read_stat_fields(pid)
+    -- strip the PID and parenthesized comm; field 22 then becomes ${20}
+    return 'IFS= read -r stat 2>/dev/null </proc/' .. pid .. '/stat && set -- ${stat##*) }'
+            .. ' && case ${20} in ""|*[!0-9]*) false;; *) true;; esac'
+end
+
+local function capture_command(capture, signal)
+    local read_stat = read_stat_fields(capture.pid)
+    local matches = '[ "$1" != Z ] && [ "${20}" = ' .. capture.start_time .. ' ]'
+    if signal then
+        return read_stat .. ' && ' .. matches .. ' && kill -' .. signal .. ' ' .. capture.pid
+    end
+    return 'if ' .. read_stat .. '; then ' .. matches .. '; else kill -0 ' .. capture.pid .. '; fi'
+end
+
+local function capture_running(capture)
+    return run_command(capture_command(capture), false, true) ~= nil
+end
+
+local function stop_capture(capture)
+    for _, signal in ipairs({'TERM', 'KILL'}) do
+        run_command(capture_command(capture, signal), false, true)
+        for _ = 1, 20 do
+            if not capture_running(capture) then return true end
+            sleep(0.1)
+        end
+    end
+    return not capture_running(capture)
+end
+
 local function start_upnp_capture(interface, capture_path, status_path, filter)
-    local command = 'tcpdump -nn -U -s4096 -c ' .. tostring(max_upnp_capture_packets)
-            .. ' -i ' .. shell_quote(interface)
-            .. ' -w -'
-            .. ' ' .. shell_quote(filter)
-            .. ' </dev/null >' .. shell_quote(capture_path)
-            .. ' 2>>' .. shell_quote(status_path)
-            .. ' & echo $!'
-    local pid = normalize_pid(run_command(command, true, true))
+    -- report launcher's identity before exec so an early exit cannot make us record a replacement process as the capture
+    local command = read_stat_fields('$$') .. ' || exit 1; '
+            .. 'printf "%s %s\\n" "$$" "${20}" || exit 1; '
+            .. 'exec tcpdump -nn -U -s4096 -c ' .. tostring(max_upnp_capture_packets)
+            .. ' -i ' .. shell_quote(interface) .. ' -w - ' .. shell_quote(filter)
+            .. ' >' .. shell_quote(capture_path)
+    local pipe = io.popen('sh -c ' .. shell_quote(command) .. ' 9>&- </dev/null 2>>'
+        .. shell_quote(status_path) .. ' &', 'r')
+    local identity = pipe and pipe:read('*l') or ''
+    if pipe then pipe:close() end
+    local pid, start_time = identity:match('^(%d+) (%d+)$')
+    pid = normalize_pid(pid)
     if not pid then return nil, 'cannot start tcpdump: ' .. display_text_file(status_path) end
-    -- use only POSIX shell built-ins plus sleep/kill so this also works on small
-    -- router distributions without a separate timeout utility; rechecking the
-    -- process start time prevents the watchdog from signaling a reused PID
-    local watchdog_command = '(IFS= read -r upnp_original_stat < /proc/'
-            .. pid .. '/stat || exit 0; set -- $upnp_original_stat; shift 21; '
-            .. 'upnp_original_start=$1; sleep ' .. tostring(max_upnp_capture_seconds) .. '; '
-            .. 'IFS= read -r upnp_current_stat < /proc/' .. pid
-            .. '/stat || exit 0; set -- $upnp_current_stat; shift 21; '
-            .. 'if [ "$1" = "$upnp_original_start" ]; then printf "%s\\n" '
-            .. shell_quote('bbbased: UPnP capture time limit reached')
-            .. ' >>' .. shell_quote(status_path) .. '; kill -TERM ' .. pid
-            .. ' 2>/dev/null; fi) </dev/null >/dev/null 2>&1 & echo $!'
+    local capture = {pid = pid, start_time = start_time}
+    local watchdog_command = '(exec 9>&-; sleep ' .. tostring(max_upnp_capture_seconds)
+            .. ' || exit 1; if ' .. capture_command(capture, '0') .. '; then printf "%s\\n" '
+            .. shell_quote('bbbased: UPnP capture time limit reached') .. ' >>'
+            .. shell_quote(status_path)
+            .. '; ' .. capture_command(capture, 'TERM') .. '; fi) </dev/null >/dev/null 2>&1 & echo $!'
     local watchdog_pid = normalize_pid(run_command(watchdog_command, true, true))
     if not watchdog_pid then
-        kill_process(pid)
+        stop_capture(capture)
         return nil, 'cannot start tcpdump time-limit watchdog'
     end
     for _ = 1, 100 do
         local grep_command = 'grep -Eq '
                 .. shell_quote('^(tcpdump: )?listening on ')
                 .. ' ' .. shell_quote(status_path)
-        if run_command(grep_command, true, true) then return pid end
-        if not is_running(pid) then break end
+        if run_command(grep_command, true, true) then return capture end
+        if not capture_running(capture) then break end
         sleep(0.1)
     end
     local problem
-    if is_running(pid) then
+    if capture_running(capture) then
         problem = "tcpdump won't listen: " .. display_text_file(status_path)
-        kill_process(pid)
+        stop_capture(capture)
     else
         problem = 'tcpdump refused to listen: ' .. display_text_file(status_path)
     end
@@ -3954,7 +3964,7 @@ local function discover_upnp_pcap(pcap_base64)
     local capture_path = nil
     local capture_status_path = nil
     local tcpreplay_output_path = nil
-    local tcpdump_pid = nil
+    local capture = nil
     local capture_started = false
     local wan_route = nil
     local wan_if = nil
@@ -4103,13 +4113,13 @@ local function discover_upnp_pcap(pcap_base64)
                 .. tostring(source_port) .. '))'
         local capture_problem
         capture_deadline = os.time() + max_upnp_capture_seconds
-        tcpdump_pid, capture_problem = start_upnp_capture(
+        capture, capture_problem = start_upnp_capture(
             wan_if,
             capture_path,
             capture_status_path,
             capture_filter
         )
-        if not tcpdump_pid then
+        if not capture then
             result = "B26445 " .. tostring(capture_problem)
             break
         end
@@ -4182,7 +4192,7 @@ local function discover_upnp_pcap(pcap_base64)
             result = "B08078 cannot wait for UPnP discovery responses"
             break
         end
-        if not is_running(tcpdump_pid) then
+        if not capture_running(capture) then
             capture_status = read_text_file(capture_status_path, true, true)
             if (capture_packet_count(capture_status) or 0) >= max_upnp_capture_packets then
                 log_warning("B70017 hit " .. tostring(max_upnp_capture_packets) .. " packet limit")
@@ -4192,11 +4202,11 @@ local function discover_upnp_pcap(pcap_base64)
                 result = "B25280 tcpdump failed: " .. display_text_file(capture_status_path)
                 break
             end
-        elseif not kill_process(tcpdump_pid) then
+        elseif not stop_capture(capture) then
             result = "B88176 cannot stop tcpdump: " .. display_text_file(capture_status_path)
             break
         end
-        tcpdump_pid = nil
+        capture = nil
         capture_status = capture_status or read_text_file(capture_status_path, true, true)
         captured_packets = decode_upnp_capture(capture_path)
         if captured_packets == nil then
@@ -4319,10 +4329,10 @@ local function discover_upnp_pcap(pcap_base64)
         success = true
         result = upnp_result_json(gateway, 'pcap', upnp_response_count, igds)
     until true
-    if tcpdump_pid and not kill_process(tcpdump_pid) then
+    if capture and not stop_capture(capture) then
         log_warning("B38790 cleanup could not stop tcpdump")
     end
-    tcpdump_pid = nil
+    capture = nil
     if capture_started and capture_status == nil and capture_status_path then
         capture_status = read_text_file(capture_status_path, true, true)
     end
@@ -4866,9 +4876,9 @@ if adopt6c_result ~= false then  -- fatal error or success
     -- avoid the (remote) possibility that 2 base installs will try to edit rc.local at the same time
     -- flock -x waits without a timeout; see https://man7.org/linux/man-pages/man1/flock.1.html
     if run_command_with_umask_077(
-        'exec 9>&-; flock -x /etc/rc.local.bitburrow.lock '
-        .. shell_quote(lua_exe) .. ' ' .. shell_quote(running_path) .. ' delete-adopt5c-code'
-    ) then  -- mark cleanup complete last so failed unlink or a restart leaves it retrable
+                'exec 9>&-; flock -x /etc/rc.local.bitburrow.lock '
+                .. shell_quote(lua_exe) .. ' ' .. shell_quote(running_path) .. ' delete-adopt5c-code'
+            ) then  -- mark cleanup complete last so failed unlink or a restart leaves it retrable
         local removed, err, errno = os.remove(ott_path)
         if not removed and errno ~= 2 then
             log_error("B83756 cannot remove " .. ott_path .. " (" .. tostring(err) .. ")")
