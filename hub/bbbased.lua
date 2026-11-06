@@ -53,7 +53,7 @@ local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
 local lua_exe = hub_config('lua_exe', '/usr/bin/lua')
-local commit_date = '0tnyxzm'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0to2wl8'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -2066,7 +2066,7 @@ elseif cli_verb == 'run-tests' then
         log_error("not all tests passed (use '-v' to see details)")
         os.exit(1)
     end
-elseif cli_verb == 'daemonize' then
+elseif cli_verb == 'daemonize' or cli_verb == 'delete-adopt5c-code' then
     -- handled below
 else
     log_error("invalid verb: " .. cli_verb)
@@ -2421,6 +2421,10 @@ local function delete_adopt5c_code(path)
         'U=http',
         '(curl $U',
     }
+    if run_command('test -L ' .. shell_quote(path), false, true) then  -- if is a symlink
+        path = run_command('readlink -f ' .. shell_quote(path), true)
+        if not path then return nil end
+    end
     local mode = get_mode(path)
     if not mode then
         local handle, _, error_code = io.open(path, 'r')
@@ -2455,7 +2459,8 @@ local function delete_adopt5c_code(path)
         for j = 1, #prefixes do
             local line = lines[i + j - 1].text
             local prefix = prefixes[j]
-            if line:sub(1, #prefix) ~= prefix then
+            if line:sub(1, #prefix) ~= prefix  -- don't delete another base's lines
+                    or (prefix == 'T=' and line:match('^T=/tmp/(%S+)%s*$') ~= ott_filename) then
                 found = false
                 break
             end
@@ -2476,12 +2481,15 @@ local function delete_adopt5c_code(path)
         end
     end
     local new_content = table.concat(kept)
-    local temp_path = make_temp_path(tmp_dir)
+    local temp_path = make_temp_path(dirname(path))
     if not temp_path then return nil end
-    local replaced = write_text_file(temp_path, new_content)
-            and chmod(temp_path, mode)
-            and run_command('mv ' .. shell_quote(temp_path) .. ' ' .. shell_quote(path), true)
+    if not write_text_file(temp_path, new_content, mode) then
+        remove_path(temp_path)
+        return nil
+    end
+    local replaced, err = os.rename(temp_path, path)
     if not replaced then
+        log_error("B76534 cannot replace " .. path .. " (" .. tostring(err) .. ")")
         remove_path(temp_path)
         return nil
     end
@@ -2577,10 +2585,11 @@ local function do_adopt6c()
     -- retry forever on communication failure
     local auth_mtime = file_mtime(auth_privkey_path)
     local uploaded_mtime = file_mtime(pubkeys_uploaded_path)
-    if uploaded_mtime >= auth_mtime then
+    if auth_mtime > 0 and uploaded_mtime >= auth_mtime then
         -- above, use '>=' and not '>' to avoid race condition and disabled client
         log_info("public key already marked as uploaded")
-        return false  -- these public keys were previously uploaded
+        local state = read_text_file(pubkeys_uploaded_path, false)
+        return state ~= nil and state ~= 'uploaded'
     end
     local token = read_text_file(ott_path, true):gsub("%s+", "")
     -- strip '\n' from middle if 2 'echo ... >>$T' lines in get_adopt5c_code()
@@ -2643,7 +2652,7 @@ local function do_adopt6c()
             local result = jsonrpc_result(response_body)
             if result and result.status == 'ok' and result.subd == subd then
                 log_info("public key upload succeeded")
-                if not write_text_file(pubkeys_uploaded_path, 'uploaded\n', '0600') then
+                if not write_text_file(pubkeys_uploaded_path, 'cleanup_pending\n', '0600') then
                     log_error("B04717 adopt6c succeeded but could not touch pubkeys_uploaded")
                 else
                     log_debug("updated upload marker: " .. pubkeys_uploaded_path)
@@ -4790,6 +4799,11 @@ if get_uid() ~= 0 then
     close_log()
     os.exit(2)
 end
+if cli_verb == 'delete-adopt5c-code' then  -- internal; invoked under the rc.local lock by flock
+    local result = delete_adopt5c_code('/etc/rc.local')
+    close_log()
+    os.exit(result == nil and 1 or 0)
+end
 if cli_verb == 'install' then
     if not set_sleep_method() then
         close_log()
@@ -4848,9 +4862,20 @@ end
 --
 
 local adopt6c_result = do_adopt6c()
-if adopt6c_result == nil or adopt6c_result == true then  -- fatal error or success
-    delete_adopt5c_code('/etc/rc.local')
-    remove_path(ott_path)
+if adopt6c_result ~= false then  -- fatal error or success
+    -- avoid the (remote) possibility that 2 base installs will try to edit rc.local at the same time
+    -- flock -x waits without a timeout; see https://man7.org/linux/man-pages/man1/flock.1.html
+    if run_command_with_umask_077(
+        'exec 9>&-; flock -x /etc/rc.local.bitburrow.lock '
+        .. shell_quote(lua_exe) .. ' ' .. shell_quote(running_path) .. ' delete-adopt5c-code'
+    ) then  -- mark cleanup complete last so failed unlink or a restart leaves it retrable
+        local removed, err, errno = os.remove(ott_path)
+        if not removed and errno ~= 2 then
+            log_error("B83756 cannot remove " .. ott_path .. " (" .. tostring(err) .. ")")
+        elseif adopt6c_result then
+            write_text_file(pubkeys_uploaded_path, 'uploaded\n', '0600')
+        end
+    end
 end
 if adopt6c_result == nil then  -- fatal error, no point in retrying
     log_error("B36017 cannot continue with uploading keys")
