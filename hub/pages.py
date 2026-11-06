@@ -5,7 +5,8 @@ import fastapi
 import json
 import logging
 import urllib.parse
-from nicegui import ui, Client
+from fastapi.responses import PlainTextResponse
+from nicegui import app, ui, Client
 import hub.api as api
 import hub.uif as uif
 import hub.db as db
@@ -337,8 +338,25 @@ def home(client: Client):
 ###
 
 
-# require same-origin check ('dependencies=...') here because adoption token is created
-@ui.page('/setup/{subd}', dependencies=[fastapi.Depends(csrf.require_same_origin)])
+@app.post('/setup/{subd}/adopt5c_code', dependencies=[fastapi.Depends(csrf.require_same_origin)])
+async def setup_adopt5c_code(request: fastapi.Request, subd: str, action: str) -> PlainTextResponse:
+    # CSRF protection for the adopt5c_code without adding it around the entire '/setup' page
+    token = request.cookies.get(auth.cookie_name('session'))
+    try:
+        _, aid, _ = db.get_account_by_token(token, db.LoginSessionKind.COOKIE)
+    except db.CredentialsError:
+        raise fastapi.HTTPException(401, "Please log in first.") from None
+    if action not in ('view', 'issue', 'regenerate'):
+        raise fastapi.HTTPException(400, "Invalid request.")
+    with db.base_by_subd(subd, aid) as base:
+        if base is None:
+            raise fastapi.HTTPException(404, "This base router could not be found.")
+        ip = request.client.host if request.client else "(unknown)"
+        code = db.get_adopt5c_code(base.id, api.adopt5l_route, action=action, ip=ip)
+    return PlainTextResponse(code, headers={'Cache-Control': 'no-store'})
+
+
+@ui.page('/setup/{subd}')
 def setup(client: Client, subd: str):
     try:
         lsid, aid, kind = auth.require_login(client)
@@ -534,14 +552,41 @@ def setup(client: Client, subd: str):
     ui.run_javascript(f"document.title = '{sections[0]}'")
     uif.render_header(is_logged_in=True)
     idelem = uif.render_content(sections)
-    adopt5c_code_obj = {'value': None}
+    adopt5c_code_obj = None
+    adopt5c_code_lock = asyncio.Lock()
+    adopt5c_code_url = f'{conf.get('frontend.site_code')}/setup/{base.subd}/adopt5c_code'
+    restoring_step = True  # True→rebuilding, use 'view'; False→stepper is built, use 'issue'
+
+    async def load_adopt5c_code(obj, action):
+        # serialize reads, rotations so a late response cannot display a revoked code
+        async with adopt5c_code_lock:
+            if obj.is_deleted:
+                return
+            url = json.dumps(f'{adopt5c_code_url}?action={action}')
+            try:
+                code = await client.run_javascript(  # calls setup_adopt5c_code()
+                    f'''fetch({url}, {{
+                        method: 'POST', mode: 'same-origin',
+                        credentials: 'same-origin', redirect: 'error'
+                    }}).then(r => r.ok ? r.text() : null).catch(() => null)''',
+                    timeout=10,
+                )
+            except TimeoutError:
+                code = None
+            if not obj.is_deleted:
+                obj.set_content(code or "(unable to display)")
 
     def set_adopt5c_code(obj):
-        adopt5c_code_obj['value'] = obj
-        obj.set_content(db.get_adopt5c_code(base.id, api.adopt5l_route))
+        nonlocal adopt5c_code_obj
+        adopt5c_code_obj = obj
+        # an external link can make the hub page send its own same-origin POST; on a restored step,
+        # read the existing code or status; entering the step issues the first code, and the
+        # existing "Regenerate" link can recover a missing one
+        action = 'view' if restoring_step else 'issue'
+        ui.timer(0, lambda: load_adopt5c_code(obj, action), once=True)
 
     async def on_regenerate_adopt5c_code():
-        obj = adopt5c_code_obj['value']
+        obj = adopt5c_code_obj
         if obj is None:
             return
         with db.base_by_subd(subd, aid) as current_base:
@@ -560,7 +605,7 @@ def setup(client: Client, subd: str):
                     button('confirm', True).props('flat color=negative')
             if not await dialog:
                 return
-        obj.set_content(db.get_adopt5c_code(base.id, api.adopt5l_route, regenerate=True))
+        await load_adopt5c_code(obj, 'regenerate')
 
     def set_adopt5c_regenerate(obj):
         obj.on(
@@ -593,6 +638,7 @@ def setup(client: Client, subd: str):
                 initial_path=base.setup_ui_path,
                 on_path_change=lambda path: db.set_setup_ui_path(base.id, path),
             )
+            restoring_step = False
         with ui.tab_panel('enable'):
             with ui.card().classes('w-full max-w-5xl mb-4'):
                 ui.label('UPnP discovery').classes('text-lg font-medium')

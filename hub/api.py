@@ -300,7 +300,7 @@ def adopt6c(
     token: str = Body(...),
     auth_pubkey: str = Body(...),
 ) -> BaseResult:
-    ip = request.client.host if request.client else '(unknown)'
+    ip = request.client.host if request.client else "(unknown)"
     try:
         # authenticate
         lsid, aid, kind = db.get_account_by_token(token, db.LoginSessionKind.BASE_OTT)
@@ -539,7 +539,7 @@ async def ping(
     telemetry: dict = Body(...),
     request_id: str = Body(...),
 ) -> BaseResult:
-    ip = request.client.host if request.client else '(unknown)'
+    ip = request.client.host if request.client else "(unknown)"
     ping_now = DateTime.now(TimeZone.utc)
     completed_full_wait = False
     wait_seconds = 25
@@ -554,8 +554,9 @@ async def ping(
             raise BaseError("B23086 invalid ping request")  # generic API response for security
         if base.ott_id is not None:
             db.log_out(base.ott_id)
+            cleared = f"(OTT {base.ott_id} cleared)"
             base.ott_id = None  # search: tag_invalidate_base_ott
-            logger.info(f"B51437 base {base.subd} completed adopt6e from {ip}")
+            logger.info(f"B51437 base {base.subd} completed adopt6e from {ip} {cleared}")
         base.last_handshake = int(ping_now.timestamp())
         wait_seconds = base.long_poll_probe or base.long_poll_safe
         base_id = base.id
@@ -619,7 +620,7 @@ async def task_result(
     ok: bool = Body(...),
     output: str = Body(...),
 ) -> BaseResult:
-    ip = request.client.host if request.client else '(unknown)'
+    ip = request.client.host if request.client else "(unknown)"
     with db.base_by_subd(subd) as base:
         try:
             payload = await verify_signed_request(request=request, auth_pubkey_pem=base.auth_pubkey)
@@ -669,7 +670,7 @@ async def wg(
     pubkey: str = Body(...),
 ) -> BaseResult:
     """Store the base's WireGuard key and return its interface and peer configuration."""
-    ip = request.client.host if request.client else '(unknown)'
+    ip = request.client.host if request.client else "(unknown)"
     with db.base_by_subd(subd) as base:
         try:
             payload = await verify_signed_request(request=request, auth_pubkey_pem=base.auth_pubkey)

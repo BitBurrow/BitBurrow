@@ -1908,7 +1908,7 @@ def delete_base(id: int) -> None:
         session.commit()
 
 
-def get_adopt5c_code(base_id, api_path: str, regenerate: bool = False) -> str:
+def get_adopt5c_code(base_id, api_path: str, action: str, ip: str = "(unknown)") -> str:
     """Return a shell script, e.g. for /etc/rc.local, to begin adopting a BitBurrow base router"""
     if not hasattr(get_adopt5c_code, 'cache'):
         get_adopt5c_code.cache = dict()
@@ -1931,7 +1931,9 @@ def get_adopt5c_code(base_id, api_path: str, regenerate: bool = False) -> str:
                 token, lsid = new_login_session(base.account_id, server_token_timedelta)
                 base.ott_id = lsid
                 session.commit()
-                logger.info(f"B87566 base {base.subd} completed adopt5a (OTT {lsid} created)")
+                logger.info(
+                    f"B87566 base {base.subd} completed adopt5a from {ip} (OTT {lsid} created)"
+                )
                 # note: if token[0] or token[22] is '-', echo still just echos, i.e. it
                 # doesn't complain about an invalid option :-)
                 value = util.adopt5c_shell_code(
@@ -1945,7 +1947,7 @@ def get_adopt5c_code(base_id, api_path: str, regenerate: bool = False) -> str:
                 get_adopt5c_code.cache[base_id] = (now + cache_ttl, value)
                 return value
 
-            if regenerate:  # create a new OTT no matter what
+            if action == 'regenerate':  # create a new OTT no matter what
                 get_adopt5c_code.cache.pop(base_id, None)
                 if base.ott_id is not None:  # invalidate former OTT
                     log_out(base.ott_id)
@@ -1956,10 +1958,12 @@ def get_adopt5c_code(base_id, api_path: str, regenerate: bool = False) -> str:
                 ls = session.exec(
                     select(LoginSession).where(LoginSession.id == base.ott_id)
                 ).one_or_none()
-                if not ls:  # couldn't find OTT, so clear its id from base
+                if not ls:
                     logger.warning(f"B82963 base {base_id} OTT id seems to not exist")
-                    base.ott_id = None
-                    session.commit()
+                    if action == 'issue' or action == 'regenerate':
+                        base.ott_id = None
+                        session.commit()
+                    # else 'view', meaning we must leave a dangling OTT reference untouched
                 else:  # OTT exists
                     if ls.valid_until.replace(tzinfo=TimeZone.utc) <= now:
                         if base.adopt_state() >= 'adopt6c':
@@ -1971,7 +1975,7 @@ def get_adopt5c_code(base_id, api_path: str, regenerate: bool = False) -> str:
                     assert ls.kind == LoginSessionKind.BASE_OTT
                     cached = get_adopt5c_code.cache.get(base_id)
                     if cached is None:
-                        logger.warning(f"B21159 base {base_id} cached OTT lost; hub restarted?")
+                        logger.warning(f"B21159 base {base.subd} cached OTT lost; hub restarted?")
                         return "(unable to display)"
                     else:
                         expires_at, value = cached  # expires_at was checked above
@@ -1979,8 +1983,10 @@ def get_adopt5c_code(base_id, api_path: str, regenerate: bool = False) -> str:
             # no OTT
             if base.adopt_state() >= 'adopt6c':  # OTT does not exist, but base is adopted
                 return "(code has been used and accepted)"
-            else:
+            if action == 'issue' or action == 'regenerate':
                 return create_new_ott()
+            else:
+                return "(unable to display)"
 
 
 def store_adopt6c_pubkey(base_id, auth_pubkey: str):

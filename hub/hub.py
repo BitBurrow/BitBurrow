@@ -361,7 +361,7 @@ def a_404_handler(berror_code: str):
     #     printf 'garbage\r\n\r\n' |openssl s_client -connect vxm.example.org >/dev/null 2>&1
     # this can be caught by finding self.client via inspect.currentframe() but doing so is fragile
     async def not_found_handler(request: Request, exc: HTTPException):
-        ip = request.client.host if request.client else '(unknown)'
+        ip = request.client.host if request.client else "(unknown)"
         logger.debug(f"{berror_code} {ip}: {request.method} {request.url.path} not found")
         return responses.PlainTextResponse('Not Found', status_code=404)
 
