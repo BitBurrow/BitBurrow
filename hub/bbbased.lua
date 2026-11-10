@@ -53,7 +53,7 @@ local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
 local lua_exe = hub_config('lua_exe', '/usr/bin/lua')
-local commit_date = '0to3mxv'  -- updated at commit time via git_hooks/pre-commit
+local commit_date = '0toaano'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -94,19 +94,30 @@ local function displayable(str, max_len)
     return str:sub(1, max_len):gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t') .. ellipsis
 end
 
+local function rstrip(text)
+    return text:sub(1, text:match('^.*()%S') or 0)  -- strip trailing whitespace
+end
+
+local function trim(text)
+    return (rstrip(text):gsub('^%s+', ''))
+end
+
 local function open_log()
-    if not log_path then return end  -- use logread instead
-    local handle = io.open(log_path, 'w')
+    if not log_path or log_handle then return end  -- no log_path or handle is already open
+    local handle, err = io.open(log_path, 'a')
     if not handle then
-        fail_early("B62762 cannot create: " .. log_path)
-        return  -- fail_early() never returns, but the Lua analyzer doesn't know this
+        io.stderr:write("B71356 cannot open log; using stderr: ", tostring(err), '\n')
+        return
     end
-    handle:close()
-    os.execute('chmod 0600 ' .. shell_quote(log_path))  -- chmod() is not yet defined
-    log_handle = io.open(log_path, 'a')
-    if not log_handle then
-        fail_early("B71356 cannot open for append: " .. log_path)
+    -- 'exec 9>&-;' closes inherited lock fd 9 so surviving children cannot block daemon restarts;
+    -- see https://man7.org/linux/man-pages/man2/flock.2.html
+    local ok = os.execute('exec 9>&-; chmod 0600 ' .. shell_quote(log_path))  -- chmod() not defined
+    if ok ~= 0 and ok ~= true then  -- cover both Lua 5.1 and 5.2+ return values
+        handle:close()
+        io.stderr:write("B62762 cannot set log permissions; using stderr: ", log_path, '\n')
+        return
     end
+    log_handle = handle
 end
 
 local function close_log()
@@ -120,10 +131,10 @@ local function log(message, level)
     if level >= 30 then  -- send errors and warnings to server
         -- run_command() and make_temp_path() are not defined yet
         local tmp_template = shell_quote(tmp_dir .. bbsubd .. '.log.XXXXXX')
-        local tmp_pipe = io.popen('umask 077; mktemp ' .. tmp_template .. ' 2>/dev/null', 'r')
-        if not tmp_pipe then return nil end
-        local tmp_path = tmp_pipe:read('*l')
-        tmp_pipe:close()
+        local tmp_pipe = io.popen('exec 9>&-; umask 077; mktemp ' .. tmp_template .. ' 2>/dev/null', 'r')
+        -- if mktemp fails, continue local logging
+        local tmp_path = tmp_pipe and tmp_pipe:read('*l') or nil
+        if tmp_pipe then tmp_pipe:close() end
         if tmp_path == '' then tmp_path = nil end
         local f = tmp_path and io.open(tmp_path, 'w') or nil
         if f then
@@ -131,7 +142,7 @@ local function log(message, level)
             local close_ok = f:close()
             if write_ok and close_ok ~= nil then
                 os.execute(
-                    'curl -f --max-time 10 -X POST'
+                    'exec 9>&-; curl -f --max-time 10 -X POST'
                     .. ' -H "Content-Type: text/plain"'
                     .. ' --data-binary @' .. shell_quote(tmp_path)
                     .. ' ' .. shell_quote(log_err_route)
@@ -142,7 +153,7 @@ local function log(message, level)
         if tmp_path then os.remove(tmp_path) end
     end
     if level >= logging_level then
-        if not log_path or logging_level < 30 then  -- when using logread or -v
+        if not log_handle or logging_level < 30 then  -- when using logread, stderr fallback, or -v
             io.stderr:write(message .. '\n')  -- send to stderr
         end
         if log_handle then
@@ -211,7 +222,7 @@ local function run_command(command, merge_stderr, failure_ok)
     -- do not use shell pipelines here (`set -o pipefail` not universally supported)
     -- instead, use a command with file redirection and `&&` within { ... }
     log_debug("running command: " .. command)
-    local wrapped = '{ '
+    local wrapped = 'exec 9>&-; { '
             .. command
             .. (merge_stderr and ' 2>&1' or ' 2>/dev/null')
             .. '; rc=$?; printf "\\n__EXIT__=%d\\n" "$rc"; }'
@@ -229,7 +240,7 @@ local function run_command(command, merge_stderr, failure_ok)
     end
     exit_code = tonumber(exit_code)
     output = output:gsub('\n__EXIT__=%d+\n?$', '')
-    output = output:gsub('%s+$', '')
+    output = rstrip(output)
     return run_command_result(command, output, exit_code, failure_ok)
 end
 
@@ -237,17 +248,23 @@ local function trim_trailing_slashes(path)
     return (path:gsub('/+$', ''))
 end
 
-local function make_temp_path(in_dir, failure_ok)
-    -- create a temp file and return its path, or nil on failure; all args optional
+local function make_temp_path(in_dir, failure_ok, tag_prefix)
+    -- create a temp file and return its path, or nil on failure; all args optional;
+    -- tag_prefix is a string that identifies files that can be cleaned up independently
     if in_dir == nil then
         in_dir = bbsubd_tmp_dir
     else
         in_dir = trim_trailing_slashes(in_dir) .. '/'
     end
-    local cmd = 'mktemp ' .. shell_quote(in_dir .. bbsubd .. '.XXXXXX')
+    local template = bbsubd .. (tag_prefix and '.' .. tag_prefix or '') .. '.XXXXXX'
+    local cmd = 'mktemp ' .. shell_quote(in_dir .. template)
     local path = run_command(cmd, true, failure_ok)
     -- alternative `os.tmpname()` is less flexible, possibly less reliable
     if not path or path == '' then
+        if in_dir == bbsubd_tmp_dir  -- dir here should only be created from the service wrapper
+                and run_command('test ! -d ' .. shell_quote(in_dir), true, true) then
+            fail_early("B91253 daemon runtime directory missing; restart required: " .. in_dir)
+        end
         if not failure_ok then
             log_error("B35286 mktemp failed")
         end
@@ -376,7 +393,9 @@ end
 -- file i/o
 --
 
-local function read_text_file(path, empty_if_unreadable, preserve_whitespace)
+local oversized_files = {}
+
+local function read_text_file(path, empty_if_unreadable, preserve_whitespace, max_bytes)
     -- return file contents, or nil on failure
     local handle = io.open(path, 'r')
     local ret_error = empty_if_unreadable and '' or nil
@@ -388,7 +407,8 @@ local function read_text_file(path, empty_if_unreadable, preserve_whitespace)
         end
         return ret_error
     end
-    local content, read_err = handle:read('*a')
+    local content, read_err = handle:read(max_bytes and max_bytes + 1 or '*a')
+    if max_bytes and not content and not read_err then content = '' end
     local close_ok, close_err = handle:close()
     if content == nil then
         log_error("B21409 cannot read " .. path .. " (" .. tostring(read_err) .. ")")
@@ -398,8 +418,18 @@ local function read_text_file(path, empty_if_unreadable, preserve_whitespace)
         log_error("B55281 cannot close " .. path .. " (" .. tostring(close_err) .. ")")
         return ret_error
     end
+    if max_bytes then
+        if #content > max_bytes then
+            if not oversized_files[path] then
+                log_warning("B28694 omitting oversized file: " .. path)
+            end
+            oversized_files[path] = true
+            return ret_error
+        end
+        oversized_files[path] = nil
+    end
     if not preserve_whitespace then
-        content = content:gsub('%s+$', '')  -- strip trailing whitespace
+        content = rstrip(content)
     end
     log_debug("read " .. tostring(#content) .. " bytes from: " .. path)
     log_debug("--data: " .. displayable(content, 20))  -- 20 to not show entire private key
@@ -439,13 +469,15 @@ local function write_text_file(path, content, mode)
     return true
 end
 
-local function download_file(command, path)  -- limit download size to prevent DOS from a compromised hub
-    local status_path = make_temp_path()
-    local max_download_bytes = 654321  -- 0.6 MB
+local function download_file(command, path, max_download_bytes, quiet)
+    -- limit download size to prevent DOS from a compromised hub
+    local status_path = make_temp_path(nil, quiet)
+    max_download_bytes = max_download_bytes or 654321  -- default max 0.6 MB
+    local log_report = quiet and log_debug or log_error
     if not status_path then return nil end
     -- read a bounded pipe; older curl versions ignore --max-filesize when Content-Length
     -- is unknown; limits HTTP headers too
-    local wrapped = '(ulimit -c 0; ulimit -f 128 || exit 1; ' .. command
+    local wrapped = 'exec 9>&-; (ulimit -c 0; ulimit -f 128 || exit 1; ' .. command
             .. ' --max-filesize ' .. tostring(max_download_bytes) .. ' --output -'
             .. '; download_status=$?; printf "%s\\n" "$download_status" >'
             .. shell_quote(status_path) .. ') 2>/dev/null'
@@ -453,7 +485,7 @@ local function download_file(command, path)  -- limit download size to prevent D
     local pipe = io.popen(wrapped, 'r')
     if not pipe then
         remove_path(status_path)
-        log_error("B39427 cannot start download")
+        log_report("B39427 cannot start download")
         return nil
     end
     local content, read_error = pipe:read(max_download_bytes + 1)
@@ -461,9 +493,11 @@ local function download_file(command, path)  -- limit download size to prevent D
     local status = read_text_file(status_path, true)
     remove_path(status_path)
     content = content or ''
-    if read_error then log_error("B76932 curl failed; read_error=" .. tostring(read_error)) end
-    if #content > max_download_bytes then log_error("B42170 curl failed; bytes=" .. tostring(#content)) end
-    if status ~= '0' then log_error("B82691 curl failed; rc=" .. (status ~= '' and status or '(missing)')) end
+    if read_error then log_report("B76932 curl failed; read_error=" .. tostring(read_error)) end
+    if #content > max_download_bytes then log_report("B42170 curl failed; bytes=" .. tostring(#content)) end
+    if status ~= '0' then
+        log_report("B82691 curl failed; rc=" .. (status ~= '' and status or '(missing)'))
+    end
     if read_error or #content > max_download_bytes or status ~= '0' then return nil end
     return write_text_file(path, content)
 end
@@ -749,7 +783,7 @@ local function set_sleep_method(test_all_methods)
     sleep_method = nil
     for method = 1, #sleep_methods do
         local saved_logging_level = logging_level
-        logging_level = 20  -- disable run_command() logging
+        logging_level = 20  -- disable run_command() logging while we probe
         local started = uptime_seconds()
         local ok, problem = sleep_using_method(method, test_seconds)
         local finished = uptime_seconds()
@@ -1854,6 +1888,7 @@ end)()
 
 local function decode_json(body, max_bytes, max_depth)
     if type(body) ~= 'string' or (max_bytes and #body > max_bytes) then return nil end
+    -- we could consider checking nesting and item count here for routers with minimal RAM
     local ok, value, pos, err = pcall(json.decode, body, 1, json.null)
     -- dkjson decodes one value; require the complete response to contain only that value.
     if not ok or err or body:find('%S', pos) then return nil end
@@ -1909,13 +1944,9 @@ local function sleep_with_jitter(base_seconds, jitter_fraction)
             log_warning("B72755 stop_request")
             cleanup_and_exit(0)
         end
-        if secs >= 2 then
-            sleep(2)
-            secs = secs - 2
-        else
-            sleep(1)
-            secs = secs - 1
-        end
+        local interval = math.min(secs, 2)
+        if not sleep(interval) then cleanup_and_exit(13) end
+        secs = secs - interval
     end
 end
 
@@ -1927,30 +1958,36 @@ end
 
 local function read_key_value_file(path)
     local values = {}
-    local handle = io.open(path, 'r')
-    if not handle then return values end  -- missing or unreadable
+    local handle, problem, errno = io.open(path, 'r')
+    if not handle then  -- missing or unreadable
+        if errno == 2 then return values end
+        return nil, "B53281 cannot open " .. path .. " (" .. tostring(problem) .. ")"
+    end
     local line_number = 0
-    for raw_line in handle:lines() do
+    while true do
+        local raw_line, read_error = handle:read('*l')
+        if not raw_line then
+            if not read_error then break end
+            handle:close()
+            return nil, "B21408 cannot read " .. path .. " (" .. tostring(read_error) .. ")"
+        end
         line_number = line_number + 1
         local line = raw_line:gsub('\r$', '')
         if line ~= '' then
             local key, value = line:match('^([a-z][a-z0-9_]*)=(.*)$')
             if not key then
                 handle:close()
-                fail_early("B71246 invalid key-value data at " .. path .. ':' .. line_number)
+                return nil, "B71246 invalid key-value data at " .. path .. ':' .. line_number
             end
             values[key] = value
         end
     end
     local close_ok, close_error = handle:close()
     if close_ok == nil then
-        fail_early("B40316 cannot close " .. path .. " (" .. tostring(close_error) .. ")")
+        return nil, "B40316 cannot close " .. path .. " (" .. tostring(close_error) .. ")"
     end
     return values
 end
-
-base_config = read_key_value_file(base_config_path)  -- NOT local (defined near top of this file)
-local file_version = base_config.file_version
 
 --
 -- CLI
@@ -1970,7 +2007,7 @@ local function print_help()
         "Verbs:",
         "  install      Install or reinstall the daemon as a system service.",
         "  daemonize    Run the daemon in the foreground. This internal verb is",
-        "               normally invoked by a service wrapper holding the lock.",
+        "               invoked by a service wrapper holding the lock.",
         "  run-tests    Run the self-tests and exit.",
         "  version      Show the version and exit.",
         "  help         Show this help message and exit.",
@@ -2009,25 +2046,51 @@ for _, value in ipairs(arg) do
         set_cli_verb(value)
     end
 end
-if not file_version or file_version:sub(1, 7) ~= commit_date then
-    -- normally when cli_verb == 'install'
-    local download_version = hub_config('file_version', '')
-    if download_version ~= '' then
-        if #download_version < 12 or download_version:sub(1, 8) ~= commit_date .. '-'
-                or not download_version:match('^[0-9a-z]+%-[0-9a-z]+$') then
-            log_warning("B47135 invalid installation file_version: " .. download_version)
-        else
-            file_version = download_version
-        end
+if cli_verb == 'daemonize' then
+    -- validate the service wrapper's PID and inherited lock before reading shared state
+    local pid = get_pid()
+    if not pid or read_text_file(lock_dir_pid_path, true) ~= pid then
+        -- bypassing lock can overwrite a newer base.conf or replay counter
+        fail_early("B36581 daemon PID does not match the service wrapper; start through the service")
+    end
+    -- keep fd 9 in this child; flock must act on the inherited open file description
+    local command = 'test /proc/self/fd/9 -ef ' .. shell_quote(lock_file_path)
+            .. ' && flock -n -x 9 >/dev/null 2>&1'
+    local locked = os.execute(command)
+    if locked ~= 0 and locked ~= true then  -- Lua 5.1 and 5.2+ return values
+        fail_early("B46279 daemon requires the service lock on fd 9; start through the service")
     end
 end
-if not file_version or file_version == '' then
-    log_error("B62917 " .. base_config_path .. " is missing file_version")
-    file_version = commit_date .. "-aaaa"
-end
-if file_version:sub(1, 7) ~= commit_date then
-    log_error("B50795 version mismatch: '" .. commit_date .. "' not in '" .. file_version .. "'")
-    file_version = commit_date .. "-aaaa"
+local file_version
+if cli_verb == 'install' or cli_verb == 'daemonize' or cli_verb == 'version' then
+    local values, problem = read_key_value_file(base_config_path)
+    if not values and cli_verb ~= 'version' then fail_early(problem) end
+    base_config = values or {}  -- NOT local (defined near top of this file)
+    file_version = base_config.file_version
+    if not file_version or file_version:sub(1, 7) ~= commit_date then
+        -- normally when cli_verb == 'install'
+        local download_version = hub_config('file_version', '')
+        if download_version ~= '' then
+            if #download_version < 12 or download_version:sub(1, 8) ~= commit_date .. '-'
+                    or not download_version:match('^[0-9a-z]+%-[0-9a-z]+$') then
+                log_warning("B47135 invalid installation file_version: " .. download_version)
+            else
+                file_version = download_version
+            end
+        end
+    end
+    if not file_version or file_version == '' then
+        if cli_verb ~= 'version' then
+            log_error("B62917 " .. base_config_path .. " is missing file_version")
+        end
+        file_version = cli_verb == 'version' and commit_date or commit_date .. '-aaaa'
+    elseif file_version:sub(1, 7) ~= commit_date then
+        if cli_verb ~= 'version' then
+            log_error("B50795 version mismatch: '" .. commit_date .. "' not in '"
+                .. file_version .. "'")
+        end
+        file_version = cli_verb == 'version' and commit_date or commit_date .. '-aaaa'
+    end
 end
 if cli_verb == nil then
     log_error("a verb is required")
@@ -2106,7 +2169,7 @@ local function locked_runner_script(lua_path)
         'while [ "$i" -lt 7 ]; do',
         '    if flock -n 9; then',
         '        rm -f ' .. shell_quote(lock_dir_stop_request_path),
-        '        echo $$ > ' .. shell_quote(lock_dir_pid_path),
+        '        echo $$ > ' .. shell_quote(lock_dir_pid_path) .. ' || exit 1',
         '        exec ' .. shell_quote(lua_exe) .. ' ' .. shell_quote(lua_path) .. ' daemonize',
         '    fi',
         '    # too noisy: logger -t ' .. shell_quote(bbsubd) .. ' "B04983 waiting for another instance to quit"',
@@ -2143,7 +2206,7 @@ local function remove_temporary_installer()
     remove_paths(running_path, tmp_dir .. temp_name)
 end
 
-local function init_service_text(lua_path)
+local function init_service_wrapper_text(lua_path)
     local locked_runner = locked_runner_script(lua_path)
     local stop_runner = stop_runner_script('stop_service called from procd', '    ')
     return table.concat({
@@ -2157,7 +2220,7 @@ local function init_service_text(lua_path)
         '    procd_open_instance',
         '    procd_set_param command /bin/sh -c ' .. shell_quote(locked_runner),
         '    procd_set_param file ' .. shell_quote(lua_path),
-        '    procd_set_param respawn 60 10 7',  -- up for 60 seconds clears the crash count
+        '    procd_set_param respawn 60 10 0',  -- up for 60 seconds clears the crash count
         '    procd_set_param stdout 1',  -- 1 means make output viewable via `logread`
         '    procd_set_param stderr 1',
         '    procd_close_instance',
@@ -2169,7 +2232,7 @@ local function init_service_text(lua_path)
     }, '\n')
 end
 
-local function systemd_service_texts(lua_path)
+local function systemd_service_wrapper_texts(lua_path)
     local start_text = '#!/bin/sh\n' .. locked_runner_script(lua_path) .. '\n'
     local stop_text = '#!/bin/sh\n' .. stop_runner_script('stop called from systemd') .. '\nexit 0\n'
     local service_text = table.concat({
@@ -2194,7 +2257,7 @@ local function systemd_service_texts(lua_path)
     return start_text, stop_text, service_text
 end
 
-local function install_service_file(path, content, mode)
+local function install_service_wrapper_file(path, content, mode)
     -- return success and whether the file was changed
     if read_text_file(path, true, true) == content and get_mode(path) == mode then
         return true, false
@@ -2210,7 +2273,7 @@ end
 local function install_init_service(lua_path)
     -- return nil on failure, true after successful install or reinstall
     local init_path = '/etc/init.d/' .. bbsubd
-    if not install_service_file(init_path, init_service_text(lua_path), '0755') then return nil end
+    if not install_service_wrapper_file(init_path, init_service_wrapper_text(lua_path), '0755') then return nil end
     if not file_copy(running_path, lua_path, '0644') then return nil end
     if not run_command(shell_quote(init_path) .. ' enabled', true, true) then
         if not run_command(shell_quote(init_path) .. ' enable') then
@@ -2235,10 +2298,10 @@ local function install_systemd_service(lua_path)
     local service_path = '/etc/systemd/system/' .. service_name
     local start_script_path = '/usr/local/sbin/' .. bbsubd .. '-start.sh'
     local stop_script_path = '/usr/local/sbin/' .. bbsubd .. '-stop.sh'
-    local start_text, stop_text, service_text = systemd_service_texts(lua_path)
-    if not install_service_file(start_script_path, start_text, '0755')
-            or not install_service_file(stop_script_path, stop_text, '0755')
-            or not install_service_file(service_path, service_text, '0644') then
+    local start_text, stop_text, service_text = systemd_service_wrapper_texts(lua_path)
+    if not install_service_wrapper_file(start_script_path, start_text, '0755')
+            or not install_service_wrapper_file(stop_script_path, stop_text, '0755')
+            or not install_service_wrapper_file(service_path, service_text, '0644') then
         return nil
     end
     if not file_copy(running_path, lua_path, '0644') then return nil end
@@ -2270,25 +2333,6 @@ local function install_daemon_service(lua_path)
     else  -- 'init'
         return install_init_service(lua_path)
     end
-end
-
-local function restart_after_update()
-    if platform == 'init' then
-        local init_path = '/etc/init.d/' .. bbsubd
-        -- procd reload is conditional: an identical file can return success without
-        -- actually replacing the process; running '/etc/init.d/bbabcd restart' via ssh
-        -- changed the PID and left the replacement running; close inherited FD 9 so the
-        -- replacement can acquire the daemon lock
-        local restart_command = 'exec 9>&-; ' .. shell_quote(init_path) .. ' restart'
-        while not run_command(restart_command, true, true) do
-            log_error("B70489 update restart request failed; retrying")
-            sleep(30)
-        end
-        -- a successful restart should kill this process; reaching here indicates a procd failure
-        sleep(30)
-        log_error("B91527 update restart did not stop the daemon; exiting")
-    end
-    cleanup_and_exit(0)
 end
 
 local packager_cmds = nil
@@ -2550,18 +2594,69 @@ local function ensure_wg_keys()
     return true
 end
 
-local function next_retry_state(retry_wait, retries_left, operation)
+local function next_retry_state(retry_wait, retries_left, operation, max_wait)
     retries_left = retries_left - 1
     if retries_left > 0 then return retry_wait, retries_left end
-    retry_wait = math.min(retry_wait * 2, 3600)
+    retry_wait = math.min(retry_wait * 2, max_wait or 3600)
     log_info(
         "increased " .. operation .. " retry wait to " .. tostring(retry_wait) .. " seconds"
     )
     return retry_wait, 2
 end
 
-local function do_adopt6c()
-    -- return true on successful API call
+local function mark_adopted()
+    if not write_text_file(pubkeys_uploaded_path, 'cleanup_pending\n', '0600') then
+        log_error("B04717 adopt6c succeeded but could not mark cleanup pending")
+    end
+    return true
+end
+
+local function upload_auth_key(token)
+    local auth_pubkey = read_text_file(auth_pubkey_path, false)
+    if not auth_pubkey then return nil end  -- log_error() already called from read_text_file()
+    local request_path = make_temp_path()
+    local response_path = make_temp_path()
+    if not request_path or not response_path then  -- log_error() already called
+        remove_paths(request_path, response_path)
+        return nil
+    end
+    local request_body = json.encode({
+        jsonrpc = '2.0',
+        id = 1,
+        method = 'adopt6c',
+        params = {subd = subd, token = token, auth_pubkey = auth_pubkey},
+    })
+    local write_ok = write_text_file(request_path, request_body, '0600')
+    if not write_ok then  -- log_error() already called from write_text_file()
+        remove_paths(request_path, response_path)
+        return nil
+    end
+    local curl_command = 'curl -sS --connect-timeout 20 --max-time 90 '
+            .. '-X POST '
+            .. shell_quote(api_url)
+            .. ' -H '
+            .. shell_quote('Content-Type: application/json')
+            .. ' --data-binary @'
+            .. shell_quote(request_path)
+    local curl_output = download_file(curl_command, response_path)
+    local response_body = curl_output and read_text_file(response_path, true) or nil
+    remove_paths(request_path, response_path)
+    if curl_output and response_body then
+        log_debug("adopt6c response body: " .. displayable(response_body, 60))
+        local result = jsonrpc_result(response_body)
+        if result and result.status == 'ok' and result.subd == subd then
+            log_info("public key upload succeeded")
+            return true
+        end
+        log_error("B23806 adopt6c failed: " .. displayable(response_body, 60))
+    else
+        log_warning("B49863 adopt6c attempt failed without a usable response; will retry")
+    end
+    return false
+end
+
+local function do_adopt6c(ping)
+    -- return true on successful API call (bootstrap cleanup is needed)
     -- return false iff API call does not need to be done
     -- return nil on permanent failure
     -- retry forever on communication failure
@@ -2571,97 +2666,60 @@ local function do_adopt6c()
         -- above, use '>=' and not '>' to avoid race condition and disabled client
         log_info("public key already marked as uploaded")
         local state = read_text_file(pubkeys_uploaded_path, false)
-        return state ~= nil and state ~= 'uploaded'
+        if state == 'uploaded' then return false end
+        if state == 'cleanup_pending' then return true end
     end
-    local token = read_text_file(ott_path, true):gsub("%s+", "")
-    -- strip '\n' from middle if 2 'echo ... >>$T' lines in get_adopt5c_code()
-    local token_mtime = file_mtime(ott_path)
-    if token == '' or token_mtime == 0 then
-        log_warning("B16500 cannot read " .. ott_path .. "; trying ping")
-        return false  -- just in case pubkey was uploaded but updating pubkeys_uploaded_path failed
-    end
-    local retry_wait = 7
-    local retries_left = 2
-    local auth_pubkey = read_text_file(auth_pubkey_path, false)
-    if not auth_pubkey then
-        -- log_error() already called from read_text_file()
-        return nil
-    end
+    local retry_wait, retries_left = 7, 2
+    local warned_missing = false
     log_info("public keys need upload to " .. api_url)
     while true do
-        if (os.time() - token_mtime) >= 45 * 60 then
-            -- if changing max time above, search: tag_ott_valid_for
-            log_error("B31143 token " .. ott_path .. " is expired")  -- enforced on server too
-            return nil
+        -- strip '\n' from middle if 2 'echo ... >>$T' lines in get_adopt5c_code()
+        local token = read_text_file(ott_path, true):gsub('%s+', '')
+        if token ~= '' then  -- let hub enforce expired OTT; router clock can be off by years
+            local uploaded = upload_auth_key(token)
+            if uploaded then return mark_adopted() end
+            if uploaded == nil then return nil end
+            warned_missing = false
+        elseif not warned_missing then
+            log_warning("B16500 cannot read " .. ott_path .. "; trying ping and watching for a token")
+            warned_missing = true
         end
-        log_debug(
-            "attempting adopt6c public key upload; retry_wait="
-            .. tostring(retry_wait)
-            .. ", retries_left="
-            .. tostring(retries_left)
-        )
-        local request_path = make_temp_path()
-        local response_path = make_temp_path()
-        if not request_path or not response_path then
-            -- log_error() already called from make_temp_path()
-            remove_paths(request_path, response_path)
-            return nil
-        end
-        local request_body = json.encode({
-            jsonrpc = '2.0',
-            id = 1,
-            method = 'adopt6c',
-            params = {subd = subd, token = token, auth_pubkey = auth_pubkey},
-        })
-        local write_ok = write_text_file(request_path, request_body, '0600')
-        if not write_ok then
-            -- log_error() already called from write_text_file()
-            remove_paths(request_path, response_path)
-            return nil
-        end
-        local curl_command = 'curl -sS --connect-timeout 20 --max-time 90 '
-                .. '-X POST '
-                .. shell_quote(api_url)
-                .. ' -H '
-                .. shell_quote('Content-Type: application/json')
-                .. ' --data-binary @'
-                .. shell_quote(request_path)
-        local curl_output = download_file(curl_command, response_path)
-        local response_body = curl_output and read_text_file(response_path, true) or nil
-        remove_paths(request_path, response_path)
-        if curl_output and response_body then
-            log_debug("adopt6c response body: " .. displayable(response_body, 60))
-            local result = jsonrpc_result(response_body)
-            if result and result.status == 'ok' and result.subd == subd then
-                log_info("public key upload succeeded")
-                if not write_text_file(pubkeys_uploaded_path, 'cleanup_pending\n', '0600') then
-                    log_error("B04717 adopt6c succeeded but could not touch pubkeys_uploaded")
-                else
-                    log_debug("updated upload marker: " .. pubkeys_uploaded_path)
-                end
-                return true
-            end
-            log_error("B23806 adopt6c failed: " .. displayable(response_body, 60))
-        else
-            log_warning("adopt6c attempt failed without a usable response; will retry")
-        end
+        if ping() then return true end
         sleep_with_jitter(retry_wait, 0.5)
-        retry_wait, retries_left = next_retry_state(retry_wait, retries_left, 'adopt6c')
+        retry_wait, retries_left = next_retry_state(retry_wait, retries_left, 'adopt6c', 300)
     end
     log_error("B49403 should never get here")
 end
 
+local function safe_utf8(text)
+    return (text:gsub('[\128-\255][\128-\191]*', function(bytes)
+        local first, second = bytes:byte(1, 2)
+        local length = first >= 194 and first <= 223 and 2
+                or first >= 224 and first <= 239 and 3
+                or first >= 240 and first <= 244 and 4 or 0
+        if #bytes ~= length or (first == 224 and second < 160)
+                or (first == 237 and second >= 160) or (first == 240 and second < 144)
+                or (first == 244 and second >= 144) then
+            return '\239\191\189'
+        end
+        return bytes
+    end))
+end
+
 local function collect_telemetry()
+    local function read_text_file_top(path)
+        return safe_utf8(read_text_file(path, true, false, 32768))
+    end
     return {
-        proc_uptime = read_text_file('/proc/uptime', true, false),
-        proc_loadavg = read_text_file('/proc/loadavg', true, false),
-        proc_meminfo = read_text_file('/proc/meminfo', true, false),
-        proc_net_dev = read_text_file('/proc/net/dev', true, false),
-        proc_net_route = read_text_file('/proc/net/route', true, false),
+        proc_uptime = read_text_file_top('/proc/uptime'),
+        proc_loadavg = read_text_file_top('/proc/loadavg'),
+        proc_meminfo = read_text_file_top('/proc/meminfo'),
+        proc_net_dev = read_text_file_top('/proc/net/dev'),
+        proc_net_route = read_text_file_top('/proc/net/route'),
         -- maybe add: df or /proc/mounts + stat
         -- maybe add: ip addr, /proc/net/fib_trie
         -- maybe add: wg
-        etc_os_release = read_text_file('/etc/os-release', true, false),
+        etc_os_release = read_text_file_top('/etc/os-release'),
         platform = platform,
         -- don't need file_version every time, but it's low-cost and needed if hub or we restart
         file_version = file_version,
@@ -2821,18 +2879,7 @@ local function send_task_result(task_id, task_method, ok, output)
     end
     if task_method == 'rce' then
         -- binary output or a truncated UTF-8 character must not invalidate JSON
-        output = output:gsub('[\128-\255][\128-\191]*', function(bytes)
-            local first, second = bytes:byte(1, 2)
-            local length = first >= 194 and first <= 223 and 2
-                    or first >= 224 and first <= 239 and 3
-                    or first >= 240 and first <= 244 and 4 or 0
-            if #bytes ~= length or (first == 224 and second < 160)
-                    or (first == 237 and second >= 160) or (first == 240 and second < 144)
-                    or (first == 244 and second >= 144) then
-                return '\239\191\189'
-            end
-            return bytes
-        end)
+        output = safe_utf8(output)
     end
     local request_body = json.encode({
         jsonrpc = '2.0',
@@ -2868,8 +2915,7 @@ local function send_pending_task_result()
     if not task_id or task_id == '' or task_method ~= 'update'
             or base_config.pending_update_state ~= 'installed' then
         log_warning("B81916 invalid pending task result; clearing it")
-        clear_pending_task_result()
-        return nil
+        return clear_pending_task_result()
     end
     if not send_task_result(task_id, task_method, true, 'ok') then return nil end
     return clear_pending_task_result()
@@ -2954,7 +3000,7 @@ do
         if type(value) ~= 'string' or #value > 8192 then return nil end
         local entries = {}
         for part in (value .. ','):gmatch('(.-),') do
-            local entry = cidr(part:match('^%s*(.-)%s*$'), route)
+            local entry = cidr(trim(part), route)
             if not entry or #entries >= 128 then return nil end
             entries[#entries + 1] = entry
         end
@@ -2978,6 +3024,11 @@ do
             return nil, "B37080 invalid WireGuard configuration object"
         end
         local intf = conf.Interface
+        -- reject malformed names now, before they cause hard-to-debug issues
+        if type(intf.Name) ~= 'string' or #intf.Name > 15 or intf.Name == '.'
+                or intf.Name == '..' or not intf.Name:match('^[%w_=+.%-]+$') then
+            return nil, "B27458 invalid WireGuard interface name: " .. tostring(intf.Name)
+        end
         if intf.PrivateKey ~= nil and intf.PrivateKey ~= json.null then
             return nil, "B27754 WireGuard private keys must remain local"
         end
@@ -3276,11 +3327,11 @@ local function xml_unescape(value)
     if not value then return nil end
     value = value:gsub('&#x([0-9A-Fa-f]+);', function(n)
         n = tonumber(n, 16)
-        return n and n < 256 and string.char(n) or ''
+        return n and n >= 0 and n < 256 and string.char(n) or ''
     end)
     value = value:gsub('&#([0-9]+);', function(n)
         n = tonumber(n, 10)
-        return n and n < 256 and string.char(n) or ''
+        return n and n >= 0 and n < 256 and string.char(n) or ''
     end)
     return (value:gsub('&lt;', '<')
         :gsub('&gt;', '>')
@@ -3292,7 +3343,8 @@ end
 local function resolve_http_url(base_url, reference)
     reference = xml_unescape(reference)
     if not reference then return nil end
-    reference = reference:match('^%s*(.-)%s*$')
+    reference = trim(reference)
+    if #reference > 2048 then return nil end
     if reference:match('^https?://') then return reference end
     local scheme, authority, path = base_url:match('^(https?)://([^/]+)(/[^?#]*)')
     if not scheme then
@@ -3337,21 +3389,31 @@ local function http_url_host(url)
 end
 
 local function upnp_control_url(xml, location)
-    local url_base = xml:match('<URLBase[^>]*>%s*(.-)%s*</URLBase%s*>')
+    local function element(text, tag, offset)
+        local first = text:find('<' .. tag .. '[%s>]', offset)
+        local open_end = first and text:find('>', first, true)
+        if not open_end then return nil end
+        local close, last = text:find('</' .. tag .. '%s*>', open_end + 1)
+        if not close then return nil end
+        return text:sub(open_end + 1, close - 1), last + 1
+    end
+    local url_base = element(xml, 'URLBase')
+    if url_base then url_base = trim(url_base) end
+    if url_base and #url_base > 2048 then return nil end
     local base_url = xml_unescape(url_base) or location
     local service_names = {'WANIPConnection', 'WANPPPConnection'}
     for _, service_name in ipairs(service_names) do
-        for service in xml:gmatch('<service[^>]*>(.-)</service%s*>') do
-            local service_type = service:match(
-                '<serviceType[^>]*>%s*(.-)%s*</serviceType%s*>'
-            )
+        local offset = 1
+        while true do
+            local service
+            service, offset = element(xml, 'service', offset)
+            if not service then break end
+            local service_type = element(service, 'serviceType')
             if service_type and service_type:find(
                         'urn:schemas%-upnp%-org:service:' .. service_name .. ':%d+',
                         1
                     ) then
-                local control_url = service:match(
-                    '<controlURL[^>]*>%s*(.-)%s*</controlURL%s*>'
-                )
+                local control_url = element(service, 'controlURL')
                 return resolve_http_url(base_url, control_url)
             end
         end
@@ -3400,6 +3462,7 @@ local function ipv4_bytes(address)
     for i = 1, 4 do
         if not octets[i] or octets[i] > 255 then return nil end
     end
+    if address ~= table.concat(octets, '.') then return nil end
     return string.char(octets[1], octets[2], octets[3], octets[4])
 end
 
@@ -3537,16 +3600,14 @@ local function read_upnp_control_url(location, seconds_left, gateway, source_ip,
     if not xml_path then return nil, false end
     local request_timeout = math.max(1, math.min(3, seconds_left or 3))
     local connect_timeout = math.min(2, request_timeout)
-    local curl_command = 'curl -fsS --globoff --connect-timeout '
+    local curl_command = 'curl -q -fsS --globoff --noproxy "*" --connect-timeout '
             .. tostring(connect_timeout) .. ' --max-time '
-            .. tostring(request_timeout) .. ' '
-            .. '--max-filesize 1048576 -o '
-            .. shell_quote(xml_path) .. ' ' .. shell_quote(location)
+            .. tostring(request_timeout) .. ' ' .. shell_quote(location)
     local control_url = nil
     local description_read = false
-    if run_command(curl_command, true, true) then
+    if download_file(curl_command, xml_path, 1048576, true) then
         local xml = read_text_file(xml_path, false, true)
-        if xml and #xml <= 1048576 then
+        if xml then
             description_read = true
             control_url = upnp_control_url(xml, location)
             if control_url then
@@ -3963,7 +4024,6 @@ local function discover_upnp_pcap(pcap_base64)
     local replay_packet_paths = {}
     local capture_path = nil
     local capture_status_path = nil
-    local tcpreplay_output_path = nil
     local capture = nil
     local capture_started = false
     local wan_route = nil
@@ -4008,9 +4068,8 @@ local function discover_upnp_pcap(pcap_base64)
         pcap_path = make_temp_path()
         capture_path = make_temp_path()
         capture_status_path = make_temp_path()
-        tcpreplay_output_path = make_temp_path()
         if not encoded_path or not pcap_path or not capture_path
-                or not capture_status_path or not tcpreplay_output_path then
+                or not capture_status_path then
             result = "B85375 cannot create discover_upnp temporary files"
             break
         end
@@ -4144,16 +4203,19 @@ local function discover_upnp_pcap(pcap_base64)
                     break
                 end
             end
-            local tcpreplay_command = '(tcpreplay '
-                    .. shell_quote('-i' .. wan_if)
-                    .. ' ' .. shell_quote(packet_path)
-                    .. ' >' .. shell_quote(tcpreplay_output_path) .. ' 2>&1)'
-            local tcpreplay_ok = run_command(tcpreplay_command, true, true) ~= nil
-            local packet_output = read_text_file(tcpreplay_output_path, true, true) or ''
+            local remaining = math.min(max_upnp_capture_seconds, capture_deadline - os.time())
+            if remaining <= 0 then
+                replay_failure = "B53264 UPnP replay would exceed capture time limit"
+                break
+            end
+            local replay = 'tcpreplay ' .. shell_quote('-i' .. wan_if) .. ' '
+                    .. shell_quote(packet_path)
+            local captured, problem, _, timed_out = run_command_for(replay, remaining, true, true)
+            local packet_output = captured or problem or ''
             replay_outputs[#replay_outputs + 1] = 'packet ' .. tostring(index) .. ':\n' .. packet_output
-            if not tcpreplay_ok then
+            if not captured then
                 replay_failure = "B92999 tcpreplay packet "
-                        .. tostring(index) .. " failed: "
+                        .. tostring(index) .. (timed_out and " timed out: " or " failed: ")
                         .. displayable(packet_output, 300)
                 break
             end
@@ -4177,7 +4239,6 @@ local function discover_upnp_pcap(pcap_base64)
             end
         end
         tcpreplay_output = table.concat(replay_outputs, '\n')
-        write_text_file(tcpreplay_output_path, tcpreplay_output, '0600')
         if replay_failure then
             result = replay_failure
             break
@@ -4373,7 +4434,7 @@ local function discover_upnp_pcap(pcap_base64)
         if tcpreplay_output ~= nil then
             log_upnp_diagnostic(
                 'tcpreplay output',
-                tcpreplay_output or read_text_file(tcpreplay_output_path, true, true),
+                tcpreplay_output,
                 80
             )
         end
@@ -4393,7 +4454,7 @@ local function discover_upnp_pcap(pcap_base64)
     end
     remove_paths(encoded_path, pcap_path)
     for _, packet_path in ipairs(replay_packet_paths) do remove_path(packet_path) end
-    remove_paths(capture_path, capture_status_path, tcpreplay_output_path)
+    remove_paths(capture_path, capture_status_path)
     return success, result
 end
 
@@ -4410,7 +4471,7 @@ local function parse_miniupnpc_output(output)
     local control_url = nil
     local no_valid_igd = false
     for line in (output .. '\n'):gmatch('(.-)\n') do
-        local trimmed = line:match('^%s*(.-)%s*$')
+        local trimmed = trim(line)
         local lower_line = trimmed:lower()
         if lower_line:find('no igd upnp device found on the network', 1, true)
                 or lower_line:find('no valid upnp internet gateway device found', 1, true) then
@@ -4418,7 +4479,7 @@ local function parse_miniupnpc_output(output)
         end
         local label, value = trimmed:match('^([^:]+):%s*(%S+)%s*$')
         if label then
-            label = label:match('^%s*(.-)%s*$'):lower()
+            label = trim(label):lower()
             if label == 'desc' then
                 locations[#locations + 1] = value
             elseif label == 'found valid igd'
@@ -4465,20 +4526,12 @@ local function discover_upnp_miniupnpc()
     -- its selected control URL, then independently filter and read the printed
     -- description URLs through the bounded common path below; note that
     -- some platforms that have 'upnpc' do not have 'upnp-listdevices'
-    local status_marker = '__BBBASED_UPNPC_EXIT__='
-    local command = '(LC_ALL=C upnpc -m ' .. shell_quote(source_ip)
-            .. ' -P; upnpc_status=$?; '
-            .. 'printf "\\n' .. status_marker .. '%s\\n" '
-            .. '"$upnpc_status"; exit 0)'
-    local output = run_command(command, true, true)
-    if output == nil then
-        return nil, "B37602 cannot run upnpc -P"
-    end
-    local exit_code = tonumber(output:match('\n' .. status_marker .. '(%d+)$'))
-    if not exit_code then
-        return nil, "B39609 cannot determine upnpc -P exit status"
-    end
-    output = output:gsub('\n' .. status_marker .. '%d+$', '')
+    local command = 'LC_ALL=C upnpc -m ' .. shell_quote(source_ip) .. ' -P'
+    local output, problem, exit_code, timed_out = run_command_for(command, 30, true, true)
+    if timed_out then return nil, "B37602 upnpc -P timed out" end
+    if not exit_code then return nil, "B39609 cannot run upnpc -P: " .. tostring(problem) end
+    output = output or problem
+    if #output > 18000 then return nil, "B76210 upnpc -P output exceeded the capture limit" end
     local parsed, problem = parse_miniupnpc_output(output)
     if not parsed then return nil, problem end
     if exit_code ~= 0 and not parsed.no_valid_igd then
@@ -4507,7 +4560,11 @@ end
 local function discover_upnp(pcap_base64)
     local ok, output, found_igd = discover_upnp_miniupnpc()
     if ok and found_igd then return ok, output end
-    return discover_upnp_pcap(pcap_base64)
+    local pcap_ok, pcap_output = discover_upnp_pcap(pcap_base64)
+    if not ok and not pcap_ok then
+        return false, "miniupnpc: " .. tostring(output) .. "; PCAP: " .. tostring(pcap_output)
+    end
+    return pcap_ok, pcap_output
 end
 
 -- -- keeping for possible future use; see commit 7f442c3
@@ -4515,11 +4572,11 @@ end
 --     local result = nil
 --     if platform == 'init' then
 --         local init_path = '/etc/init.d/' .. bbsubd
---         result = install_service_file(init_path, init_service_text(lua_path), '0755')
+--         result = install_service_wrapper_file(init_path, init_service_wrapper_text(lua_path), '0755')
 --     else
 --         local start_script_path = '/usr/local/sbin/' .. bbsubd .. '-start.sh'
---         local start_text = systemd_service_texts(lua_path)
---         result = install_service_file(start_script_path, start_text, '0755')
+--         local start_text = systemd_service_wrapper_texts(lua_path)
+--         result = install_service_wrapper_file(start_script_path, start_text, '0755')
 --     end
 --     if result == nil then return nil end
 --     return true
@@ -4631,8 +4688,18 @@ local function rce(task_args)
             break
         end
         base_config = updated_config
-        local captured, error_output, exit_code = run_command_for(content, 60, true, true)
-        ok, output = exit_code ~= nil, captured or error_output
+        local captured, error_output, exit_code, timed_out = run_command_for(content, 60, true, true)
+        ok = exit_code == 0 and not timed_out
+        if timed_out then  -- put status first so it survives task-output truncation at the hub boundary
+            output = "RCE timed out after 60 seconds (exit status "
+                    .. tostring(exit_code or 'unknown') .. ")"
+        elseif exit_code ~= nil then
+            output = "RCE exited with status " .. tostring(exit_code)
+        else
+            output = "RCE failed; exit status unavailable"
+        end
+        local detail = captured or error_output
+        if detail and detail ~= '' then output = output .. '\n' .. detail end
     until true
     remove_path(signature_path)
     return ok, output
@@ -4640,50 +4707,45 @@ end
 
 
 local function handle_task(task_id, task_method, task_args)
-    -- return true iff task was handled or no task was present
-    if type(task_id) ~= 'string' or type(task_method) ~= 'string' then return true end
-    -- Accept task arguments as either JSON strings or already decoded objects.
+    -- return true iff task was handled or no task was present -and- output
+    -- accept task arguments as either JSON strings or already decoded objects
     if type(task_args) == 'string' then task_args = decode_json(task_args) or task_args end
     log_info("received task " .. task_method .. " id=" .. task_id)
     if task_method == 'no_op' then
-        return send_task_result(task_id, task_method, true, 'ok')
+        return true, 'ok'
     end
     if task_method == 'enable_wg' then
         local wg_conf, problem = request_wg_config()
-        if not wg_conf then return send_task_result(task_id, task_method, false, problem) end
-        local ok, output = enable_wg(wg_conf)
-        return send_task_result(task_id, task_method, ok, output)
+        if not wg_conf then return false, problem end
+        return enable_wg(wg_conf)
     end
     if task_method == 'rce' then
-        local ok, output = rce(task_args)
-        return send_task_result(task_id, task_method, ok, output)
+        return rce(task_args)
     end
     if task_method == 'update' then
         local requested_path = json_container(task_args, 'object') and task_args.path or nil
         if requested_path ~= 'hub/bbbased.lua' then
-            return send_task_result(task_id, task_method, false,
-                "B63317 invalid update path: " .. tostring(requested_path))
+            return false, "B63317 invalid update path: " .. tostring(requested_path)
         end
         local running_path = arg and arg[0]
         if not running_path or not running_path:match('^/') then
-            return send_task_result(task_id, task_method, false,
-                "B09761 invalid arg[0]: " .. tostring(running_path))
+            return false, "B09761 invalid arg[0]: " .. tostring(running_path)
         end
-        local staged_path = make_temp_path(dirname(running_path))
+        local staged_path = make_temp_path(dirname(running_path), nil, 'update')
         if not staged_path then
-            return send_task_result(task_id, task_method, false, "B19042 cannot create temp file")
+            return false, "B19042 cannot create temp file"
         end
-        local header_path = make_temp_path(dirname(running_path))
+        local header_path = make_temp_path(dirname(running_path), nil, 'update')
         if not header_path then
             remove_path(staged_path)
-            return send_task_result(task_id, task_method, false, "B89951 cannot create temp file")
+            return false, "B89951 cannot create temp file"
         end
         local command = 'curl -f --max-time 120 --dump-header '
                 .. shell_quote(header_path) .. ' '
                 .. shell_quote(download_url)
         if not download_file(command, staged_path) then
             remove_paths(staged_path, header_path)
-            return send_task_result(task_id, task_method, false, "B18136 download failed")
+            return false, "B18136 download failed"
         end
         local response_headers = read_text_file(header_path, false, true)
         remove_path(header_path)
@@ -4698,8 +4760,7 @@ local function handle_task(task_id, task_method, task_args)
         local key_id_disp = 'key_id=' .. (key_id or "(missing)")
         if verified ~= true then
             remove_path(staged_path)
-            return send_task_result(task_id, task_method, false,
-                "B47081 bad code signature (" .. key_id_disp .. '): ' .. verified)
+            return false, "B47081 bad code signature (" .. key_id_disp .. '): ' .. verified
         end
         local staged_code = read_text_file(staged_path, false, true)
         local new_commit_date = staged_code
@@ -4710,6 +4771,7 @@ local function handle_task(task_id, task_method, task_args)
                 or new_file_version == '' and 'empty file-version header'
                 or #new_file_version < 12 and 'invalid file-version length'
                 or new_file_version:sub(8, 8) ~= '-' and 'invalid file-version separator'
+                or not new_file_version:match('^[0-9a-z]+%-[0-9a-z]+$') and 'invalid file-version chars'
                 or not staged_code and 'unreadable'
                 or #staged_code < 1000 and 'too short'
                 or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
@@ -4732,8 +4794,7 @@ local function handle_task(task_id, task_method, task_args)
         end
         if invalid_reason then
             remove_path(staged_path)
-            return send_task_result(task_id, task_method, false,
-                "B77812 bad download (" .. invalid_reason .. ")")
+            return false, "B77812 bad download (" .. invalid_reason .. ")"
         end
         local updated_config = copy_table(base_config)
         updated_config.pending_task_id = task_id
@@ -4742,15 +4803,15 @@ local function handle_task(task_id, task_method, task_args)
         -- keep the confirmed file_version until successful run_command('mv')
         if not save_base_config(updated_config) then
             remove_path(staged_path)
-            return send_task_result(task_id, task_method, false, "B33348 cannot save update state")
+            return false, "B33348 cannot save update state"
         end
-        chmod(staged_path, get_mode(running_path))  -- ignore errors, but they do get logged
+        chmod(staged_path, get_mode(running_path))
         if not run_command('mv ' .. shell_quote(staged_path) .. ' ' .. shell_quote(running_path)) then
             remove_path(staged_path)
             if not save_base_config(base_config) then
                 log_error("B62066 cannot restore base.conf after mv failure")
             end
-            return send_task_result(task_id, task_method, false, "B57225 mv failed")
+            return false, "B57225 mv failed"
         end
         updated_config.file_version = new_file_version
         updated_config.pending_update_state = 'installed'  -- 'mv' was successful
@@ -4759,30 +4820,44 @@ local function handle_task(task_id, task_method, task_args)
         end
         base_config = updated_config
         log_info("update installed; restarting")
-        restart_after_update()
+        cleanup_and_exit(0)  -- supervisor will respawn
     end
     if task_method == 'discover_upnp' then
         local pcap_base64 = json_container(task_args, 'object') and task_args.pcap or nil
         if type(pcap_base64) ~= 'string' then pcap_base64 = nil end
-        local ok, output = discover_upnp(pcap_base64)
-        return send_task_result(task_id, task_method, ok, output)
+        return discover_upnp(pcap_base64)
     end
     if task_method == 'df' then
         local df_args = json_container(task_args, 'object') and task_args.args or task_args
         if df_args ~= '-hT' then
-            return send_task_result(task_id, task_method, false, 'unsupported df args')
+            return false, 'unsupported df args'
         end
-        local output = run_command('df ' .. df_args, true, true)
+        local output, problem, code, timed_out = run_command_for('df ' .. df_args, 30, true, true)
         if not output then
-            return send_task_result(task_id, task_method, false, 'df command failed')
+            local detail = timed_out and "timed out" or problem ~= '' and problem or tostring(code)
+            return false, "df failed: " .. detail
         end
-        return send_task_result(task_id, task_method, true, output)
+        return true, output
     end
-    return send_task_result(task_id, task_method, false, 'unsupported task_method')
+    return false, 'unsupported task_method'
 end
 
-local function do_ping()
+local function flush_pending_task_result()
+    local completed, pending_ready = pcall(send_pending_task_result)
+    if not completed then
+        log_error("B91867 cannot send pending task result: "
+            .. displayable(tostring(pending_ready), 500))
+    elseif not pending_ready then
+        log_error("B91868 cannot send pending task result")
+    end
+    return completed and pending_ready
+end
+
+local function do_ping(on_authenticated)
     -- return the status response, or nil on failure
+    -- report an earlier update before accepting another task, including during adoption recovery
+    local pending_id = base_config.pending_update_state == 'installed' and base_config.pending_task_id
+    local pending_ready = flush_pending_task_result()
     log_debug("starting ping cycle")
     local request_body = build_ping_request()
     if not request_body then return nil end
@@ -4791,13 +4866,57 @@ local function do_ping()
     log_debug("ping response body: " .. displayable(response_body, 300))
     local result = jsonrpc_result(response_body)
     if result and result.status == 'ok' then
+        if on_authenticated then on_authenticated() end
         log_info("ping succeeded with status " .. displayable(result.status, 60))
-        if not handle_task(result.task_id, result.task_method, result.task_args) then return nil end
+        local id, method = result.task_id, result.task_method
+        if type(id) == 'string' and type(method) == 'string' then
+            -- a stale pending task may become reportable only after the hub assigns it again
+            if not pending_ready then pending_ready = flush_pending_task_result() end
+            if pending_id and id == pending_id and method == 'update' then
+                return pending_ready and result.status or nil
+            end
+            if not pending_ready and method == 'update' then
+                -- keep pinging, but never overwrite the previous update's unreported result
+                local message = "B42117 cannot run another update while an update result is pending"
+                if not send_task_result(id, method, false, message) then return nil end
+                return result.status
+            end
+            local ran, ok, output = pcall(handle_task, id, method, result.task_args)
+            if not ran then
+                output = "B52938 task " .. displayable(method, 80) .. " raised: "
+                        .. displayable(tostring(ok), 500)
+                log_error(output)
+                ok = false
+            end
+            if not send_task_result(id, method, ok, output) then return nil end
+        end
         return result.status
     end
     -- note the Berror code below is used in api.py
     log_error("B64445 ping rejected: " .. displayable(response_body, 300))
     return nil
+end
+
+local function poll_safely(operation)
+    local completed, result = pcall(operation)
+    if completed then return result end
+    log_error("B62491 polling error: " .. displayable(tostring(result), 500))
+    return nil
+end
+
+local function finish_adoption_cleanup()
+    if not run_command('umask 077 && flock -n -x /etc/rc.local.bitburrow.lock '
+                .. shell_quote(lua_exe) .. ' ' .. shell_quote(running_path) .. ' delete-adopt5c-code',
+                true, true) then
+        log_warning("B76324 rc.local cleanup busy or failed; will retry")
+        return nil
+    end
+    local removed, err, errno = os.remove(ott_path)
+    if not removed and errno ~= 2 then
+        log_error("B83756 cannot remove " .. ott_path .. " (" .. tostring(err) .. ")")
+        return nil
+    end
+    return write_text_file(pubkeys_uploaded_path, 'uploaded\n', '0600')
 end
 
 --
@@ -4820,7 +4939,10 @@ if cli_verb == 'install' then
         os.exit(13)
     end
     -- flock is the only 'install' prerequisite, but it's probably already installed
-    install_one_of('flock util-linux', 'flock')  -- ignore errors and hope it works anyhow
+    if not install_one_of('flock util-linux', 'flock') then
+        close_log()
+        os.exit(4)
+    end
     local install_dir = find_install_dir()
     local install_path = install_dir and (install_dir .. bbsubd .. '.lua') or nil
     local exit_code = 99
@@ -4828,7 +4950,7 @@ if cli_verb == 'install' then
         log_info("B32020 successfully installed; exiting")
         exit_code = 0
     else
-        log_error("B21488 cannot install as a service")
+        log_error("B21488 cannot install as a service wrapper")
         exit_code = 4
     end
     close_log()
@@ -4838,6 +4960,17 @@ if cli_verb ~= 'daemonize' then
     log_error("B38333 cli_verb == " .. cli_verb)
     os.exit(1)
 end
+-- lock was verified before loading base.conf; abandoned updates are now safe to remove;
+-- generic bbsubd.XXXXXX files may belong to installers, so only remove update-tagged files
+if running_path:match('^/') then
+    local prefix = dirname(running_path) .. '/' .. bbsubd .. '.update.'
+    local command = 'for path in ' .. shell_quote(prefix) .. '??????; do '
+            .. 'if [ -f "$path" ] && [ ! -L "$path" ]; then '
+            .. 'rm -f "$path" || exit 1; fi; done'
+    if not run_command(command, true, true) then
+        log_warning("B87092 cannot remove abandoned update files; continuing startup")
+    end
+end
 
 --
 -- make sure prerequisites are installed
@@ -4845,9 +4978,12 @@ end
 
 log_warning("B20392 completed adopt5w, log level " .. logging_level)
 if not set_sleep_method() then cleanup_and_exit(13) end
-set_launch_method()  -- failure here is not fatal
-install_one_of('curl', 'curl')
-install_one_of('openssl openssl-util', 'openssl')
+if not set_launch_method() then
+    log_warning("B69877 set_launch_method() failed; df, UPnP, etc. are broken")
+end
+if not install_one_of('curl', 'curl') or not install_one_of('openssl openssl-util', 'openssl') then
+    cleanup_and_exit(5)
+end
 
 --
 -- collect authentication details
@@ -4871,26 +5007,18 @@ end
 -- register with hub
 --
 
-local adopt6c_result = do_adopt6c()
-if adopt6c_result ~= false then  -- fatal error or success
-    -- avoid the (remote) possibility that 2 base installs will try to edit rc.local at the same time
-    -- flock -x waits without a timeout; see https://man7.org/linux/man-pages/man1/flock.1.html
-    if run_command_with_umask_077(
-                'exec 9>&-; flock -x /etc/rc.local.bitburrow.lock '
-                .. shell_quote(lua_exe) .. ' ' .. shell_quote(running_path) .. ' delete-adopt5c-code'
-            ) then  -- mark cleanup complete last so failed unlink or a restart leaves it retrable
-        local removed, err, errno = os.remove(ott_path)
-        if not removed and errno ~= 2 then
-            log_error("B83756 cannot remove " .. ott_path .. " (" .. tostring(err) .. ")")
-        elseif adopt6c_result then
-            write_text_file(pubkeys_uploaded_path, 'uploaded\n', '0600')
-        end
-    end
-end
-if adopt6c_result == nil then  -- fatal error, no point in retrying
-    log_error("B36017 cannot continue with uploading keys")
+local adopt6c_result = do_adopt6c(function()
+    local accepted = false
+    poll_safely(function()
+        do_ping(function() accepted = mark_adopted() end)
+    end)
+    return accepted
+end)
+if adopt6c_result == nil then
+    log_error("B36017 could not confirm adoption; keeping token and bootstrap for retry")
     cleanup_and_exit(6)
 end
+local cleanup_due = adopt6c_result and 0
 
 --
 -- loop forever
@@ -4900,10 +5028,17 @@ local retry_wait = 7
 local retries_left = 2
 log_info("entering main ping loop")
 while true do
-    if not send_pending_task_result() then
-        log_error("B91867 cannot send pending task result")
+    if cleanup_due then
+        local now = uptime_seconds()
+        if now and now >= cleanup_due then
+            if poll_safely(finish_adoption_cleanup) then
+                cleanup_due = nil
+            else
+                cleanup_due = now + 300
+            end
+        end
     end
-    local ok = do_ping()
+    local ok = poll_safely(do_ping)
     if ok then
         retry_wait = 7
         retries_left = 2
