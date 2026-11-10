@@ -273,7 +273,7 @@ def set_logging(args):
         logging.WARNING,  # 2, default
         logging.INFO,  # 3, -v
         logging.DEBUG,  # 4, -vv
-        logging.DEBUG,  # 5, -vvv; sets 'echo=True' in create_engine()
+        logging.DEBUG,  # 5, -vvv; also logs SQL statements
     ]
     log_level_uvicorn_map = {
         0: 'critical',
@@ -286,9 +286,11 @@ def set_logging(args):
     if log_index < 0 or log_index >= len(log_levels):
         raise ValueError("B43857 invalid log level")
     args.console_log_level = log_levels[log_index]
-    args.create_engine_echo = log_index == 5
     args.log_level_uvicorn = log_level_uvicorn_map[conf.get('path.log_level_uvicorn')]
     logging.config.dictConfig(logs.logging_config(console_log_level=args.console_log_level))
+    logging.captureWarnings(True)
+    sql_log_level = logging.INFO if log_index == 5 else logging.WARNING
+    logging.getLogger('sqlalchemy.engine').setLevel(sql_log_level)
     logging.getLogger('uvicorn.error').addFilter(eat_engineio_stack_dump)
 
 
@@ -355,11 +357,6 @@ server_app = jsonrpc.API(
 
 
 def a_404_handler(berror_code: str):
-    # note: this does not catch Uvicorn's:
-    #     WARNING:  Invalid HTTP request received.
-    # when BitBurrow is run without a reverse proxy; reproduce this via:
-    #     printf 'garbage\r\n\r\n' |openssl s_client -connect vxm.example.org >/dev/null 2>&1
-    # this can be caught by finding self.client via inspect.currentframe() but doing so is fragile
     async def not_found_handler(request: Request, exc: HTTPException):
         ip = request.client.host if request.client else "(unknown)"
         logger.debug(f"{berror_code} {ip}: {request.method} {request.url.path} not found")
@@ -462,7 +459,7 @@ def entry_point():
                 db_file = os.path.join(os.path.dirname(args.config_file), db_file)
             util.mkdir_r(os.path.dirname(db_file))
             migrate_db.migrate(db_file)
-            db.engine = create_engine(f'sqlite:///{db_file}', echo=args.create_engine_echo)
+            db.engine = create_engine(f'sqlite:///{db_file}')
             with db.engine.begin() as conn:
                 conn.exec_driver_sql('BEGIN IMMEDIATE;')
                 has_tables = conn.exec_driver_sql('''SELECT 1 FROM sqlite_master
@@ -611,6 +608,7 @@ def entry_point():
                 'fc00::/7'  # RFC 4193
             ),
             log_level=args.log_level_uvicorn,
+            log_config=None,  # retain BitBurrow's logging
             ssl_keyfile=ssl_keyfile,
             ssl_certfile=ssl_certfile,
             ssl_ciphers=strong_ciphers,
