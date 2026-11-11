@@ -8,7 +8,7 @@
 -- public keys to verify subsequent software updates
 --
 
-local file_pubkeys = {  -- key_id is commit_date which first included this pubkey
+local file_pubkeys = {  -- key_id is file_cver which first included this pubkey
     {
         key_id = '0tlfc1c',
         pubkey = table.concat({
@@ -53,7 +53,11 @@ local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
 local lua_exe = hub_config('lua_exe', '/usr/bin/lua')
-local commit_date = '0toaano'  -- updated at commit time via git_hooks/pre-commit
+local file_cver = '0tocvrz'  -- updated at commit time via git_hooks/pre-commit
+--[[ Legacy update marker
+local commit_date = '0tocvrz'
+(the above line allows older daemons to update to this version)
+]]
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -506,54 +510,6 @@ local function copy_table(source)
     local copy = {}
     for key, value in pairs(source) do copy[key] = value end
     return copy
-end
-
-local function base_config_text(values)
-    local keys = {}
-    for key, value in pairs(values) do
-        if type(key) ~= 'string' or not key:match('^[a-z][a-z0-9_]*$') then
-            log_error("B82637 invalid base.conf key: " .. tostring(key))
-            return nil
-        end
-        if type(value) ~= 'string' or value:find('[\r\n]') or value:find('\0', 1, true) then
-            log_error("B15724 invalid base.conf value for " .. key)
-            return nil
-        end
-        keys[#keys + 1] = key
-    end
-    table.sort(keys)
-    local lines = {}
-    for _, key in ipairs(keys) do lines[#lines + 1] = key .. '=' .. values[key] end
-    return #lines > 0 and table.concat(lines, '\n') .. '\n' or ''
-end
-
-local function save_base_config(values)
-    local text_data = base_config_text(values)
-    if not text_data then return nil end
-    local temp_path = make_temp_path(config_dir)
-    if not temp_path then return nil end
-    if not write_text_file(temp_path, text_data, '0600') then
-        remove_path(temp_path)
-        return nil
-    end
-    local rename_ok, rename_error = os.rename(temp_path, base_config_path)
-    if not rename_ok then
-        log_error("B28691 cannot replace " .. base_config_path .. " (" .. tostring(rename_error) .. ")")
-        remove_path(temp_path)
-        return nil
-    end
-    log_debug("saved key-value data to " .. base_config_path)
-    return true
-end
-
-local function clear_pending_task_result()
-    local updated_config = copy_table(base_config)
-    updated_config.pending_task_id = nil
-    updated_config.pending_task_method = nil
-    updated_config.pending_update_state = nil  -- used to track actual install of a new version
-    if not save_base_config(updated_config) then return nil end
-    base_config = updated_config
-    return true
 end
 
 local function write_text_file_atomic(path, content, mode)  -- well-tested but ended up not using
@@ -1956,37 +1912,92 @@ local function run_tests()
     return t1
 end
 
-local function read_key_value_file(path)
-    local values = {}
+local function read_base_config_text(path)
     local handle, problem, errno = io.open(path, 'r')
-    if not handle then  -- missing or unreadable
-        if errno == 2 then return values end
+    if not handle then
+        if errno == 2 then return nil end  -- missing
         return nil, "B53281 cannot open " .. path .. " (" .. tostring(problem) .. ")"
     end
-    local line_number = 0
-    while true do
-        local raw_line, read_error = handle:read('*l')
-        if not raw_line then
-            if not read_error then break end
-            handle:close()
-            return nil, "B21408 cannot read " .. path .. " (" .. tostring(read_error) .. ")"
+    local text, read_error = handle:read('*a')
+    local close_ok, close_error = handle:close()
+    if text == nil then
+        return nil, "B21408 cannot read " .. path .. " (" .. tostring(read_error) .. ")"
+    end
+    if close_ok == nil then
+        return nil, "B40316 cannot close " .. path .. " (" .. tostring(close_error) .. ")"
+    end
+    return text
+end
+
+local function decode_base_config_json(text, path)
+    local values = decode_json(text)
+    if not json_container(values, 'object') then
+        return nil, "B82637 expected a JSON object in " .. path
+    end
+    for key, value in pairs(values) do
+        if not key:match('^[a-z][a-z0-9_]*$') or type(value) ~= 'string' then
+            return nil, "B15724 invalid config field in " .. path .. ': ' .. displayable(key, 80)
         end
+    end
+    return values
+end
+
+local function read_base_config()
+    local text, problem = read_base_config_text(base_config_path)
+    if problem then return nil, problem end
+    if text == nil then return {}, nil, true end
+    if text:match('^%s*{') then return decode_base_config_json(text, base_config_path) end
+    local values = {}
+    local line_number = 0
+    for raw_line in (text .. '\n'):gmatch('([^\n]*)\n') do
         line_number = line_number + 1
         local line = raw_line:gsub('\r$', '')
         if line ~= '' then
             local key, value = line:match('^([a-z][a-z0-9_]*)=(.*)$')
             if not key then
-                handle:close()
-                return nil, "B71246 invalid key-value data at " .. path .. ':' .. line_number
+                return nil, "B71246 invalid key-value data at " .. base_config_path
+                        .. ':' .. line_number
             end
             values[key] = value
         end
     end
-    local close_ok, close_error = handle:close()
-    if close_ok == nil then
-        return nil, "B40316 cannot close " .. path .. " (" .. tostring(close_error) .. ")"
+    return values, nil, true  -- write JSON to base.conf when the daemon starts under the lock
+end
+
+local function save_base_config(values)
+    local keys = {}
+    for key in pairs(values) do keys[#keys + 1] = key end
+    table.sort(keys)
+    local object = setmetatable(values, {__jsontype = 'object'})
+    local ok, text_data = pcall(json.encode, object, {indent = true, keyorder = keys})
+    if not ok then
+        log_error("B70246 cannot encode " .. base_config_path .. " (" .. tostring(text_data) .. ")")
+        return nil
     end
-    return values
+    local temp_path = make_temp_path(config_dir)
+    if not temp_path then return nil end
+    if not write_text_file(temp_path, text_data .. '\n', '0600') then
+        remove_path(temp_path)
+        return nil
+    end
+    local rename_ok, rename_error = os.rename(temp_path, base_config_path)
+    if not rename_ok then
+        log_error("B28691 cannot replace " .. base_config_path .. " (" .. tostring(rename_error) .. ")")
+        remove_path(temp_path)
+        return nil
+    end
+    log_debug("saved JSON to " .. base_config_path)
+    return true
+end
+
+local function clear_pending_task_result()
+    local updated_config = copy_table(base_config)
+    updated_config.pending_task_id = nil
+    updated_config.pending_task_method = nil
+    updated_config.pending_update_state = nil  -- used to track actual install of a new version
+    if not save_base_config(updated_config) then return nil end
+    base_config = updated_config
+    return true
 end
 
 --
@@ -2061,35 +2072,36 @@ if cli_verb == 'daemonize' then
         fail_early("B46279 daemon requires the service lock on fd 9; start through the service")
     end
 end
-local file_version
+local file_xver
 if cli_verb == 'install' or cli_verb == 'daemonize' or cli_verb == 'version' then
-    local values, problem = read_key_value_file(base_config_path)
-    if not values and cli_verb ~= 'version' then fail_early(problem) end
-    base_config = values or {}  -- NOT local (defined near top of this file)
-    file_version = base_config.file_version
-    if not file_version or file_version:sub(1, 7) ~= commit_date then
+    local problem
+    base_config, problem = read_base_config()
+    if not base_config and cli_verb ~= 'version' then fail_early(problem) end
+    base_config = base_config or {}
+    file_xver = base_config.file_xver or base_config.file_version
+    if not file_xver or file_xver:sub(1, 7) ~= file_cver then
         -- normally when cli_verb == 'install'
-        local download_version = hub_config('file_version', '')
+        local download_version = hub_config('file_xver', hub_config('file_version', ''))
         if download_version ~= '' then
-            if #download_version < 12 or download_version:sub(1, 8) ~= commit_date .. '-'
+            if #download_version < 12 or download_version:sub(1, 8) ~= file_cver .. '-'
                     or not download_version:match('^[0-9a-z]+%-[0-9a-z]+$') then
-                log_warning("B47135 invalid installation file_version: " .. download_version)
+                log_warning("B47135 invalid installation file_xver: " .. download_version)
             else
-                file_version = download_version
+                file_xver = download_version
             end
         end
     end
-    if not file_version or file_version == '' then
+    if not file_xver or file_xver == '' then
         if cli_verb ~= 'version' then
-            log_error("B62917 " .. base_config_path .. " is missing file_version")
+            log_error("B62917 " .. base_config_path .. " is missing file_xver")
         end
-        file_version = cli_verb == 'version' and commit_date or commit_date .. '-aaaa'
-    elseif file_version:sub(1, 7) ~= commit_date then
+        file_xver = cli_verb == 'version' and file_cver or file_cver .. '-aaaa'
+    elseif file_xver:sub(1, 7) ~= file_cver then
         if cli_verb ~= 'version' then
-            log_error("B50795 version mismatch: '" .. commit_date .. "' not in '"
-                .. file_version .. "'")
+            log_error("B50795 version mismatch: '" .. file_cver .. "' not in '"
+                .. file_xver .. "'")
         end
-        file_version = cli_verb == 'version' and commit_date or commit_date .. '-aaaa'
+        file_xver = cli_verb == 'version' and file_cver or file_cver .. '-aaaa'
     end
 end
 if cli_verb == nil then
@@ -2100,7 +2112,7 @@ elseif cli_verb == 'help' then
     print_help()
     os.exit(0)
 elseif cli_verb == 'version' then
-    print("BitBurrow base daemon, version " .. file_version)
+    print("BitBurrow base daemon, version " .. file_xver)
     os.exit(0)
 elseif cli_verb == 'install' then
     -- handled below
@@ -2721,8 +2733,8 @@ local function collect_telemetry()
         -- maybe add: wg
         etc_os_release = read_text_file_top('/etc/os-release'),
         platform = platform,
-        -- don't need file_version every time, but it's low-cost and needed if hub or we restart
-        file_version = file_version,
+        -- don't need file_xver every time, but it's low-cost and needed if hub or we restart
+        file_xver = file_xver,
         telemetry_version = 1,
     }
 end
@@ -4647,7 +4659,7 @@ local function rce(task_args)
         return false, "B41362 missing signed document"
     end
     local sequence_id = task_args.sequence_id
-    local previous = base_config.rce_sequence_id or commit_date
+    local previous = base_config.rce_sequence_id or file_cver
     if type(sequence_id) ~= 'string' or #sequence_id ~= 7
             or not sequence_id:match('^[0-9a-z]+$')
             or #previous ~= 7 or not previous:match('^[0-9a-z]+$')
@@ -4749,7 +4761,7 @@ local function handle_task(task_id, task_method, task_args)
         end
         local response_headers = read_text_file(header_path, false, true)
         remove_path(header_path)
-        local new_file_version = response_headers
+        local new_file_xver = response_headers
                 and http_header_value(response_headers, 'x-bitburrow-file-version') or nil
         local signature = response_headers
                 and http_header_value(response_headers, 'x-bitburrow-signature') or nil
@@ -4763,23 +4775,23 @@ local function handle_task(task_id, task_method, task_args)
             return false, "B47081 bad code signature (" .. key_id_disp .. '): ' .. verified
         end
         local staged_code = read_text_file(staged_path, false, true)
-        local new_commit_date = staged_code
-                and staged_code:match("\nlocal[ \t]+commit_date[ \t]*=[ \t]*'([^']+)'") or nil
+        local new_file_cver = staged_code
+                and staged_code:match('\nlocal[ \t]+file_cver[ \t]*=[ \t]*\'([^\']+)\'') or nil
         local invalid_reason =
                 not response_headers and 'unreadable response headers'
-                or not new_file_version and 'missing file-version header'
-                or new_file_version == '' and 'empty file-version header'
-                or #new_file_version < 12 and 'invalid file-version length'
-                or new_file_version:sub(8, 8) ~= '-' and 'invalid file-version separator'
-                or not new_file_version:match('^[0-9a-z]+%-[0-9a-z]+$') and 'invalid file-version chars'
+                or not new_file_xver and 'missing file-version header'
+                or new_file_xver == '' and 'empty file-version header'
+                or #new_file_xver < 12 and 'invalid file-version length'
+                or new_file_xver:sub(8, 8) ~= '-' and 'invalid file-version separator'
+                or not new_file_xver:match('^[0-9a-z]+%-[0-9a-z]+$') and 'invalid file-version chars'
                 or not staged_code and 'unreadable'
                 or #staged_code < 1000 and 'too short'
                 or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
-                or not new_commit_date and 'missing commit_date'
-                or #new_commit_date ~= 7 and 'invalid commit_date length'
-                or new_commit_date:find('[^0-9a-z]') and 'invalid commit_date chars'
-                or new_file_version:sub(1, 7) ~= new_commit_date and 'file-version mismatch'
-                or new_commit_date < commit_date and 'downgrade'
+                or not new_file_cver and 'missing file_cver'
+                or #new_file_cver ~= 7 and 'invalid file_cver length'
+                or new_file_cver:find('[^0-9a-z]') and 'invalid file_cver chars'
+                or new_file_xver:sub(1, 7) ~= new_file_cver and 'file-version mismatch'
+                or new_file_cver < file_cver and 'downgrade'
         if not invalid_reason then
             local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' '
                     .. shell_quote(lua_exe) .. ' -e '
@@ -4800,7 +4812,7 @@ local function handle_task(task_id, task_method, task_args)
         updated_config.pending_task_id = task_id
         updated_config.pending_task_method = task_method
         updated_config.pending_update_state = 'prepared'
-        -- keep the confirmed file_version until successful run_command('mv')
+        -- keep the confirmed file_xver until successful run_command('mv')
         if not save_base_config(updated_config) then
             remove_path(staged_path)
             return false, "B33348 cannot save update state"
@@ -4813,7 +4825,7 @@ local function handle_task(task_id, task_method, task_args)
             end
             return false, "B57225 mv failed"
         end
-        updated_config.file_version = new_file_version
+        updated_config.file_xver = new_file_xver
         updated_config.pending_update_state = 'installed'  -- 'mv' was successful
         if not save_base_config(updated_config) then
             log_error("B97163 cannot mark update as installed")  -- update task will probably fail
@@ -4991,10 +5003,11 @@ end
 
 mkdir(config_dir, '0700')
 -- service wrapper holds the daemon lock before Lua reads base.conf or writes this version
-if base_config.file_version ~= file_version then
-    base_config.file_version = file_version
+if base_config.file_xver ~= file_xver or base_config.file_version ~= nil then
+    base_config.file_xver = file_xver
+    base_config.file_version = nil
     if not save_base_config(base_config) then
-        log_error("B79420 cannot save file_version; continuing startup")
+        log_error("B79420 cannot save file_xver; continuing startup")
     end
 end
 restore_wg()  -- use saved settings before any hub API call

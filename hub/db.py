@@ -413,7 +413,7 @@ class Platform(enum.StrEnum):
 
 
 any_platform = (Platform.INIT, Platform.SYSTEMD, Platform.WINDOWS, Platform.MACOS)
-default_fv = '0000000-aaaa'
+default_xver = '0000000-aaaa'
 bbbased_path = 'hub/bbbased.lua'
 
 
@@ -432,8 +432,8 @@ class Base(SQLModel, table=True):
     ott_id: int | None = Field(foreign_key='loginsession.id', default=None)  # one-time token
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='bases')
-    file_version: str = default_fv  # last confirmed bbbased.lua version
-    next_file_version: str = ''  # set on adopt5s; '' means no update in progress
+    file_xver: str = default_xver  # last confirmed bbbased.lua version
+    next_file_xver: str = ''  # set on adopt5s; '' means no update in progress
     update_deadline: DateTime = DateTime(1970, 1, 1, tzinfo=TimeZone.utc)
     platform: Platform | None = None
     setup_ui_path: str = ''  # path of last-active step in 'setup-adopt.yaml'; '' means root
@@ -1123,7 +1123,7 @@ class BasedVer(SQLModel, table=True):
     def test_level(self, platform: Platform) -> TestLevel:
         return getattr(self, f'test_level_{platform.value}')
 
-    def file_version(self):  # e.g. 0tf4ijm-geac
+    def file_xver(self):  # e.g. 0tf4ijm-geac
         if len(self.commit_date) != 7:
             raise Berror(f"B49018 bad commit_date {self.commit_date}")
         test_levels = ''.join([getattr(self, f'test_level_{p.value}').value for p in Platform])
@@ -1227,25 +1227,25 @@ def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
             raise Berror(f"B41474 cannot find subd {subd}")
         now = DateTime.now(TimeZone.utc)
         update_deadline = base.update_deadline.replace(tzinfo=TimeZone.utc)
-        if base.next_file_version and update_deadline > now:  # update is in progress
-            statement = select(BasedVer).where(BasedVer.commit_date == base.next_file_version[:7])
+        if base.next_file_xver and update_deadline > now:  # update is in progress
+            statement = select(BasedVer).where(BasedVer.commit_date == base.next_file_xver[:7])
             bv: BasedVer | None = session.exec(statement).one_or_none()
             if bv is None:
-                raise Berror(f"B95637 missing BasedVer for {base.next_file_version}")
+                raise Berror(f"B95637 missing BasedVer for {base.next_file_xver}")
             session.commit()
             # test levels may have changed since the first download; keep its version and deadline
-            return bv, base.next_file_version
-        statement = select(Base).where(Base.next_file_version != '', Base.update_deadline <= now)
+            return bv, base.next_file_xver
+        statement = select(Base).where(Base.next_file_xver != '', Base.update_deadline <= now)
         # account for expired attempts before replacing a target or choosing another commit
         for updating_base in session.exec(statement).all():
-            next_fv = updating_base.next_file_version
-            statement = select(BasedVer).where(BasedVer.commit_date == next_fv[:7])
+            next_xver = updating_base.next_file_xver
+            statement = select(BasedVer).where(BasedVer.commit_date == next_xver[:7])
             bv = session.exec(statement).one_or_none()
             if bv is None:
-                e = f"B63745 missing BasedVer for {next_fv}"
+                e = f"B63745 missing BasedVer for {next_xver}"
                 logger.warning(util.front_berror_code(e, updating_base.subd))
             else:
-                e = f"B10537 failed to update to {next_fv} before the deadline"
+                e = f"B10537 failed to update to {next_xver} before the deadline"
                 logger.info(util.front_berror_code(e, updating_base.subd))
                 bv.used_total += 1
                 bv.used_fails += 1
@@ -1255,18 +1255,18 @@ def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
                     for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
                         setattr(bv, f'test_level_{p.value}', TestLevel.FAILED)
                 session.add(bv)
-            updating_base.next_file_version = ''  # count this attempt only once
+            updating_base.next_file_xver = ''  # count this attempt only once
             session.add(updating_base)
         session.flush()  # keep the SQLite transaction active while choosing an approved version
         bv = newest_approved_ver(base, session)
         if bv is None:
             session.commit()  # retain timeout accounting even if no approved version remains
             raise Berror(f"B95159 no bbbased version approved ({base.min_test_level=})")
-        base.next_file_version = bv.file_version()  # freeze this download's test levels
+        base.next_file_xver = bv.file_xver()  # freeze this download's test levels
         base.update_deadline = DateTime.now(TimeZone.utc) + TimeDelta(minutes=11)
         session.add(base)
         session.commit()
-        return bv, base.next_file_version
+        return bv, base.next_file_xver
 
 
 def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
@@ -1325,41 +1325,43 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 e = f"B14954 platform changed from {base.platform} to {platform}"
                 logger.warning(util.front_berror_code(e, subd, ip))
             base.platform = platform
-        ## 3. process file_version provided by the base router
-        ping_fv = telem_data.get('file_version', None)  # full file_version reported by base router
-        if not ping_fv or not isinstance(ping_fv, str) or len(ping_fv) != len(default_fv):
-            e = f"B89068 invalid file_version: {ping_fv}"
+        ## 3. process file_xver provided by the base router
+        support_legacy = telem_data.get('file_version')  # can be None after all bases updated
+        ping_xver = telem_data.get('file_xver', support_legacy)  # file_xver reported by base router
+
+        if not ping_xver or not isinstance(ping_xver, str) or len(ping_xver) != len(default_xver):
+            e = f"B89068 invalid file_xver: {ping_xver}"
             logger.warning(util.front_berror_code(e, subd, ip))
-            ping_fv = default_fv
-        elif ping_fv != base.file_version:
-            if ping_fv > base.file_version:
-                e = f"B00672 updated from {base.file_version} to {ping_fv}"
+            ping_xver = default_xver
+        elif ping_xver != base.file_xver:
+            if ping_xver > base.file_xver:
+                e = f"B00672 updated from {base.file_xver} to {ping_xver}"
                 logger.info(util.front_berror_code(e, subd, ip))
             else:
-                e = f"B05553 unintended backport from {base.file_version} to {ping_fv}"
+                e = f"B05553 unintended backport from {base.file_xver} to {ping_xver}"
                 logger.warning(util.front_berror_code(e, subd, ip))
-            base.file_version = ping_fv
-            if base.next_file_version and ping_fv != base.next_file_version:
-                e = f"B97229 downloaded {base.next_file_version} but reports {ping_fv}"
+            base.file_xver = ping_xver
+            if base.next_file_xver and ping_xver != base.next_file_xver:
+                e = f"B97229 downloaded {base.next_file_xver} but reports {ping_xver}"
                 logger.warning(util.front_berror_code(e, subd, ip))
-        if base.next_file_version and ping_fv == base.next_file_version:
+        if base.next_file_xver and ping_xver == base.next_file_xver:
             # confirm the exact download, even if unchanged or past due; clear only once
-            statement = select(BasedVer).where(BasedVer.commit_date == ping_fv[:7])
+            statement = select(BasedVer).where(BasedVer.commit_date == ping_xver[:7])
             bv: BasedVer | None = session.exec(statement).one_or_none()
             if bv is None:
-                e = f"B05150 missing BasedVer for {base.next_file_version}"
+                e = f"B05150 missing BasedVer for {base.next_file_xver}"
                 logger.warning(util.front_berror_code(e, subd, ip))
             else:
                 bv.used_total += 1
                 session.add(bv)
-            base.next_file_version = ''
+            base.next_file_xver = ''
         session.add(base)  # don't session.commit() here (would end transaction)
-        ping_commit = ping_fv[0:7]
-        tls = ping_fv[8:]  # test levels, (string of Platform values)
+        ping_commit = ping_xver[0:7]
+        tls = ping_xver[8:]  # test levels, (string of Platform values)
         try:
             ping_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
         except ValueError as e:
-            tls = default_fv[8:]
+            tls = default_xver[8:]
             ping_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
         ping_tl = ping_tls[platform]
         ## 4. promote bbbased.lua version if appropriate
@@ -1386,7 +1388,7 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
                     e = f"B39596 promoted bbbased {before} to test level {after[8:]}"
                     logger.info(util.front_berror_code(e, subd, ip))
         else:  # unknown version
-            e = f"B12284 unknown version bbbased {ping_fv}"
+            e = f"B12284 unknown version bbbased {ping_xver}"
             logger.warning(util.front_berror_code(e, subd, ip))
         ## 5. enqueue bbbased update if ready
         approved_bv = newest_approved_ver(base, session)
@@ -1395,10 +1397,10 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
             logger.debug(util.front_berror_code(e, subd, ip))
         else:
             test_levels = ''.join(
-                ping_fv[i + 8] if p == platform else '.' for i, p in enumerate(Platform)
+                ping_xver[i + 8] if p == platform else '.' for i, p in enumerate(Platform)
             )
             # ping_cv is file version from base router, but with '.' for irrelevant platforms
-            ping_cv = f'{ping_fv[0:7]}-{test_levels}'
+            ping_cv = f'{ping_xver[0:7]}-{test_levels}'
             approved_cv = approved_bv.compare_version(platform)
             if ping_cv > approved_cv:  # string-compare, e.g. '0tf4ijm-.e..'
                 e = f"B16354 unapproved version {ping_cv} > {approved_cv}"

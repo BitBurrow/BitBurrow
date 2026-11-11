@@ -339,22 +339,17 @@ def matching_watched_paths(files: set[str]) -> list[str]:
     ]
 
 
-def set_bbbased_commit_date(code: str, new_commit_date: str) -> str:
-    """Replace the single live Lua commit_date value, preserving surrounding source."""
-    masked = mask_lua_noncode(code)
-    matches = [  # ignore comments, strings
-        match
-        for match in re.finditer(
-            r'''^local[ \t]+commit_date[ \t]*=[ \t]*(['"])(?P<value>[^'"\r\n]*)\1''',
-            code,
-            re.MULTILINE,
-        )
-        if masked.startswith('local', match.start())
-    ]
-    if len(matches) != 1:
-        raise Berror(f"B49932 expected 1 'commit_date', found {len(matches)} in {bbbased_path}")
-    match = matches[0]
-    return code[: match.start('value')] + new_commit_date + code[match.end('value') :]
+def set_bbbased_file_cver(code: str, new_file_cver: str, var_name: str) -> str:
+    """Replace a Lua version marker, preserving surrounding source."""
+    code, count = re.subn(
+        rf"^(local {var_name} = ')[^'\r\n]*(')",
+        lambda match: match[1] + new_file_cver + match[2],
+        code,
+        flags=re.MULTILINE,
+    )
+    if count != 1:
+        raise Berror(f"B49932 expected 1 '{var_name}', found {count} in {bbbased_path}")
+    return code
 
 
 def verify_black() -> None:
@@ -435,7 +430,7 @@ def prepare_key(key_id: str) -> Key:
     return read_key(key_id)
 
 
-def read_or_create_key_state(commit_date: str) -> dict:
+def read_or_create_key_state(file_cver: str) -> dict:
     """Load or initialize the local machine key state, preparing the bootstrap key if needed."""
     if key_state_path.is_file():
         state = read_key_state()
@@ -448,7 +443,7 @@ def read_or_create_key_state(commit_date: str) -> dict:
             raise Berror(f"B51396 {key_state_path} is missing, but {keys_path} is not empty")
         keys_path.chmod(0o700)
         state = {
-            'active_key_id': commit_date,
+            'active_key_id': file_cver,
             'bootstrap_pending': True,
         }
         write_key_state(state)  # write to file so, if interrupted, key generation uses same dir
@@ -457,14 +452,14 @@ def read_or_create_key_state(commit_date: str) -> dict:
     return state
 
 
-def get_pending_key(state: dict, commit_date: str) -> Key | None:
+def get_pending_key(state: dict, file_cver: str) -> Key | None:
     """Return or create the pending rotation key, or None if no rotation is requested."""
     pending_id = state.get('pending_key_id')
     if pending_id is None:
         rotation_requested = (keys_path / 'rotate_keys_after_signing').exists()
         if not rotation_requested:
             return None
-        pending_id = commit_date
+        pending_id = file_cver
         if (keys_path / pending_id).exists():  # long-term location for this key
             raise Berror(f"B42088 pending key {keys_path / pending_id} already exists")
         state['pending_key_id'] = pending_id  # write to key_state in case of interruption
@@ -572,12 +567,12 @@ def sign_doc(subd: str, filename: str) -> None:
     sys.stdout.write(dump_versions(dict(tasks=tasks)))
 
 
-def sign_code(commit_date: str | None = None) -> None:
+def sign_code(file_cver: str | None = None) -> None:
     """Prepare staged release metadata, then mirror generated values into the worktree."""
-    if commit_date is None:
-        commit_date = b36datetime()
-    if not re.fullmatch('[0-9a-z]{7}', commit_date):
-        raise Berror(f"B34290 expected a seven-character base-36 commit date: {commit_date!r}")
+    if file_cver is None:
+        file_cver = b36datetime()
+    if not re.fullmatch('[0-9a-z]{7}', file_cver):
+        raise Berror(f"B34290 expected a seven-character base-36 commit date: {file_cver!r}")
     modified = git_files('diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z')
     indexed_versions = read_indexed_file(versions_path)
     if indexed_versions is None:
@@ -588,7 +583,7 @@ def sign_code(commit_date: str | None = None) -> None:
     versions = parse_versions(template)
     matched = matching_watched_paths(modified)
     versions['paths'] = [entry for entry in versions['paths'] if entry.get('path') not in matched]
-    versions['paths'].extend({'path': path, 'version': commit_date} for path in matched)
+    versions['paths'].extend({'path': path, 'version': file_cver} for path in matched)
     # unaffected entries retain their template values, even after an abandoned commit;
     # repairing stale metadata after changing the staged selection remains a manual operation
     prepared = dict()
@@ -599,20 +594,22 @@ def sign_code(commit_date: str | None = None) -> None:
         if indexed is None:
             raise Berror(f"B50280 missing indexed file {bbbased_path}")
         code_mode, code = indexed
-        code = set_bbbased_commit_date(code, commit_date)
-        worktree_code = set_bbbased_commit_date(read_text(bbbased_path), commit_date)
+        code = set_bbbased_file_cver(code, file_cver, 'file_cver')
+        code = set_bbbased_file_cver(code, file_cver, 'commit_date')  # old bbbased.lua migration
+        worktree_code = set_bbbased_file_cver(read_text(bbbased_path), file_cver, 'file_cver')
+        worktree_code = set_bbbased_file_cver(worktree_code, file_cver, 'commit_date')
         # Check both editable regions before generating keys or changing repository files.
         file_pubkeys_table(code)
         file_pubkeys_table(worktree_code)
         if shutil.which('openssl') is None:
             raise Berror("B71974 missing OpenSSL; install via: sudo apt install openssl")
-        state = read_or_create_key_state(commit_date)
+        state = read_or_create_key_state(file_cver)
         active_key, signing_key = select_signing_keys(state)
         if state.get('bootstrap_pending'):
             # The initial trust root is self-signed; a later release can introduce a pending key.
             code = prepend_file_pubkey(code, active_key)
         else:
-            pending_key = get_pending_key(state, commit_date)
+            pending_key = get_pending_key(state, file_cver)
         if pending_key is not None:
             if ''.join(pending_key.public_key.split()) == ''.join(active_key.public_key.split()):
                 raise Berror("B16393 the pending public key is already the active public key")

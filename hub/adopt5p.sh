@@ -276,14 +276,14 @@ fi
 
 ### download Lua script
 loop_count=0
-file_version=''
+file_xver=''
 while [ "$loop_count" -le 10 ]; do
     if download "$(hub_config download_url)" "$bbbased_path" && [ -s "$bbbased_path" ]; then
-        file_version=$(awk '
+        file_xver=$(awk '
             $1 ~ /^HTTP\// { version = "" }
             tolower($1) == "x-bitburrow-file-version:" { version = $2 }
             END { sub(/\r$/, "", version); print version }
-        ' "$header_path" 2>/dev/null) || file_version=''
+        ' "$header_path" 2>/dev/null) || file_xver=''
         break  # a successful download is enough; version metadata is optional
     fi
     rm -f "$bbbased_path"
@@ -294,7 +294,7 @@ done
 ### run Lua script
 if [ -s "$bbbased_path" ]; then
     hub_config_data="$hub_config_data
-file_version=$file_version
+file_xver=$file_xver
 lua_exe=$lua_exe
 "
     echo "running $lua_exe $bbbased_path install" >&2

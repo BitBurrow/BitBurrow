@@ -23,7 +23,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 50
+db_schema_version = 51
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -210,7 +210,7 @@ def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
     if version < 46 <= target:  # version 45 → 46: add Device columns (before Device → Base rename)
         with Session(engine) as session:
             statement = update(db.Device).values(
-                file_version=db.default_fv,
+                file_version=db.default_xver,
                 update_to_basedver_id=None,
                 update_deadline=DateTime(1970, 1, 1, tzinfo=TimeZone.utc),
             )
@@ -261,6 +261,19 @@ def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
         with sqlite_conn(db_path) as conn:
             conn.execute('UPDATE base SET last_endpoint=?;', ('0.0.0.0',))
         version = 50
+    if version < 51 <= target:  # version 50 → 51: rename Base version columns
+        with sqlite_conn(db_path) as conn:
+            conn.execute('BEGIN IMMEDIATE;')  # rename both columns in one transaction
+            columns = {r[1] for r in conn.execute('PRAGMA table_info(base);')}
+            for old_column, new_column in (
+                ('file_version', 'file_xver'),
+                ('next_file_version', 'next_file_xver'),
+            ):
+                if old_column in columns:  # older schemas may predate either column
+                    conn.execute(
+                        f'ALTER TABLE base RENAME COLUMN "{old_column}" TO "{new_column}";'
+                    )
+        version = 51
     # if version < ... <= target:
     #     ...
     #     version = ...
