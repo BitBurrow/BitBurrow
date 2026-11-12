@@ -105,7 +105,7 @@ def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
     if version.other and 'signature' in version.other:
         headers['X-BitBurrow-Signature'] = version.other['signature']  # cryptographic signature
     if version.other and 'key_id' in version.other:
-        headers['X-BitBurrow-Key-Id'] = version.other['key_id']  # commit_date of key used to sign
+        headers['X-BitBurrow-Key-Id'] = version.other['key_id']  # cver of key used to sign
     return PlainTextResponse(
         content=version.code, media_type='text/plain; charset=utf-8', headers=headers
     )

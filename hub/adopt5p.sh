@@ -277,7 +277,7 @@ fi
 ### download Lua script
 loop_count=0
 file_xver=''
-while [ "$loop_count" -le 10 ]; do
+while [ "$loop_count" -le 20 ]; do
     if download "$(hub_config download_url)" "$bbbased_path" && [ -s "$bbbased_path" ]; then
         file_xver=$(awk '
             $1 ~ /^HTTP\// { version = "" }

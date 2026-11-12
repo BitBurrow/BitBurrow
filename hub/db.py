@@ -1326,9 +1326,7 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 logger.warning(util.front_berror_code(e, subd, ip))
             base.platform = platform
         ## 3. process file_xver provided by the base router
-        support_legacy = telem_data.get('file_version')  # can be None after all bases updated
-        ping_xver = telem_data.get('file_xver', support_legacy)  # file_xver reported by base router
-
+        ping_xver = telem_data.get('file_xver')  # file_xver reported by base router
         if not ping_xver or not isinstance(ping_xver, str) or len(ping_xver) != len(default_xver):
             e = f"B89068 invalid file_xver: {ping_xver}"
             logger.warning(util.front_berror_code(e, subd, ip))

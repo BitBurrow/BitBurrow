@@ -53,11 +53,7 @@ local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
 local lua_exe = hub_config('lua_exe', '/usr/bin/lua')
-local file_cver = '0tocvrz'  -- updated at commit time via git_hooks/pre-commit
---[[ Legacy update marker
-local commit_date = '0tocvrz'
-(the above line allows older daemons to update to this version)
-]]
+local file_cver = '0todr1g'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -1912,56 +1908,30 @@ local function run_tests()
     return t1
 end
 
-local function read_base_config_text(path)
-    local handle, problem, errno = io.open(path, 'r')
+local function read_base_config()
+    local handle, problem, errno = io.open(base_config_path, 'r')
     if not handle then
-        if errno == 2 then return nil end  -- missing
-        return nil, "B53281 cannot open " .. path .. " (" .. tostring(problem) .. ")"
+        if errno == 2 then return {} end  -- fresh install; settings passed via HUBCONF env var
+        return nil, "B53281 cannot open " .. base_config_path .. " (" .. tostring(problem) .. ")"
     end
     local text, read_error = handle:read('*a')
     local close_ok, close_error = handle:close()
     if text == nil then
-        return nil, "B21408 cannot read " .. path .. " (" .. tostring(read_error) .. ")"
+        return nil, "B21408 cannot read " .. base_config_path .. " (" .. tostring(read_error) .. ")"
     end
     if close_ok == nil then
-        return nil, "B40316 cannot close " .. path .. " (" .. tostring(close_error) .. ")"
+        return nil, "B40316 cannot close " .. base_config_path .. " (" .. tostring(close_error) .. ")"
     end
-    return text
-end
-
-local function decode_base_config_json(text, path)
     local values = decode_json(text)
     if not json_container(values, 'object') then
-        return nil, "B82637 expected a JSON object in " .. path
+        return nil, "B82637 expected a JSON object in " .. base_config_path
     end
     for key, value in pairs(values) do
         if not key:match('^[a-z][a-z0-9_]*$') or type(value) ~= 'string' then
-            return nil, "B15724 invalid config field in " .. path .. ': ' .. displayable(key, 80)
+            return nil, "B15724 invalid config field in " .. base_config_path .. ': ' .. displayable(key, 80)
         end
     end
     return values
-end
-
-local function read_base_config()
-    local text, problem = read_base_config_text(base_config_path)
-    if problem then return nil, problem end
-    if text == nil then return {}, nil, true end
-    if text:match('^%s*{') then return decode_base_config_json(text, base_config_path) end
-    local values = {}
-    local line_number = 0
-    for raw_line in (text .. '\n'):gmatch('([^\n]*)\n') do
-        line_number = line_number + 1
-        local line = raw_line:gsub('\r$', '')
-        if line ~= '' then
-            local key, value = line:match('^([a-z][a-z0-9_]*)=(.*)$')
-            if not key then
-                return nil, "B71246 invalid key-value data at " .. base_config_path
-                        .. ':' .. line_number
-            end
-            values[key] = value
-        end
-    end
-    return values, nil, true  -- write JSON to base.conf when the daemon starts under the lock
 end
 
 local function save_base_config(values)
@@ -2078,10 +2048,10 @@ if cli_verb == 'install' or cli_verb == 'daemonize' or cli_verb == 'version' the
     base_config, problem = read_base_config()
     if not base_config and cli_verb ~= 'version' then fail_early(problem) end
     base_config = base_config or {}
-    file_xver = base_config.file_xver or base_config.file_version
+    file_xver = base_config.file_xver
     if not file_xver or file_xver:sub(1, 7) ~= file_cver then
         -- normally when cli_verb == 'install'
-        local download_version = hub_config('file_xver', hub_config('file_version', ''))
+        local download_version = hub_config('file_xver', '')
         if download_version ~= '' then
             if #download_version < 12 or download_version:sub(1, 8) ~= file_cver .. '-'
                     or not download_version:match('^[0-9a-z]+%-[0-9a-z]+$') then
@@ -5003,9 +4973,8 @@ end
 
 mkdir(config_dir, '0700')
 -- service wrapper holds the daemon lock before Lua reads base.conf or writes this version
-if base_config.file_xver ~= file_xver or base_config.file_version ~= nil then
+if base_config.file_xver ~= file_xver then
     base_config.file_xver = file_xver
-    base_config.file_version = nil
     if not save_base_config(base_config) then
         log_error("B79420 cannot save file_xver; continuing startup")
     end

@@ -595,9 +595,7 @@ def sign_code(file_cver: str | None = None) -> None:
             raise Berror(f"B50280 missing indexed file {bbbased_path}")
         code_mode, code = indexed
         code = set_bbbased_file_cver(code, file_cver, 'file_cver')
-        code = set_bbbased_file_cver(code, file_cver, 'commit_date')  # old bbbased.lua migration
         worktree_code = set_bbbased_file_cver(read_text(bbbased_path), file_cver, 'file_cver')
-        worktree_code = set_bbbased_file_cver(worktree_code, file_cver, 'commit_date')
         # Check both editable regions before generating keys or changing repository files.
         file_pubkeys_table(code)
         file_pubkeys_table(worktree_code)
