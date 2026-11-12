@@ -23,7 +23,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 51
+db_schema_version = 52
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -274,6 +274,13 @@ def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
                         f'ALTER TABLE base RENAME COLUMN "{old_column}" TO "{new_column}";'
                     )
         version = 51
+    if version < 52 <= target:  # version 51 → 52: rename BasedVer.commit_date to cver
+        with sqlite_conn(db_path) as conn:
+            conn.execute('BEGIN IMMEDIATE;')
+            columns = {r[1] for r in conn.execute('PRAGMA table_info(basedver);')}
+            if 'commit_date' in columns:
+                conn.execute('ALTER TABLE basedver RENAME COLUMN commit_date TO cver;')
+        version = 52
     # if version < ... <= target:
     #     ...
     #     version = ...

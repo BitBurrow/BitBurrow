@@ -1109,7 +1109,7 @@ def parse_os_release(text: object) -> dict[str, str]:
 
 class BasedVer(SQLModel, table=True):
     id: int | None = Field(primary_key=True, default=None)
-    commit_date: str = Field(index=True, default='')  # 7-character date; see net.b36datetime()
+    cver: str = Field(index=True, default='')  # 7-character date; see net.b36datetime()
     # test_level_x must match class Platform() values
     test_level_init: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.INIT
     test_level_sysd: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.SYSTEMD
@@ -1123,32 +1123,32 @@ class BasedVer(SQLModel, table=True):
     def test_level(self, platform: Platform) -> TestLevel:
         return getattr(self, f'test_level_{platform.value}')
 
-    def file_xver(self):  # e.g. 0tf4ijm-geac
-        if len(self.commit_date) != 7:
-            raise Berror(f"B49018 bad commit_date {self.commit_date}")
+    def xver(self):  # e.g. 0tf4ijm-geac
+        if len(self.cver) != 7:
+            raise Berror(f"B49018 bad cver {self.cver}")
         test_levels = ''.join([getattr(self, f'test_level_{p.value}').value for p in Platform])
-        return f'{self.commit_date}-{test_levels}'
+        return f'{self.cver}-{test_levels}'
 
-    def compare_version(self, platform: Platform):  # e.g. 0tf4ijm-.e.. (to string-compare versions)
+    def pver(self, platform: Platform):  # e.g. 0tf4ijm-.e.. (to string-compare versions)
         test_levels = ''.join(
             getattr(self, f'test_level_{p.value}').value if p == platform else '.' for p in Platform
         )
-        return f'{self.commit_date}-{test_levels}'
+        return f'{self.cver}-{test_levels}'
 
 
 def update_bbbased_version() -> None:
     """Add bbbased_path from disk to DB if not yet indexed."""
     paths = util.read_versions_yaml()
-    commit_date = paths[bbbased_path]['version']
+    cver = paths[bbbased_path]['version']
     with Session(engine) as session:
-        path_version = f"{bbbased_path} version {commit_date}"
-        statement = select(BasedVer.commit_date).where(BasedVer.commit_date > commit_date).limit(1)
-        newer_commit_date = session.exec(statement).first()
-        if newer_commit_date is not None:
-            logger.error(f"B15828 ignoring {path_version} because newer {newer_commit_date} exists")
+        path_version = f"{bbbased_path} version {cver}"
+        statement = select(BasedVer.cver).where(BasedVer.cver > cver).limit(1)
+        newer_cver = session.exec(statement).first()
+        if newer_cver is not None:
+            logger.error(f"B15828 ignoring {path_version} because newer {newer_cver} exists")
             # would be rejected by base (Berror code 77812 "bad download (downgrade)")
             return
-        statement = select(BasedVer).where(BasedVer.commit_date == commit_date)
+        statement = select(BasedVer).where(BasedVer.cver == cver)
         if session.exec(statement).one_or_none() is not None:  # version already exists in DB
             return
         file_path = os.path.join(util.project_root_path, bbbased_path)
@@ -1166,14 +1166,14 @@ def update_bbbased_version() -> None:
         }
         if 'signature' in paths[bbbased_path]:  # strip whitespace so it can be sent in HTML header
             other['signature'] = re.sub(r'\s+', '', paths[bbbased_path]['signature'])
-        session.add(BasedVer(commit_date=commit_date, code=code, other=other))
+        session.add(BasedVer(cver=cver, code=code, other=other))
         session.commit()
 
 
 def check_bbbased_test_levels() -> None:
     """Log errors if no version of bbbased is tested. Normally run 5 minutes after startup."""
     with Session(engine) as session:
-        statement = select(BasedVer).order_by(BasedVer.commit_date.desc()).limit(1)
+        statement = select(BasedVer).order_by(BasedVer.cver.desc()).limit(1)
         bv: BasedVer = session.exec(statement).one_or_none()  # *latest* version
         if bv is None:
             logger.error(f"B53565 cannot find a bbbased version")  # should never happen
@@ -1183,7 +1183,7 @@ def check_bbbased_test_levels() -> None:
                 continue  # don't warn about platforms for which there are no base routers
             if bv.test_level(p).value < TestLevel.CAN_UPDATE.value:
                 canaries = canary_list(p)
-                error_msg = f"bbbased.lua {bv.commit_date} testing on {p.value} failed"
+                error_msg = f"bbbased.lua {bv.cver} testing on {p.value} failed"
                 n = len(canaries)
                 if n == 0:
                     logger.warning(
@@ -1202,7 +1202,7 @@ def newest_approved_ver(
     session: Session,
 ) -> BasedVer | None:
     """Return the newest BasedVer which has an approved test level for this Base."""
-    statement = select(BasedVer).order_by(BasedVer.commit_date.desc())
+    statement = select(BasedVer).order_by(BasedVer.cver.desc())
     bvs = session.exec(statement).all()
     if base.platform:
         for bv in bvs:
@@ -1228,7 +1228,7 @@ def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
         now = DateTime.now(TimeZone.utc)
         update_deadline = base.update_deadline.replace(tzinfo=TimeZone.utc)
         if base.next_file_xver and update_deadline > now:  # update is in progress
-            statement = select(BasedVer).where(BasedVer.commit_date == base.next_file_xver[:7])
+            statement = select(BasedVer).where(BasedVer.cver == base.next_file_xver[:7])
             bv: BasedVer | None = session.exec(statement).one_or_none()
             if bv is None:
                 raise Berror(f"B95637 missing BasedVer for {base.next_file_xver}")
@@ -1239,7 +1239,7 @@ def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
         # account for expired attempts before replacing a target or choosing another commit
         for updating_base in session.exec(statement).all():
             next_xver = updating_base.next_file_xver
-            statement = select(BasedVer).where(BasedVer.commit_date == next_xver[:7])
+            statement = select(BasedVer).where(BasedVer.cver == next_xver[:7])
             bv = session.exec(statement).one_or_none()
             if bv is None:
                 e = f"B63745 missing BasedVer for {next_xver}"
@@ -1251,7 +1251,7 @@ def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
                 bv.used_fails += 1
                 if bv.used_fails >= 7 and bv.used_fails * 2 >= bv.used_total:
                     ratio = f"{bv.used_fails} of {bv.used_total} attempts"
-                    logger.error(f"B21382 bbbased {bv.commit_date} failed {ratio}; won't use")
+                    logger.error(f"B21382 bbbased {bv.cver} failed {ratio}; won't use")
                     for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
                         setattr(bv, f'test_level_{p.value}', TestLevel.FAILED)
                 session.add(bv)
@@ -1262,7 +1262,7 @@ def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
         if bv is None:
             session.commit()  # retain timeout accounting even if no approved version remains
             raise Berror(f"B95159 no bbbased version approved ({base.min_test_level=})")
-        base.next_file_xver = bv.file_xver()  # freeze this download's test levels
+        base.next_file_xver = bv.xver()  # freeze this download's test levels
         base.update_deadline = DateTime.now(TimeZone.utc) + TimeDelta(minutes=11)
         session.add(base)
         session.commit()
@@ -1346,7 +1346,7 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 logger.warning(util.front_berror_code(e, subd, ip))
         if base.next_file_xver and ping_xver == base.next_file_xver:
             # confirm the exact download, even if unchanged or past due; clear only once
-            statement = select(BasedVer).where(BasedVer.commit_date == ping_xver[:7])
+            statement = select(BasedVer).where(BasedVer.cver == ping_xver[:7])
             bv: BasedVer | None = session.exec(statement).one_or_none()
             if bv is None:
                 e = f"B05150 missing BasedVer for {base.next_file_xver}"
@@ -1356,7 +1356,7 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 session.add(bv)
             base.next_file_xver = ''
         session.add(base)  # don't session.commit() here (would end transaction)
-        ping_commit = ping_xver[0:7]
+        ping_cver = ping_xver[0:7]
         tls = ping_xver[8:]  # test levels, (string of Platform values)
         try:
             ping_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
@@ -1371,19 +1371,19 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
             promote_to = TestLevel.CAN_UPDATE
         elif ping_tl < TestLevel.CAN_PING.value:  # ping-after-update from prior commit
             promote_to = TestLevel.CAN_PING
-        statement = select(BasedVer).where(BasedVer.commit_date == ping_commit)
-        # commit_bv is commit_date from base router with test levels from DB
+        statement = select(BasedVer).where(BasedVer.cver == ping_cver)
+        # commit_bv is cver from base router with test levels from DB
         commit_bv: BasedVer = session.exec(statement).one_or_none()
         if commit_bv is not None:
             commit_level = commit_bv.test_level(platform)
             if promote_to:
-                before = commit_bv.compare_version(platform)
+                before = commit_bv.pver(platform)  # e.g. 0tf4ijm-.e..
                 if commit_level == TestLevel.FAILED:
                     e = f"B98413 bbbased {before} is marked as failed; not promoting"
                     logger.warning(util.front_berror_code(e, subd, ip))
                 elif promote_to.value > commit_level.value:
                     setattr(commit_bv, f'test_level_{platform.value}', promote_to)
-                    after = commit_bv.compare_version(platform)
+                    after = commit_bv.pver(platform)
                     session.add(commit_bv)  # don't session.commit() here (would end transaction)
                     e = f"B39596 promoted bbbased {before} to test level {after[8:]}"
                     logger.info(util.front_berror_code(e, subd, ip))
@@ -1399,13 +1399,13 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
             test_levels = ''.join(
                 ping_xver[i + 8] if p == platform else '.' for i, p in enumerate(Platform)
             )
-            # ping_cv is file version from base router, but with '.' for irrelevant platforms
-            ping_cv = f'{ping_xver[0:7]}-{test_levels}'
-            approved_cv = approved_bv.compare_version(platform)
-            if ping_cv > approved_cv:  # string-compare, e.g. '0tf4ijm-.e..'
-                e = f"B16354 unapproved version {ping_cv} > {approved_cv}"
+            # ping_pver is file version from base router, but with '.' for irrelevant platforms
+            ping_pver = f'{ping_xver[0:7]}-{test_levels}'
+            approved_pver = approved_bv.pver(platform)
+            if ping_pver > approved_pver:  # string-compare, e.g. '0tf4ijm-.e..'
+                e = f"B16354 unapproved version {ping_pver} > {approved_pver}"
                 logger.warning(util.front_berror_code(e, subd, ip))
-            elif ping_cv < approved_cv:
+            elif ping_pver < approved_pver:
                 enqueue_update_task = True
         session.commit()
     # enqueue_task() opens another session, so release our transaction first
@@ -1417,7 +1417,7 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
             priority=5,
             dedupe=3,
         )
-        e = f"B90867 launched task {task_id} update from bbbased {ping_cv}"
+        e = f"B90867 launched task {task_id} update from bbbased {ping_pver}"
         logger.debug(util.front_berror_code(e, subd, ip))
 
 
