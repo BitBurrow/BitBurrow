@@ -110,7 +110,7 @@ async def check_for_new_upnpc_client() -> None:
         upnp_client_version = importlib.metadata.version('miniupnpc')
         if db.get_blob(path, upnp_client_version) is not None:  # same client version
             return
-        logger.debug(f"B26320 gathering UPnP discovery packets, UPnP library {upnp_client_version}")
+        logger.info(f"B26320 gathering UPnP discovery packets, UPnP library {upnp_client_version}")
         pcap = await upnpc_outbound_discovery_packets()
         try:
             db.set_blob(path, pcap, upnp_client_version)

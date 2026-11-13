@@ -23,7 +23,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 52
+db_schema_version = 53
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -281,6 +281,13 @@ def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
             if 'commit_date' in columns:
                 conn.execute('ALTER TABLE basedver RENAME COLUMN commit_date TO cver;')
         version = 52
+    if version < 53 <= target:  # version 52 → 53: rebuild the base release table empty
+        with sqlite_conn(db_path) as conn:
+            conn.execute('BEGIN IMMEDIATE;')
+            # allow installed bases to ping without a stored release row
+            conn.execute('DROP TABLE IF EXISTS basedver;')  # instead of a treacherous migration
+            conn.execute("UPDATE base SET next_file_xver='' WHERE next_file_xver != '';")
+        version = 53
     # if version < ... <= target:
     #     ...
     #     version = ...

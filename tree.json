@@ -1,0 +1,35 @@
+{
+  "signature": "n+9oBw5fnFBHTAq2HkPMv4SKgfBx+v+IZFjmBP/EhUyVpjgCJTWAGGB0g6PanZJeGYwyCwAxpg3GfAJRjd82BKXlusg+jjFbVddzaYaWYhLwaRScqQrkLAFzUqy86LJ1Ytpz3MatiEQiFQ/5oxP5zn6PxQPhogBFbZ0MSXTjJv7XE04jDcJKk9Sde+4FbULOeeUUE0r1s1E6ZS3iPpfzU1uF31eUI5/sLStS5jfRd1CVPr5LO1kjYgJ2DHc8tEQchexkxTg852BlI8z7pFkE9QTnvignnOJklH6Qw3eWUSRR1voYhSelkw/r0Wz05YQtZcatP7wATiZn4mJUa4OufdTGQWP4Mk0qeTQKWy6rwXyi3oYLI/6aIairRk3YsOskgLeEYdmuldt7R5Oh2Iqz/0a6EH+WHfo2cZ7+JFJ1qcuPdU0gymM1IKCf1vXaIXdUTtVZMWOk/89b5lurTGlkfeVMzaubiFZInyiubj14U5IHtwCCSiYaMgfIew9P0+Te",
+  "key_id": "0tlfc1c",
+  "paths": [
+    {
+      "path": "base/base.lua",
+      "cver": "0togg6a",
+      "sha256sum": "e4b1420febc625e4e64b66e247c9a6cd13d079bda27a9a18eb9bb69428a8f7ee",
+      "signature": "yl7zr7/gzjJGnxaH79ihBIkH3B2Xq8jSZvjHiDuuFc+ADZSLLo7sS4WMQnBkbEO216bhjd3vnRil6hwD7YLLgBM2M4QbLCgkWvnoZ5GiruHjoHF1f8gFitMHcLQELv2rqrqabZniZGEBrn2VH2n6o0wXcoUdlI7jkOVq64kO+QnxStUJ0/ikwynq0Y4XSTcx1zMzQIw4098fMwxIhVBzxy6RRNZ0UIhIF3bMn9OioUMh3DNx25k1DqECFbNx0YiFuYTBbA3x6vvaerGAoC21YWd9ZDWIm3gJV0qi6bSUneUtuugr4v7WDmGsb4jt1oEUUD/czw2guM/Z2nNUh2Nv40i+otcUdFdSVWXkxZB4RKwa6CqgVdNRAOeSx1az4oovEopdAxY0SqIYoEa5xO/GnlcSZcP1gsmazC9P2Co3VFexOBLcgFRNMK4TPXdVvEup5cChBmkoEQTdaP9WFpZb6l7LAlMzbTH+ZjibDXCNNQxyw3HvGLuf/Lxb5f+PGDvx",
+      "key_id": "0tlfc1c"
+    },
+    {
+      "path": "base/emulator/install.sh",
+      "cver": "0togayt",
+      "sha256sum": "3e21ecf15b391afeacc6f796855da3dca5ce6d413d9a2d1285ceaac6d1a4bff4"
+    },
+    {
+      "path": "base/",
+      "cver": "0togg6a"
+    },
+    {
+      "path": "hub/adopt5p.sh",
+      "cver": "0togayt",
+      "sha256sum": "97c3620d62dad1388e97b5a2d700be6681e9826d0534782f118b64a874f4dd1d"
+    },
+    {
+      "path": "hub/",
+      "cver": "0togfx4"
+    },
+    {
+      "path": "tree.json",
+      "cver": "0togg6a"
+    }
+  ]
+}

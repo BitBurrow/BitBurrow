@@ -457,6 +457,13 @@ def b36datetime() -> str:
     return result.rjust(7, '0')
 
 
+def decode_b36datetime(value: str) -> str:
+    """Decode a b36datetime (e.g. cver) to YYYY-MM-DDTHH:MM:SS in UTC."""
+    epoch = DateTime(1970, 1, 1, tzinfo=TimeZone.utc)
+    dt = epoch + TimeDelta(seconds=int(value, 36))
+    return dt.strftime('%Y-%m-%dT%H:%M:%S')
+
+
 def connected_inbound_list(local_port):
     # net_connections docs: https://psutil.readthedocs.io/en/latest/index.html#psutil.net_connections
     conn_list = psutil.net_connections(kind='tcp')

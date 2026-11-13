@@ -3,10 +3,13 @@
 hub_config_data='
 api_url={api_url}
 download_url={download_url}
+target_xver={target_xver}
+file_xver={target_xver}
 log_err_route={log_err_route}
 ott_filename={ott_filename}
 subd={subd}
 '
+install_url='{install_url}'
 
 hub_config() {
     while IFS='=' read -r hub_config_key hub_config_value; do
@@ -23,7 +26,6 @@ HUB_CONFIG_EOF
 packager_exe=''
 temp_path=''
 base_lua_path=''
-header_path=''
 lua_exe=''
 
 log_error() {
@@ -43,13 +45,9 @@ can_download() {
 download() {
     echo "downloading $1 $2" >&2
     if command -v curl >/dev/null 2>&1; then
-        curl -f --max-time 120 --dump-header "$header_path" -o "$2" "$1" >/dev/null 2>&1 && return 0
-        rm -f "$header_path"
         curl -f --max-time 120 -o "$2" "$1" >/dev/null 2>&1 && return 0
     fi
     if command -v wget >/dev/null 2>&1; then
-        wget -S -T 120 -O "$2" "$1" >/dev/null 2>"$header_path" && return 0
-        rm -f "$header_path"
         wget -q -T 120 -O "$2" "$1" >/dev/null 2>&1 && return 0
     fi
     return 1
@@ -193,7 +191,7 @@ make_temp_path() {
 
 cleanup_temp_path() {
     if [ -n "$base_lua_path" ]; then
-        rm -f "$base_lua_path" "$header_path" 2>/dev/null || true
+        rm -f "$base_lua_path" 2>/dev/null || true
     fi
     if [ -n "$temp_path" ]; then
         rmdir "$temp_path" 2>/dev/null || true
@@ -206,11 +204,10 @@ echo "" >&2  # blank line
 echo "installing BitBurow ..." >&2
 make_temp_path || exit 1
 base_lua_path="$temp_path/base.lua"
-header_path="$temp_path/headers"
 trap cleanup_temp_path 0
 find_packager_exe || true
 
-### install curl or wget; response-header support is best-effort
+### install curl or wget
 echo "installing required packages" >&2
 loop_count=0
 while [ "$loop_count" -le 3 ]; do
@@ -276,15 +273,9 @@ fi
 
 ### download Lua script
 loop_count=0
-file_xver=''
 while [ "$loop_count" -le 20 ]; do
-    if download "$(hub_config download_url)" "$base_lua_path" && [ -s "$base_lua_path" ]; then
-        file_xver=$(awk '
-            $1 ~ /^HTTP\// { version = "" }
-            tolower($1) == "x-bitburrow-file-version:" { version = $2 }
-            END { sub(/\r$/, "", version); print version }
-        ' "$header_path" 2>/dev/null) || file_xver=''
-        break  # a successful download is enough; version metadata is optional
+    if download "$install_url" "$base_lua_path" && [ -s "$base_lua_path" ]; then
+        break
     fi
     rm -f "$base_lua_path"
     sleep 75
@@ -294,13 +285,12 @@ done
 ### run Lua script
 if [ -s "$base_lua_path" ]; then
     hub_config_data="$hub_config_data
-file_xver=$file_xver
 lua_exe=$lua_exe
 "
     echo "running $lua_exe $base_lua_path install" >&2
     run_as_root env HUBCONF="$hub_config_data" TMPDIR="${TMPDIR:-/tmp}" \
         "$lua_exe" "$base_lua_path" install
 else
-    log_error "B29909 cannot download $(hub_config download_url)"
+    log_error "B29909 cannot download $install_url"
     exit 1
 fi

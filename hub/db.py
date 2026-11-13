@@ -11,6 +11,7 @@ import enum
 import fastapi
 import hashlib
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -414,7 +415,7 @@ class Platform(enum.StrEnum):
 
 any_platform = (Platform.INIT, Platform.SYSTEMD, Platform.WINDOWS, Platform.MACOS)
 default_xver = '0000000-aaaa'
-base_lua_path = 'hub/base.lua'
+update_timeout = TimeDelta(minutes=20)
 
 
 class Base(SQLModel, table=True):
@@ -433,7 +434,7 @@ class Base(SQLModel, table=True):
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='bases')
     file_xver: str = default_xver  # last confirmed base.lua version
-    next_file_xver: str = ''  # set on adopt5s; '' means no update in progress
+    next_file_xver: str = ''  # set when an update task is assigned; '' means no update in progress
     update_deadline: DateTime = DateTime(1970, 1, 1, tzinfo=TimeZone.utc)
     platform: Platform | None = None
     setup_ui_path: str = ''  # path of last-active step in 'setup-adopt.yaml'; '' means root
@@ -727,7 +728,8 @@ def next_task(base_id: int, unstale: bool = True) -> BaseTask | None:
     with Session(engine) as session:
 
         def stale_tasks_check(stale_after_seconds: int = 600) -> None:
-            stale_before = DateTime.now(TimeZone.utc) - TimeDelta(seconds=stale_after_seconds)
+            now = DateTime.now(TimeZone.utc)
+            stale_before = now - TimeDelta(seconds=stale_after_seconds)
             statement = (
                 sqlalchemy.update(BaseTask)
                 .where(BaseTask.base_id == base_id)
@@ -735,9 +737,14 @@ def next_task(base_id: int, unstale: bool = True) -> BaseTask | None:
                 .where(BaseTask.method != 'rce')
                 .where(BaseTask.assigned_at != None)
                 .where(BaseTask.assigned_at < stale_before)
+                .where(
+                    (BaseTask.method != 'update') | (BaseTask.assigned_at < now - update_timeout)
+                )
                 .values(
                     status=BaseTaskStatus.QUEUED,
-                    assigned_at=None,
+                    assigned_at=sqlalchemy.case(
+                        (BaseTask.method == 'update', BaseTask.assigned_at), else_=None
+                    ),
                 )
                 .returning(BaseTask.id)
             )
@@ -750,9 +757,10 @@ def next_task(base_id: int, unstale: bool = True) -> BaseTask | None:
 
         if unstale:
             stale_tasks_check()
-        for retry in range(20):
+        retries = 0
+        while retries < 20:
             statement = (
-                select(BaseTask.id)
+                select(BaseTask.id, BaseTask.assigned_at)
                 .where(BaseTask.base_id == base_id)
                 .where(BaseTask.status == BaseTaskStatus.QUEUED)
                 .order_by(
@@ -762,23 +770,56 @@ def next_task(base_id: int, unstale: bool = True) -> BaseTask | None:
                 )
                 .limit(1)
             )
-            task_id = session.exec(statement).first()
-            if task_id is None:
+            queued_task = session.exec(statement).first()
+            if queued_task is None:
                 return None  # no pending tasks
+            task_id, previous_assignment = queued_task
+            assigned_at = DateTime.now(TimeZone.utc)
             update_statement = (
                 sqlalchemy.update(BaseTask)
                 .where(BaseTask.id == task_id)
                 .where(BaseTask.status == BaseTaskStatus.QUEUED)
                 .values(
                     status=BaseTaskStatus.ASSIGNED,
-                    assigned_at=DateTime.now(TimeZone.utc),
+                    assigned_at=assigned_at,
                 )
             )
             result = session.exec(update_statement)
             if result.rowcount == 1:
+                task = session.get(BaseTask, task_id)
+                if task.method == 'update':
+                    base = session.get(Base, base_id)
+                    expire_updates(session)
+                    # fill only pre-migration queued tasks; new tasks are pinned at enqueue time
+                    if not task.args or not task.args.get('target_xver'):
+                        try:
+                            task.args = update_task_args(session, base, task.args or {})
+                        except Berror as e:
+                            logger.warning(str(e))
+                    target_xver = (task.args or {}).get('target_xver')
+                    bv = (
+                        session.exec(
+                            select(BasedVer).where(BasedVer.cver == target_xver[:7])
+                        ).first()
+                        if target_xver
+                        else None
+                    )
+                    # a pinned release can become unavailable while the task is queued
+                    platforms = (base.platform,) if base.platform else any_platform
+                    if bv is None or all(bv.test_level(p) == TestLevel.FAILED for p in platforms):
+                        task.status = BaseTaskStatus.FAILED
+                        task.assigned_at = previous_assignment
+                        task.finished_at = assigned_at
+                        session.add(task)
+                        session.commit()
+                        continue
+                    if target_xver != base.file_xver and base.next_file_xver != target_xver:
+                        base.next_file_xver = target_xver
+                        base.update_deadline = assigned_at + update_timeout
                 session.commit()
                 return session.get(BaseTask, task_id)
             session.rollback()
+            retries += 1
         raise Berror(f"B19708 could not find next task, {base_id=}")
 
 
@@ -797,6 +838,11 @@ def enqueue_task(
     if priority < -9 or priority > 9:
         raise Berror(f"B25273 invalid priority {priority}")
     with Session(engine) as session:
+        if method == 'update':
+            base = session.get(Base, base_id)
+            if base is None:
+                raise Berror(f"B80405 cannot queue update for missing base {base_id}")
+            task_args = update_task_args(session, base, task_args)
         if dedupe > 0:
             statement = (
                 select(BaseTask)
@@ -906,7 +952,10 @@ def finish_task_result(
         if task is None or task.base_id != base_id or task.method != method:
             raise Berror(f"B92553 task {task_id} was not assigned")
         prior_statuses = (BaseTaskStatus.ASSIGNED,)
-        if method == 'discover_upnp' and status == BaseTaskStatus.DONE:
+        if method == 'update' and task.assigned_at is not None:
+            # a restarted base can have a saved result for a requeued or expired update
+            prior_statuses += (BaseTaskStatus.QUEUED, BaseTaskStatus.FAILED)
+        elif method == 'discover_upnp' and status == BaseTaskStatus.DONE:
             prior_statuses += (BaseTaskStatus.FAILED,)
         return finish_task(session, task, status, prior_statuses)
 
@@ -1103,13 +1152,18 @@ def parse_os_release(text: object) -> dict[str, str]:
 
 
 ###
-### DB table BasedVer - copies and metadata of 'base.lua'
+### DB table BasedVer - signed trees and test status of base daemon releases
 ###
 
 
 class BasedVer(SQLModel, table=True):
+    __table_args__ = (
+        # https://www.sqlite.org/foreignkeys.html#fk_composite
+        sqlalchemy.ForeignKeyConstraint(['blob_id', 'cver'], ['blob.id', 'blob.version']),
+    )
+    blob_id: int = Field(nullable=False)
     id: int | None = Field(primary_key=True, default=None)
-    cver: str = Field(index=True, default='')  # 7-character date; see net.b36datetime()
+    cver: str = Field(index=True, unique=True, default='')  # 7-char date; see net.b36datetime()
     # test_level_x must match class Platform() values
     test_level_init: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.INIT
     test_level_sysd: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.SYSTEMD
@@ -1117,7 +1171,6 @@ class BasedVer(SQLModel, table=True):
     test_level_macs: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.MACOS
     used_total: int = 0
     used_fails: int = 0
-    code: str = ''  # actual Lua
     other: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
 
     def test_level(self, platform: Platform) -> TestLevel:
@@ -1137,37 +1190,45 @@ class BasedVer(SQLModel, table=True):
 
 
 def update_base_cver() -> None:
-    """Add base_lua_path from disk to DB if not yet indexed."""
-    paths = util.read_versions_yaml()
-    cver = paths[base_lua_path]['version']
-    with Session(engine) as session:
-        path_version = f"{base_lua_path} version {cver}"
-        statement = select(BasedVer.cver).where(BasedVer.cver > cver).limit(1)
-        newer_cver = session.exec(statement).first()
-        if newer_cver is not None:
-            logger.error(f"B15828 ignoring {path_version} because newer {newer_cver} exists")
-            # would be rejected by base (Berror code 77812 "bad download (downgrade)")
-            return
-        statement = select(BasedVer).where(BasedVer.cver == cver)
-        if session.exec(statement).one_or_none() is not None:  # version already exists in DB
-            return
-        file_path = os.path.join(util.project_root_path, base_lua_path)
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                code = f.read()
-        except FileNotFoundError as e:
-            logger.error(f"B57645 cannot open {file_path}")
-            return
-        logger.info(f"B96927 indexing new {path_version}")
-        other = {
-            k: v
-            for k, v in paths[base_lua_path].items()
-            if k not in ('path', 'version', 'signature')
-        }
-        if 'signature' in paths[base_lua_path]:  # strip whitespace so it can be sent in HTML header
-            other['signature'] = re.sub(r'\s+', '', paths[base_lua_path]['signature'])
-        session.add(BasedVer(cver=cver, code=code, other=other))
-        session.commit()
+    """Import a base release and its immutable files in one transaction."""
+    try:
+        with open(os.path.join(util.project_root_path, 'tree.json'), 'rb') as f:
+            content = f.read()
+        tree = json.loads(content)
+        paths = util.tree_paths(tree)
+        cver = paths['base/']['cver']
+        tree_cver = paths['tree.json']['cver']
+        with Session(engine) as session:
+            session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+            existing = session.exec(select(BasedVer).where(BasedVer.cver == cver)).one_or_none()
+            if existing is not None:
+                if tree_cver != cver:
+                    logger.debug("B80415 'no-base' commit; keeping the signed base tree")
+                elif session.get(Blob, existing.blob_id).content != content:
+                    # can happen via 2 commits within the same second
+                    logger.error(f"B80416 conflicting commits for 'tree.json' cver {cver}")
+                return
+            if tree_cver != cver:
+                raise Berror(f"B80417 'tree.json' cver {tree_cver} != 'base/' cver {cver}")
+            newer = session.exec(select(BasedVer.cver).where(BasedVer.cver > cver).limit(1)).first()
+            if newer is not None:
+                logger.error(f"B15828 ignoring base version {cver} because newer {newer} exists")
+                return
+            blob_id = set_blob('tree.json', content, cver, psession=session)
+            for path, entry in paths.items():
+                if 'sha256sum' in entry:
+                    with open(os.path.join(util.project_root_path, path), 'rb') as f:
+                        data = f.read()
+                    if hashlib.sha256(data).hexdigest() != entry['sha256sum']:
+                        raise Berror(f"B80420 source hash mismatch: {path}")
+                    set_blob(path, data, entry['cver'], psession=session)
+            base_path = 'base/base.lua'
+            other = {k: v for k, v in paths[base_path].items() if k in ('signature', 'key_id')}
+            session.add(BasedVer(cver=cver, blob_id=blob_id, other=other))
+            session.commit()
+            logger.info(f"B96927 indexed new base version {cver}")
+    except (OSError, ValueError, KeyError, Berror) as e:
+        logger.error(f"B57645 cannot index base release: {e}")
 
 
 def check_base_test_levels() -> None:
@@ -1183,7 +1244,7 @@ def check_base_test_levels() -> None:
                 continue  # don't warn about platforms for which there are no base routers
             if bv.test_level(p).value < TestLevel.CAN_UPDATE.value:
                 canaries = canary_list(p)
-                error_msg = f"base.lua {bv.cver} testing on {p.value} failed"
+                error_msg = f"cver {bv.cver} testing on platform {p.value} failed"
                 n = len(canaries)
                 if n == 0:
                     logger.warning(
@@ -1216,63 +1277,70 @@ def newest_approved_ver(
     return None
 
 
-def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
-    """Return the code and pinned full file version for this download attempt."""
-    # the `expire_on_commit=False` below helps prevent: Instance ... is not bound to a Session
-    with Session(engine, expire_on_commit=False) as session:
-        # use DB transactions to avoid inaccurate totals caused by overlapping requests
-        session.connection().exec_driver_sql('BEGIN IMMEDIATE')  # Sqlite transaction
-        base: Base = session.exec(select(Base).where(Base.subd == subd)).one_or_none()
-        if base is None:
-            raise Berror(f"B41474 cannot find subd {subd}")
-        now = DateTime.now(TimeZone.utc)
-        update_deadline = base.update_deadline.replace(tzinfo=TimeZone.utc)
-        if base.next_file_xver and update_deadline > now:  # update is in progress
-            statement = select(BasedVer).where(BasedVer.cver == base.next_file_xver[:7])
-            bv: BasedVer | None = session.exec(statement).one_or_none()
-            if bv is None:
-                raise Berror(f"B95637 missing BasedVer for {base.next_file_xver}")
-            session.commit()
-            # test levels may have changed since the first download; keep its version and deadline
-            return bv, base.next_file_xver
-        statement = select(Base).where(Base.next_file_xver != '', Base.update_deadline <= now)
-        # account for expired attempts before replacing a target or choosing another commit
-        for updating_base in session.exec(statement).all():
-            next_xver = updating_base.next_file_xver
-            statement = select(BasedVer).where(BasedVer.cver == next_xver[:7])
-            bv = session.exec(statement).one_or_none()
-            if bv is None:
-                e = f"B63745 missing BasedVer for {next_xver}"
-                logger.warning(util.front_berror_code(e, updating_base.subd))
-            else:
-                e = f"B10537 failed to update to {next_xver} before the deadline"
-                logger.info(util.front_berror_code(e, updating_base.subd))
-                bv.used_total += 1
-                bv.used_fails += 1
-                if bv.used_fails >= 7 and bv.used_fails * 2 >= bv.used_total:
-                    ratio = f"{bv.used_fails} of {bv.used_total} attempts"
-                    logger.error(f"B21382 base {bv.cver} failed {ratio}; won't use")
-                    for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
-                        setattr(bv, f'test_level_{p.value}', TestLevel.FAILED)
-                session.add(bv)
-            updating_base.next_file_xver = ''  # count this attempt only once
-            session.add(updating_base)
-        session.flush()  # keep the SQLite transaction active while choosing an approved version
+def expire_updates(session: Session) -> None:
+    """Account for accepted update attempts once; adoption never creates an attempt."""
+    now = DateTime.now(TimeZone.utc)
+    statement = select(Base).where(Base.next_file_xver != '', Base.update_deadline <= now)
+    for base in session.exec(statement).all():
+        bv = session.exec(select(BasedVer).where(BasedVer.cver == base.next_file_xver[:7])).first()
+        if bv is not None:
+            bv.used_total += 1
+            bv.used_fails += 1
+            logger.info(
+                f"B10537 base {base.subd} failed to update to {base.next_file_xver} before the deadline"
+            )
+            if bv.used_fails >= 7 and bv.used_fails * 2 >= bv.used_total:
+                logger.error(
+                    f"B21382 base {bv.cver} failed {bv.used_fails} of {bv.used_total} attempts"
+                )
+                for platform in Platform:
+                    setattr(bv, f'test_level_{platform.value}', TestLevel.FAILED)
+                statement = (
+                    sqlalchemy.update(BaseTask)
+                    .where(BaseTask.status == BaseTaskStatus.QUEUED)
+                    .where(BaseTask.method == 'update')
+                    .where(BaseTask.args['target_xver'].as_string().startswith(bv.cver + '-'))
+                    .values(status=BaseTaskStatus.FAILED, finished_at=now)
+                )
+                session.exec(statement)
+            session.add(bv)
+        base.next_file_xver = ''
+        session.add(base)
+    session.flush()
+
+
+def update_task_args(session: Session, base: Base, args: dict) -> dict:
+    """Pin the target and retain the path understood by old daemons."""
+    target = args.get('target_xver')
+    if not target:
         bv = newest_approved_ver(base, session)
         if bv is None:
-            session.commit()  # retain timeout accounting even if no approved version remains
             raise Berror(f"B95159 no base version approved ({base.min_test_level=})")
-        base.next_file_xver = bv.xver()  # freeze this download's test levels
-        base.update_deadline = DateTime.now(TimeZone.utc) + TimeDelta(minutes=11)
-        session.add(base)
-        session.commit()
-        return bv, base.next_file_xver
+        target = bv.xver()
+    return dict(args, target_xver=target, path='hub/base.lua')
+
+
+def get_adopt5s_version(subd: str, *, adoption: bool = False) -> tuple[BasedVer, str]:
+    """Look up a pinned task target, or choose an initial install without canary accounting."""
+    with Session(engine) as session:
+        base = session.exec(select(Base).where(Base.subd == subd)).one_or_none()
+        if base is None:
+            raise Berror(f"B41474 cannot find subd {subd}")
+        if base.next_file_xver and not adoption:
+            bv = session.exec(
+                select(BasedVer).where(BasedVer.cver == base.next_file_xver[:7])
+            ).first()
+            if bv is None:
+                raise Berror(f"B95637 missing BasedVer for {base.next_file_xver}")
+            return bv, base.next_file_xver
+        bv = newest_approved_ver(base, session)
+        if bv is None:
+            raise Berror("B80426 no approved base version for installation")
+        return bv, bv.xver()
 
 
 def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
-    """This is long and complex. Handle with care. Note that, to reduce code complexity, versioning
-    logic for updates is intentionally imprecise in some low-impact places, e.g. a
-    past-deadline-update *may* count as successful."""
+    """Record telemetry and confirm or schedule daemon updates."""
     uptime, idle = parse_proc_uptime(telem_data.get('proc_uptime'))
     load_01m, load_05m, load_15m = parse_proc_loadavg(telem_data.get('proc_loadavg'))
     meminfo = parse_proc_meminfo(telem_data.get('proc_meminfo'))
@@ -1281,12 +1349,13 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
     os_release = parse_os_release(telem_data.get('etc_os_release'))
     def_route_if = route.get('iface')
     def_route_stats = net_dev.get(def_route_if, dict()) if def_route_if else dict()
-    enqueue_update_task = False
+    enqueue_update_xver = None
     with Session(engine) as session:
         session.connection().exec_driver_sql('BEGIN IMMEDIATE')  # Sqlite transaction
         base: Base = session.get(Base, base_id)
         if base is None:
             raise Berror(f"B56665 cannot find base {base_id}")
+        expire_updates(session)
         ## 1. store telemetry; as of 2026-05-19, adds around 99 KB per base per day to DB size
         telemetry = Telemetry(
             base_id=base.id,
@@ -1327,7 +1396,7 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
             base.platform = platform
         ## 3. process file_xver provided by the base router
         ping_xver = telem_data.get('file_xver')  # file_xver reported by base router
-        if not ping_xver or not isinstance(ping_xver, str) or len(ping_xver) != len(default_xver):
+        if not isinstance(ping_xver, str) or not re.fullmatch('[0-9a-z]{7}-[0aceg]{4,}', ping_xver):
             e = f"B89068 invalid file_xver: {ping_xver}"
             logger.warning(util.front_berror_code(e, subd, ip))
             ping_xver = default_xver
@@ -1342,36 +1411,21 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
             if base.next_file_xver and ping_xver != base.next_file_xver:
                 e = f"B97229 downloaded {base.next_file_xver} but reports {ping_xver}"
                 logger.warning(util.front_berror_code(e, subd, ip))
-        if base.next_file_xver and ping_xver == base.next_file_xver:
-            # confirm the exact download, even if unchanged or past due; clear only once
-            statement = select(BasedVer).where(BasedVer.cver == ping_xver[:7])
-            bv: BasedVer | None = session.exec(statement).one_or_none()
-            if bv is None:
-                e = f"B05150 missing BasedVer for {base.next_file_xver}"
-                logger.warning(util.front_berror_code(e, subd, ip))
-            else:
-                bv.used_total += 1
-                session.add(bv)
+        statement = select(BasedVer).where(BasedVer.cver == ping_xver[:7])
+        commit_bv = session.exec(statement).one_or_none()
+        confirmed_update = ping_xver == base.next_file_xver
+        if confirmed_update:
+            if commit_bv is not None:
+                commit_bv.used_total += 1
             base.next_file_xver = ''
-        session.add(base)  # don't session.commit() here (would end transaction)
-        ping_cver = ping_xver[0:7]
-        tls = ping_xver[8:]  # test levels, (string of Platform values)
-        try:
-            ping_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
-        except ValueError as e:
-            tls = default_xver[8:]
-            ping_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
-        ping_tl = ping_tls[platform]
-        ## 4. promote base.lua version if appropriate
+        ping_tl = ping_xver[8 + any_platform.index(platform)]
+        ## 4. promote base version if appropriate
         promote_to = None
         # for testing, resend same base.lua file: prior → new-a, new-a → new-e, new-e → new-g
-        if ping_tl == TestLevel.CAN_PING.value:  # ping-after-update from this commit
+        if confirmed_update and ping_tl == TestLevel.CAN_PING.value:  # from next_file_xver
             promote_to = TestLevel.CAN_UPDATE
         elif ping_tl < TestLevel.CAN_PING.value:  # ping-after-update from prior commit
             promote_to = TestLevel.CAN_PING
-        statement = select(BasedVer).where(BasedVer.cver == ping_cver)
-        # commit_bv is cver from base router with test levels from DB
-        commit_bv: BasedVer = session.exec(statement).one_or_none()
         if commit_bv is not None:
             commit_level = commit_bv.test_level(platform)
             if promote_to:
@@ -1404,14 +1458,14 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 e = f"B16354 unapproved version {ping_pver} > {approved_pver}"
                 logger.warning(util.front_berror_code(e, subd, ip))
             elif ping_pver < approved_pver:
-                enqueue_update_task = True
+                enqueue_update_xver = approved_bv.xver()
         session.commit()
     # enqueue_task() opens another session, so release our transaction first
-    if enqueue_update_task:
+    if enqueue_update_xver:
         task_id = enqueue_task(
             base_id=base_id,
             method='update',
-            args={'path': base_lua_path},
+            args={'target_xver': enqueue_update_xver},
             priority=5,
             dedupe=3,
         )
@@ -1425,7 +1479,10 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
 
 
 class Blob(SQLModel, table=True):
-    __table_args__ = (sqlalchemy.UniqueConstraint('path', 'version', name='uq_file_path_version'),)
+    __table_args__ = (
+        sqlalchemy.UniqueConstraint('path', 'version', name='uq_file_path_version'),
+        sqlalchemy.UniqueConstraint('id', 'version', name='uq_blob_id_version'),
+    )
     id: int | None = Field(primary_key=True, default=None)
     path: str = Field(index=True, default='')
     version: str = Field(index=True, default='')
@@ -1446,26 +1503,31 @@ def get_blob(path: str, version: str | None = None) -> bytes | None:
 def set_blob(
     path: str,
     content: bytes,
-    version: str | None = None,  # 'None' will use the current time as a version number
-    clobber: bool = False,  # 'True' will overwrite an existing path/version combo if it exists
-) -> None:
+    version: str | None = None,
+    psession: Session | None = None,
+) -> int:
+    """Store a blob and return its ID. A supplied session owns the commit."""
     version = version or net.b36datetime()
-    with Session(engine) as session:
-        if clobber:
-            blob = session.exec(
-                select(Blob).where(Blob.path == path, Blob.version == version)
-            ).first()
-            if blob is None:
-                blob = Blob(path=path, version=version)
-            blob.content = content
-            session.add(blob)
-        else:
-            session.add(Blob(path=path, version=version, content=content))
+    session = Session(engine) if psession is None else psession
+    try:
+        blob = session.exec(select(Blob).where(Blob.path == path, Blob.version == version)).first()
+        if blob is not None:
+            if blob.content == content:
+                return blob.id
+            raise Berror(f"B80427 immutable blob already exists: {path} {version}")
+        blob = Blob(path=path, version=version, content=content)
+        session.add(blob)
         try:
-            session.commit()
+            session.flush()
+            blob_id = blob.id
+            if psession is None:
+                session.commit()
         except sqlalchemy.exc.IntegrityError as e:
-            session.rollback()
-            raise Berror(f"B75375 blob {path} version {version} already exists")
+            raise Berror(f"B75375 blob {path} version {version} already exists") from e
+        return blob_id
+    finally:
+        if psession is None:
+            session.close()
 
 
 ###

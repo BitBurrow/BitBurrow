@@ -4,6 +4,8 @@ import base64
 import collections
 from datetime import datetime as DateTime, timezone as TimeZone
 import getpass
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -15,9 +17,10 @@ import tempfile
 import textwrap
 import yaml  # sudo apt install python3-yaml
 
-base_lua_path = Path('hub/base.lua')
-versions_path = Path('versions.yaml')
-watched_paths = ('hub/base.lua', 'hub/adopt5p.sh', 'hub/')
+base_lua_path = Path('base/base.lua')
+tree_path = Path('tree.json')
+signature_placeholder = 'y5Tf2ghvd2jTi9m21geAP'
+watched_paths = ('base/base.lua', 'base/', 'hub/adopt5p.sh', 'hub/', 'tree.json')
 keys_path = Path.home() / '.config/openssl/bitburrow'  # contains a subdir for each key
 key_state_path = keys_path / 'key_state.yaml'
 key_passphrases: dict[Path, str] = dict()  # keep each key's passphrase in memory
@@ -222,8 +225,8 @@ def mask_lua_noncode(code: str, keep_strings: bool = False) -> str:
         else:
             string = lua_short_string_re.match(code, start)
             position = len(code) if string is None else string.end()
-        # Skip whole strings before searching again: PEM delimiters contain '--', and string
-        # literals can contain examples of key entries or even an entire table declaration.
+        # skip whole strings before searching again: PEM delimiters contain '--', and string
+        # literals can contain examples of key entries or even an entire table declaration
         if is_comment or not keep_strings:
             masked[start:position] = re.sub(r'[^\r\n]', ' ', code[start:position])
     return ''.join(masked)
@@ -232,7 +235,7 @@ def mask_lua_noncode(code: str, keep_strings: bool = False) -> str:
 def file_pubkey_entries(code: str) -> list[re.Match]:
     """Return validated Lua key-entry matches with offsets relative to the table body."""
     table = file_pubkeys_table(code)
-    # Mask the whole file first: a block comment can begin on the table's declaration line.
+    # mask the whole file first: a block comment can begin on the table's declaration line
     body = mask_lua_noncode(code, keep_strings=True)[table.start('body') : table.end('body')]
     pubkey_entry_re = re.compile(
         r'''^[ \t]*\{[ \t]*\r?\n
@@ -317,25 +320,12 @@ def dump_versions(versions: dict) -> str:
     )
 
 
-def parse_versions(content: str) -> dict:
-    """Parse version metadata, ensuring paths is a list of mappings."""
-    versions = parse_yaml(content, versions_path, allow_empty=True)
-    paths = versions.get('paths')
-    if paths is None:
-        paths = list()
-        versions['paths'] = paths
-    if not isinstance(paths, list) or any(not isinstance(entry, dict) for entry in paths):
-        raise Berror(f"B33166 expected 'paths' in {versions_path} to be a list of mappings")
-    return versions
-
-
 def matching_watched_paths(files: set[str]) -> list[str]:
     """Return watched files or directories affected by the supplied filenames."""
     return [
-        watched
-        for watched in watched_paths
-        if watched in files
-        or (watched.endswith('/') and any(name.startswith(watched) for name in files))
+        w
+        for w in watched_paths
+        if w in files or (w.endswith('/') and any(name.startswith(w) for name in files))
     ]
 
 
@@ -376,7 +366,7 @@ def find_berror_dups() -> None:
 def select_signing_keys(state: dict) -> tuple[Key, Key]:
     """Return the active key and the key that must sign the next release."""
     active_key = read_key(state['active_key_id'])
-    parent_code = git_blob(f'HEAD~:{base_lua_path}') or ''
+    parent_code = git_blob(f'HEAD~:{base_lua_path}') or git_blob('HEAD~:hub/base.lua') or ''
     if state.get('previous_key_id') and not code_has_key(parent_code, active_key):
         # HEAD might be amended; its parent must already know the new signer; otherwise use
         # the key that signed its introduction, also for the first ordinary follow-up commit
@@ -568,43 +558,53 @@ def sign_doc(subd: str, filename: str) -> None:
 
 
 def sign_code(file_cver: str | None = None) -> None:
-    """Prepare staged release metadata, then mirror generated values into the worktree."""
-    if file_cver is None:
-        file_cver = b36datetime()
+    """Hash indexed bytes and sign the exact tree text, then mirror generated changes."""
+    file_cver = file_cver or b36datetime()
     if not re.fullmatch('[0-9a-z]{7}', file_cver):
         raise Berror(f"B34290 expected a seven-character base-36 commit date: {file_cver!r}")
-    modified = git_files('diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z')
-    indexed_versions = read_indexed_file(versions_path)
-    if indexed_versions is None:
-        template = read_text(versions_path)  # a missing worktree template is an error
-        versions_mode = '100755' if versions_path.stat().st_mode & stat.S_IXUSR else '100644'
-    else:
-        versions_mode, template = indexed_versions
-    versions = parse_versions(template)
+    modified = git_files('diff', '--cached', '--name-only', '--no-renames', '-z')
     matched = matching_watched_paths(modified)
-    versions['paths'] = [entry for entry in versions['paths'] if entry.get('path') not in matched]
-    versions['paths'].extend({'path': path, 'version': file_cver} for path in matched)
-    # unaffected entries retain their template values, even after an abandoned commit;
-    # repairing stale metadata after changing the staged selection remains a manual operation
+    if not matched:
+        return
+    # HEAD is authoritative: an aborted pre-commit must not give unstaged files new versions
+    previous_text = git_blob(f'HEAD:{tree_path}')
+    if previous_text and previous_text.lstrip().startswith('paths:'):
+        previous_text = None  # rebuild entries for legacy support
+    previous = json.loads(previous_text) if previous_text else {'paths': []}
+    old_paths = {entry['path']: entry for entry in previous['paths']}
+    if file_cver <= old_paths.get('tree.json', {}).get('cver', ''):
+        raise Berror("B80401 commit cver must increase; wait a second or correct the clock")
+    base_changed = 'base/' in matched or not previous_text
+    indexed_base_files = sorted(git_files('ls-files', '-z', '--', 'base/'))
+    if str(base_lua_path) not in indexed_base_files:
+        raise Berror(f"B50280 missing indexed file {base_lua_path}")
+    # the downloader uses these names in URLs and installs them in one directory
+    names = {'tree.json'}
+    for name in indexed_base_files:
+        if re.search(r'[^A-Za-z0-9_./-]', name):
+            raise Berror(f"B80402 base path requires URL escaping: {name!r}")
+        leaf = Path(name).name
+        if leaf in names:
+            raise Berror(f"B80403 conflicting flattened filename {leaf!r}")
+        names.add(leaf)
     prepared = dict()
     worktree_code = None
     pending_key = None
-    if str(base_lua_path) in modified:
-        indexed = read_indexed_file(base_lua_path)
-        if indexed is None:
-            raise Berror(f"B50280 missing indexed file {base_lua_path}")
-        code_mode, code = indexed
-        code = set_base_lua_file_cver(code, file_cver, 'file_cver')
-        worktree_code = set_base_lua_file_cver(read_text(base_lua_path), file_cver, 'file_cver')
-        # Check both editable regions before generating keys or changing repository files.
-        file_pubkeys_table(code)
-        file_pubkeys_table(worktree_code)
+    signing_key = None
+    tree = {'signature': signature_placeholder, 'key_id': previous.get('key_id', ''), 'paths': []}
+    if base_changed:
         if shutil.which('openssl') is None:
             raise Berror("B71974 missing OpenSSL; install via: sudo apt install openssl")
+        code_mode, code = read_indexed_file(base_lua_path)
+        # bridge only: old daemons read this marker even inside its multiline comment;
+        # touch it on every base release so their header and marker cvers still match
+        code = set_base_lua_file_cver(code, file_cver, 'file_cver')
+        worktree_code = set_base_lua_file_cver(read_text(base_lua_path), file_cver, 'file_cver')
+        file_pubkeys_table(code)
+        file_pubkeys_table(worktree_code)
         state = read_or_create_key_state(file_cver)
         active_key, signing_key = select_signing_keys(state)
         if state.get('bootstrap_pending'):
-            # The initial trust root is self-signed; a later release can introduce a pending key.
             code = prepend_file_pubkey(code, active_key)
         else:
             pending_key = get_pending_key(state, file_cver)
@@ -615,20 +615,50 @@ def sign_code(file_cver: str | None = None) -> None:
         if not code_has_key(code, active_key):
             raise Berror("B48906 the release must retain the active public key and its key ID")
         worktree_code = mirror_file_pubkeys(worktree_code, code)
-        entry = next(
-            entry for entry in versions['paths'] if entry.get('path') == str(base_lua_path)
-        )
-        entry.update(signature=sign_string(code, signing_key), key_id=signing_key.key_id)
         prepared[base_lua_path] = (code_mode, code)
-    prepared[versions_path] = (versions_mode, dump_versions(versions))
-    # all parsing and signing have succeeded; write the prepared index blobs in one operation,
-    # then mirror generated values; interruptions during these writes need to be repaired manually
+        tree['key_id'] = signing_key.key_id
+    changed = modified.union(matched, ('tree.json',), map(str, prepared))
+    for path in [*indexed_base_files, 'base/', 'hub/adopt5p.sh', 'hub/', 'tree.json']:
+        if path not in changed and path in old_paths:
+            tree['paths'].append(old_paths[path])
+            continue
+        entry = {'path': path, 'cver': file_cver}
+        if not path.endswith('/') and path != 'tree.json':
+            indexed = prepared.get(Path(path)) or read_indexed_file(Path(path))
+            if indexed is None:
+                continue  # deleted files disappear from the tree
+            content = indexed[1]
+            entry['sha256sum'] = hashlib.sha256(
+                content.encode('utf-8', errors='surrogateescape')
+            ).hexdigest()
+            if path == str(base_lua_path):
+                # older clients still verify the detached signature on the main script
+                entry['signature'] = ''.join(sign_string(content, signing_key).split())
+                entry['key_id'] = signing_key.key_id
+        tree['paths'].append(entry)
+    text = json.dumps(tree, indent=2) + '\n'
+    if signing_key is not None:
+        signature = ''.join(sign_string(text, signing_key).split())
+        signed = text.replace(signature_placeholder, signature, 1)
+        # this prefix must match base.lua parsing; search: tag_tree_json_sig_prefix
+        header = re.match(
+            r'\{\n  "signature": "([A-Za-z0-9+/]+=?=?)",\n  "key_id": "([0-9a-z]{7})",\n',
+            signed[:1024],
+        )
+        if (
+            header is None
+            or len(signature) % 4
+            or header.groups() != (signature, signing_key.key_id)
+            or signed[: header.start(1)] + signature_placeholder + signed[header.end(1) :] != text
+        ):
+            raise Berror("B80444 signed tree does not match base.lua signature format")
+        text = signed
+    prepared[tree_path] = ('100644', text)
     stage_contents(prepared)
-    atomic_write(versions_path, prepared[versions_path][1])
+    atomic_write(tree_path, text)
     if worktree_code is not None:
         atomic_write(base_lua_path, worktree_code)
     if pending_key is not None:
-        # the saved pending ID preserves this rotation request across abandoned commits
         (keys_path / 'rotate_keys_after_signing').unlink(missing_ok=True)
 
 
@@ -641,23 +671,17 @@ def rotate_keys() -> None:
     if pending_id is None and not state.get('bootstrap_pending'):
         return
     committed_code = git_blob(f'HEAD:{base_lua_path}')
-    committed_versions = git_blob(f'HEAD:{versions_path}')
-    if committed_code is None or committed_versions is None:
+    committed_tree = git_blob(f'HEAD:{tree_path}')
+    if committed_code is None or committed_tree is None:
         return
     key = read_key(pending_id or state['active_key_id'])
     if not code_has_key(committed_code, key):
         return
-    versions = parse_versions(committed_versions)
-    entry = next((e for e in versions['paths'] if e.get('path') == str(base_lua_path)), dict())
-    signing_id = entry.get('key_id')
+    tree = json.loads(committed_tree)
+    signing_id = tree.get('key_id')
     signing_ids = {state['active_key_id'], state.get('previous_key_id')} - {None}
-    signature = entry.get('signature')
-    if (
-        not isinstance(signing_id, str)
-        or signing_id not in signing_ids
-        or not isinstance(signature, str)
-        or not signature.strip()
-    ):
+    signature = tree.get('signature')
+    if signing_id not in signing_ids or not signature or signature == signature_placeholder:
         return
     if pending_id is not None:
         state['previous_key_id'] = signing_id

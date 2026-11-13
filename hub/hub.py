@@ -331,7 +331,7 @@ async def async_background_tasks():
     while True:
         if day_count == 0:  # first day
             await asyncio.sleep(20)
-            db.update_base_cver()  # check for new version of 'hub/base.lua'
+            db.update_base_cver()  # check for a new signed 'base/' release
             await asyncio.sleep(15)
             await door.check_for_new_upnpc_client()
             await asyncio.sleep(15)
@@ -437,7 +437,7 @@ class SiteCodeApp:
             await self.app(scope, receive, send)
             return
         scope = dict(scope)
-        # The configured mount is authoritative; a proxy must not add another URL prefix.
+        # the configured mount is authoritative; a proxy must not add another URL prefix
         scope['headers'] = [(k, v) for k, v in scope['headers'] if k != b'x-forwarded-prefix']
         await self.router(scope, receive, send)
 
@@ -574,7 +574,7 @@ def entry_point():
         address_list = net.all_local_ips(conf.get('backend.ip'), ipv6_enclosure='[]')
         logger.info(f"❚ Starting BitBurrow hub")
         logger.info(f"❚   frontend URL: {conf.base_url()}/welcome")
-        logger.info(f"❚   version: {util.read_versions_yaml()['hub/']['version']}")
+        logger.info(f"❚   version: {util.tree_paths()['hub/']['cver']}")
         logger.info(f"❚     details: {version_details}")
         logger.info(f"❚   accounts (admin/manager/user/invite): {counts}")
         for address in address_list:

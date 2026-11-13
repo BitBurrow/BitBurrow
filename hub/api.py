@@ -17,6 +17,7 @@ import re
 import urllib.parse
 from sqlmodel import Field
 from starlette.concurrency import run_in_threadpool
+import starlette.convertors
 from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -35,7 +36,7 @@ active_long_polls = 0
 active_long_polls_lock = asyncio.Lock()
 
 adopt5l_route = '/5l/{subd}'  # download adopt5p.sh  (list of adopt stages in class Base())
-adopt5s_route = '/5s/{subd}'  # download base.lua
+adopt5s_route = '/5s/{subd}'  # bridge endpoint for old daemons
 log_err_route = '/er/{subd}'  # errors from base router
 jsonrpc_route = '/api/v1'
 router = APIRouter()
@@ -79,10 +80,21 @@ def get_file(
 @router.get(adopt5l_route, response_class=PlainTextResponse)
 def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
     subd = lk.sanitize_subd(subd)  # unverified; 'adopt5p.sh' does not contain any secrets
-    expand_braces = (  # for security, these hub_config values are immutable; in alphabetical order
-        lambda s: s.replace('{api_url}', conf.base_url() + jsonrpc_route)
-        .replace('{download_url}', conf.base_url() + adopt5s_route.format(subd=subd))
-        .replace('{log_err_route}', conf.base_url() + log_err_route.format(subd=subd))
+    version, target_xver = db.get_adopt5s_version(subd, adoption=True)
+    hub_url = conf.base_url()
+    base_path = 'base/base.lua'
+    cver = version.cver
+    if not version.other.get('legacy'):
+        paths = util.tree_paths(json.loads(db.get_blob('tree.json', version.cver)))
+        cver = paths[base_path]['cver']
+    install_url = f'{hub_url}/{cver}/{base_path}'
+    download_url = hub_url + adopt5s_route.format(subd=subd)
+    expand_braces = (  # these hub_config values are immutable
+        lambda s: s.replace('{api_url}', hub_url + jsonrpc_route)
+        .replace('{download_url}', download_url)
+        .replace('{install_url}', install_url)
+        .replace('{target_xver}', target_xver)
+        .replace('{log_err_route}', hub_url + log_err_route.format(subd=subd))
         .replace('{ott_filename}', db.ott_filename(subd))
         .replace('{subd}', subd)
     )
@@ -106,8 +118,27 @@ def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
         headers['X-BitBurrow-Signature'] = version.other['signature']  # cryptographic signature
     if version.other and 'key_id' in version.other:
         headers['X-BitBurrow-Key-Id'] = version.other['key_id']  # cver of key used to sign
-    return PlainTextResponse(
-        content=version.code, media_type='text/plain; charset=utf-8', headers=headers
+    return PlainTextResponse(db.get_blob('base/base.lua', version.cver), headers=headers)
+
+
+class CverConvertor(starlette.convertors.StringConvertor):
+    regex = '[0-9][0-9a-z]{6}'  # good through the year 2659; avoid user paths like '/welcome'
+
+
+starlette.convertors.register_url_convertor('is_cver', CverConvertor())  # check if it is a cver
+
+
+@router.get('/{cver:is_cver}/{path:path}')
+def get_adopt5s_download(cver: str, path: str) -> Response:
+    if path != 'tree.json' and not path.startswith('base/'):
+        raise HTTPException(status_code=404)
+    content = db.get_blob(path, cver)
+    if content is None:
+        raise HTTPException(status_code=404)
+    return Response(
+        content=content,
+        media_type='application/json' if path == 'tree.json' else 'application/octet-stream',
+        headers={'Cache-Control': 'public, max-age=31536000, immutable'},
     )
 
 

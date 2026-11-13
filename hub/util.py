@@ -4,6 +4,7 @@ import gzip
 import logging
 import importlib.metadata
 import io
+import json
 import os
 import re
 import stat
@@ -546,12 +547,8 @@ def read_yaml(filename: str) -> object:
         return dict()
 
 
-def read_versions_yaml() -> dict[str, dict]:
-    # 'versions.yaml' is updated at commit time via git_hooks/pre-commit
-    versions_path = os.path.join(project_root_path, 'versions.yaml')
-    data = read_yaml(versions_path)
-    paths = data.get('paths') if isinstance(data, dict) else None
-    if not isinstance(paths, list):
-        logger.error("B10573 'paths' in 'versions.yaml' must be a list")
-        return dict()
-    return {item['path']: item for item in paths}
+def tree_paths(tree: dict | None = None) -> dict[str, dict]:
+    if tree is None:
+        with open(os.path.join(project_root_path, 'tree.json'), 'rb') as stream:
+            tree = json.load(stream)
+    return {entry['path']: entry for entry in tree['paths']}

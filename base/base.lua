@@ -48,12 +48,13 @@ local function hub_config(key, default)
 end
 
 local api_url = hub_config('api_url')
-local download_url = hub_config('download_url')
 local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
 local lua_exe = hub_config('lua_exe', '/usr/bin/lua')
-local file_cver = '0toft5d'  -- updated at commit time via git_hooks/pre-commit
+--[[ (dummy file_cver for migration only)
+local file_cver = '0togg6a'
+]]
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -1842,7 +1843,7 @@ local function decode_json(body, max_bytes, max_depth)
     if type(body) ~= 'string' or (max_bytes and #body > max_bytes) then return nil end
     -- we could consider checking nesting and item count here for routers with minimal RAM
     local ok, value, pos, err = pcall(json.decode, body, 1, json.null)
-    -- dkjson decodes one value; require the complete response to contain only that value.
+    -- dkjson decodes one value; require the complete response to contain only that value
     if not ok or err or body:find('%S', pos) then return nil end
     if max_depth then
         local function within_depth(item, depth)
@@ -1964,7 +1965,8 @@ local function clear_pending_task_result()
     local updated_config = copy_table(base_config)
     updated_config.pending_task_id = nil
     updated_config.pending_task_method = nil
-    updated_config.pending_update_state = nil  -- used to track actual install of a new version
+    updated_config.pending_update_state = nil
+    updated_config.pending_update_target = nil
     if not save_base_config(updated_config) then return nil end
     base_config = updated_config
     return true
@@ -2042,37 +2044,41 @@ if cli_verb == 'daemonize' then
         fail_early("B46279 daemon requires the service lock on fd 9; start through the service")
     end
 end
-local file_xver
+local file_xver, install_dir, active_based_dir, legacy_running_path
+local function valid_xver(value)
+    return type(value) == 'string' and #value >= 12 and value:sub(8, 8) == '-'
+            and value:match('^[0-9a-z]+%-[0-9a-z]+$')
+end
 if cli_verb == 'install' or cli_verb == 'daemonize' or cli_verb == 'version' then
     local problem
     base_config, problem = read_base_config()
     if not base_config and cli_verb ~= 'version' then fail_early(problem) end
     base_config = base_config or {}
-    file_xver = base_config.file_xver
-    if not file_xver or file_xver:sub(1, 7) ~= file_cver then
-        -- normally when cli_verb == 'install'
-        local download_version = hub_config('file_xver', '')
-        if download_version ~= '' then
-            if #download_version < 12 or download_version:sub(1, 8) ~= file_cver .. '-'
-                    or not download_version:match('^[0-9a-z]+%-[0-9a-z]+$') then
-                log_warning("B47135 invalid installation file_xver: " .. download_version)
-            else
-                file_xver = download_version
+    local resolved = run_command('readlink -f ' .. shell_quote(running_path), true, true)
+    if not resolved or resolved:sub(1, 1) ~= '/' then
+        fail_early("B47135 cannot resolve running script: " .. running_path)
+    end
+    running_path = resolved
+    active_based_dir = dirname(running_path) .. '/'
+    if cli_verb == 'install' then
+        file_xver = hub_config('target_xver')
+    else
+        file_xver = basename(dirname(running_path))
+        install_dir = dirname(dirname(running_path))
+        if not valid_xver(file_xver) and basename(running_path) == bbsubd .. '.lua' then
+            -- bridge version only: the old updater installed a flat file and saved its xver in
+            -- base.conf; successful migration replaces the flat file with a link for the old wrapper
+            legacy_running_path = running_path
+            install_dir = dirname(running_path) .. '/' .. subd
+            local source = read_text_file(running_path, false, true, 654321) or ''
+            local marker = source:match("\nlocal file_cver = '([0-9a-z]+)'")
+            file_xver = base_config.file_xver
+            if not valid_xver(file_xver) or file_xver:sub(1, 7) ~= marker then
+                file_xver = marker and marker .. '-aaaa'
             end
         end
     end
-    if not file_xver or file_xver == '' then
-        if cli_verb ~= 'version' then
-            log_error("B62917 " .. base_config_path .. " is missing file_xver")
-        end
-        file_xver = cli_verb == 'version' and file_cver or file_cver .. '-aaaa'
-    elseif file_xver:sub(1, 7) ~= file_cver then
-        if cli_verb ~= 'version' then
-            log_error("B50795 version mismatch: '" .. file_cver .. "' not in '"
-                .. file_xver .. "'")
-        end
-        file_xver = cli_verb == 'version' and file_cver or file_cver .. '-aaaa'
-    end
+    if not valid_xver(file_xver) then fail_early("B62917 cannot determine executing xver") end
 end
 if cli_verb == nil then
     log_error("a verb is required")
@@ -2185,8 +2191,7 @@ local function remove_temporary_installer()
     local relative_path = running_path:sub(#tmp_dir + 1)
     local temp_name = relative_path:match('^(bbbase%.[^/]+)/base%.lua$')
     if not temp_name then return end
-    local temp_path = tmp_dir .. temp_name
-    remove_paths(running_path, temp_path .. '/headers', temp_path)
+    remove_paths(running_path, tmp_dir .. temp_name)
 end
 
 local function init_service_wrapper_text(lua_path)
@@ -2257,7 +2262,6 @@ local function install_init_service(lua_path)
     -- return nil on failure, true after successful install or reinstall
     local init_path = '/etc/init.d/' .. bbsubd
     if not install_service_wrapper_file(init_path, init_service_wrapper_text(lua_path), '0755') then return nil end
-    if not file_copy(running_path, lua_path, '0644') then return nil end
     if not run_command(shell_quote(init_path) .. ' enabled', true, true) then
         if not run_command(shell_quote(init_path) .. ' enable') then
             return nil
@@ -2287,7 +2291,6 @@ local function install_systemd_service(lua_path)
             or not install_service_wrapper_file(service_path, service_text, '0644') then
         return nil
     end
-    if not file_copy(running_path, lua_path, '0644') then return nil end
     remove_path('/etc/init.d/' .. bbsubd)
     if not run_command('systemctl daemon-reload') then return nil end
     if not run_command('systemctl is-enabled ' .. shell_quote(service_name), true, true) then
@@ -2896,11 +2899,17 @@ local function send_pending_task_result()
     local task_method = base_config.pending_task_method
     if task_id == nil and task_method == nil then return true end
     if not task_id or task_id == '' or task_method ~= 'update'
-            or base_config.pending_update_state ~= 'installed' then
+            or (base_config.pending_update_state ~= 'installed'
+                and base_config.pending_update_state ~= 'prepared') then
         log_warning("B81916 invalid pending task result; clearing it")
         return clear_pending_task_result()
     end
-    if not send_task_result(task_id, task_method, true, 'ok') then return nil end
+    local target = base_config.pending_update_target
+    local installed = not target or (target == file_xver and not legacy_running_path)
+    if not send_task_result(task_id, task_method, installed,
+                installed and 'ok' or 'update interrupted before activation') then
+        return nil
+    end
     return clear_pending_task_result()
 end
 
@@ -2997,7 +3006,7 @@ do
             address, port = value:match('^([^:]+):(%d+)$')
             wanted_family = 4
         end
-        -- get_conf() supplies a public IP; numeric endpoints avoid DNS blocking HTTPS work.
+        -- get_conf() supplies a public IP; numeric endpoints avoid DNS blocking HTTPS work
         return ip_words(address) == wanted_family and #port <= 5 and integer(port, 1, 65535)
     end
     local function validate_conf(text)
@@ -3097,7 +3106,7 @@ do
         end
         local conf, settings = validate_conf(text)
         if not conf then return nil, settings end
-        -- Stable ordering avoids rewriting base.conf solely because table iteration order changed.
+        -- stable ordering avoids rewriting base.conf solely because table iteration order changed
         local saved_json = json.encode(conf, {
             keyorder = {
                 'Interface', 'Peers', 'Name', 'PrivateKey', 'Address', 'ListenPort', 'MTU',
@@ -3225,7 +3234,7 @@ do
             wg_status = nil; return nil, problem
         end
         -- IPv4 is now configured and up; respect the interface's IPv6 setting, without changing
-        -- global/default/LAN/WAN sysctls. The value of all.disable_ipv6 is not a capability test.
+        -- global/default/LAN/WAN sysctls. The value of all.disable_ipv6 is not a capability test
         local disabled = read_text_file('/proc/sys/net/ipv6/conf/' .. conf.Interface.Name
             .. '/disable_ipv6', true)
         local ipv6_problem
@@ -4565,20 +4574,10 @@ end
 --     return true
 -- end
 
-local function http_header_value(headers, wanted_name)
-    local result
-    local wanted_lower = wanted_name:lower()
-    for line in headers:gmatch('[^\r\n]+') do
-        local name, value = line:match('^([^:]+):[ \t]*(.-)[ \t]*$')
-        if name and name:lower() == wanted_lower then result = value end
-    end
-    return result
-end
-
 local function verify_file_signature(staged_path, signature, key_id)
     -- return true iff successful, string error message otherwise
-    if not key_id or key_id == '' then return "missing key-id header" end
-    if not signature or signature == '' then return "missing signature header" end
+    if type(key_id) ~= 'string' or key_id == '' then return "missing key_id" end
+    if type(signature) ~= 'string' or signature == '' then return "missing signature" end
     -- trust only running program's keys because only their signature was verified with a prior pubkey
     local pubkey = nil
     for _, entry in ipairs(file_pubkeys) do
@@ -4630,7 +4629,7 @@ local function rce(task_args)
         return false, "B41362 missing signed document"
     end
     local sequence_id = task_args.sequence_id
-    local previous = base_config.rce_sequence_id or file_cver
+    local previous = base_config.rce_sequence_id or file_xver:sub(1, 7)
     if type(sequence_id) ~= 'string' or #sequence_id ~= 7
             or not sequence_id:match('^[0-9a-z]+$')
             or #previous ~= 7 or not previous:match('^[0-9a-z]+$')
@@ -4688,6 +4687,186 @@ local function rce(task_args)
     return ok, output
 end
 
+local update, cleanup_based_dirs
+do
+    local placeholder = 'y5Tf2ghvd2jTi9m21geAP'
+    local max_bytes = 654321
+    local cleaned = false
+    local download_root = (api_url:gsub('/api/v1$', ''))
+    local function tree_paths(tree)
+        local paths = {}
+        for _, entry in ipairs(tree.paths) do paths[entry.path] = entry end
+        return paths
+    end
+    local function file_hash(path)
+        local quoted = shell_quote(path)
+        local output = run_command('sha256sum ' .. quoted, false, true)
+        if output then return output:match('^%x+') end
+        output = run_command('openssl dgst -sha256 ' .. quoted, false, true)
+        return output and output:match('%x+$')
+    end
+    local function fetch(path, version, destination)
+        remove_path(destination)
+        local url = download_root .. '/' .. version .. '/' .. path
+        return download_file('curl -f --max-time 120 ' .. shell_quote(url), destination)
+    end
+    local function verify_tree(body)
+        -- this prefix must match the way devtool.py creates it; search: tag_tree_json_sig_prefix
+        local first, signature, after, key_id = body:sub(1, 1024):match(
+            '^{\n  "signature": "()([A-Za-z0-9+/]+=?=?)()",\n'
+            .. '  "key_id": "([0-9a-z]+)",\n'
+        )
+        if not first or #key_id ~= 7 then return "invalid tree signature prefix" end
+        local path = make_temp_path(nil, true)
+        if not path then return "cannot create tree verification file" end
+        local unsigned = body:sub(1, first - 1) .. placeholder .. body:sub(after)
+        local result = write_text_file(path, unsigned, '0600')
+                and verify_file_signature(path, signature, key_id)
+        remove_path(path)
+        return result or "cannot write tree verification file"
+    end
+    local function publish_link(path, target)
+        local temporary = dirname(path) .. '/' .. bbsubd .. '.base_new.lua'
+        remove_path(temporary)
+        if not run_command('ln -s ' .. shell_quote(target) .. ' ' .. shell_quote(temporary),
+                    true, true) then
+            return nil
+        end
+        local ok = os.rename(temporary, path)
+        if not ok then remove_path(temporary) end
+        return ok
+    end
+    update = function(task_id, target_xver, bootstrap)
+        if not valid_xver(target_xver) then return false, "B80430 invalid target_xver" end
+        if target_xver == file_xver and not bootstrap and not legacy_running_path then
+            return true, 'ok'
+        end
+        local target_cver = target_xver:sub(1, 7)
+        if target_cver < file_xver:sub(1, 7) then return false, "B80431 update would downgrade" end
+        local new_based_dir = install_dir .. '/' .. target_xver .. '/'
+        local entry_point = install_dir .. '/base.lua'
+        if bootstrap and run_command('readlink -f ' .. shell_quote(entry_point), true, true)
+                == new_based_dir .. 'base.lua' then
+            return true, 'ok'
+        end
+        -- keep unverified downloads out of persistent release storage
+        local tree_path = make_temp_path(nil, true)
+        if not tree_path then return false, "B80442 cannot create tree staging file" end
+        local body
+        for _ = 1, 3 do
+            if fetch('tree.json', target_cver, tree_path) then
+                body = read_text_file(tree_path, false, true, max_bytes)
+                if body and #body >= 10 then break end
+            end
+            body = nil
+        end
+        remove_path(tree_path)
+        if not body then return false, "B80434 tree download failed after three attempts" end
+        -- verify signature BEFORE decode_json() to protect against compromised hub
+        if not bootstrap then
+            local verified = verify_tree(body)
+            if verified ~= true then
+                return false, "B80436 bad tree signature: " .. verified
+            end
+        end
+        local tree = decode_json(body, max_bytes, 6)
+        if not json_container(tree, 'object') then
+            return false, "B80435 invalid 'tree.json' format"
+        end
+        local paths = tree_paths(tree)
+        if not paths['base/base.lua'] or not paths['base/'] then
+            remove_path(tree_path)
+            return false, "B69764 missing required paths in tree.json"
+        end
+        if paths['base/'].cver ~= target_cver then
+            remove_path(tree_path)
+            return false, "B80441 'base/' cver " .. paths['base/'].cver .. ' != ' .. target_cver
+        end
+        if not mkdir(install_dir, '0700') or not mkdir(new_based_dir, '0700') then
+            return false, "B80432 cannot create release directory"
+        end
+        if not write_text_file(new_based_dir .. 'tree.json', body, '0644') then
+            return false, "B80443 cannot save release tree"
+        end
+        local old_body = read_text_file(active_based_dir .. 'tree.json', true, true, max_bytes)
+        local old_ok, old_paths = pcall(tree_paths, decode_json(old_body, max_bytes))
+        for _, entry in ipairs(tree.paths) do
+            local path = entry.path
+            if path:sub(1, 5) == 'base/' and path:sub(-1) ~= '/' then
+                local name = basename(path)
+                local destination = new_based_dir .. name
+                local source = active_based_dir .. name
+                local old = old_ok and old_paths[path]
+                local reuse = bootstrap or (old and old.sha256sum == entry.sha256sum)
+                local ready = reuse and is_readable(source) and file_copy(source, destination, '0644')
+                        and file_hash(destination) == entry.sha256sum
+                if not ready then
+                    for _ = 1, 3 do
+                        if fetch(path, entry.cver, destination)
+                                and file_hash(destination) == entry.sha256sum then
+                            ready = true
+                            break
+                        end
+                    end
+                end
+                if not ready then
+                    remove_path(destination)
+                    return false, "B80437 download or hash check failed: " .. path
+                end
+                if path:sub(-4) == '.lua' then
+                    local command = 'STAGED_PATH=' .. shell_quote(destination) .. ' '
+                            .. shell_quote(lua_exe) .. ' -e '
+                            .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
+                    if #read_text_file(destination, true, true, max_bytes) <= 3
+                            or not run_command(command, true) then
+                        remove_path(destination)
+                        return false, "B80438 invalid Lua file: " .. path
+                    end
+                end
+                if not chmod(destination, '0644') then return false, "B80439 chmod failed" end
+            end
+        end
+        if task_id then
+            local updated_config = copy_table(base_config)
+            updated_config.pending_task_id = task_id
+            updated_config.pending_task_method = 'update'
+            updated_config.pending_update_state = 'prepared'
+            updated_config.pending_update_target = target_xver
+            if not save_base_config(updated_config) then
+                return false, "B33348 cannot save update state"
+            end
+            base_config = updated_config
+        end
+        if not publish_link(entry_point, new_based_dir .. 'base.lua') then
+            if task_id then clear_pending_task_result() end
+            return false, "B57225 cannot activate release symlink"
+        end
+        if legacy_running_path and not publish_link(legacy_running_path, entry_point) then
+            if task_id then clear_pending_task_result() end
+            return false, "B80440 cannot redirect legacy service path"
+        end
+        if bootstrap then return true, 'ok' end
+        log_info("update installed; restarting")
+        cleanup_and_exit(0)
+    end
+    cleanup_based_dirs = function()
+        if cleaned or legacy_running_path then return end
+        local output = run_command('for path in ' .. shell_quote(install_dir) .. '/*; do '
+            .. 'if [ -d "$path" ] && [ ! -L "$path" ]; then '
+            .. 'printf "%s\\n" "${path##*/}"; fi; done', false, true)
+        if not output then return end
+        cleaned = true
+        for name in output:gmatch('[^\r\n]+') do
+            if valid_xver(name) and name < file_xver then
+                local path = shell_quote(install_dir .. '/' .. name)
+                if not run_command('rm -rf ' .. path, true, true) then
+                    cleaned = false
+                end
+            end
+        end
+    end
+end
+
 
 local function handle_task(task_id, task_method, task_args)
     -- return true iff task was handled or no task was present -and- output
@@ -4706,104 +4885,8 @@ local function handle_task(task_id, task_method, task_args)
         return rce(task_args)
     end
     if task_method == 'update' then
-        local requested_path = json_container(task_args, 'object') and task_args.path or nil
-        if requested_path ~= 'hub/bbbased.lua' and requested_path ~= 'hub/base.lua' then
-            return false, "B63317 invalid update path: " .. tostring(requested_path)
-        end
-        local running_path = arg and arg[0]
-        if not running_path or not running_path:match('^/') then
-            return false, "B09761 invalid arg[0]: " .. tostring(running_path)
-        end
-        local staged_path = make_temp_path(dirname(running_path), nil, 'update')
-        if not staged_path then
-            return false, "B19042 cannot create temp file"
-        end
-        local header_path = make_temp_path(dirname(running_path), nil, 'update')
-        if not header_path then
-            remove_path(staged_path)
-            return false, "B89951 cannot create temp file"
-        end
-        local command = 'curl -f --max-time 120 --dump-header '
-                .. shell_quote(header_path) .. ' '
-                .. shell_quote(download_url)
-        if not download_file(command, staged_path) then
-            remove_paths(staged_path, header_path)
-            return false, "B18136 download failed"
-        end
-        local response_headers = read_text_file(header_path, false, true)
-        remove_path(header_path)
-        local new_file_xver = response_headers
-                and http_header_value(response_headers, 'x-bitburrow-file-version') or nil
-        local signature = response_headers
-                and http_header_value(response_headers, 'x-bitburrow-signature') or nil
-        local key_id = response_headers
-                and http_header_value(response_headers, 'x-bitburrow-key-id') or nil
-        -- authenticate the downloaded file *before* exposing its contents to Lua's parser
-        local verified = verify_file_signature(staged_path, signature, key_id)
-        local key_id_disp = 'key_id=' .. (key_id or "(missing)")
-        if verified ~= true then
-            remove_path(staged_path)
-            return false, "B47081 bad code signature (" .. key_id_disp .. '): ' .. verified
-        end
-        local staged_code = read_text_file(staged_path, false, true)
-        local new_file_cver = staged_code
-                and staged_code:match('\nlocal[ \t]+file_cver[ \t]*=[ \t]*\'([^\']+)\'') or nil
-        local invalid_reason =
-                not response_headers and 'unreadable response headers'
-                or not new_file_xver and 'missing file-version header'
-                or new_file_xver == '' and 'empty file-version header'
-                or #new_file_xver < 12 and 'invalid file-version length'
-                or new_file_xver:sub(8, 8) ~= '-' and 'invalid file-version separator'
-                or not new_file_xver:match('^[0-9a-z]+%-[0-9a-z]+$') and 'invalid file-version chars'
-                or not staged_code and 'unreadable'
-                or #staged_code < 1000 and 'too short'
-                or staged_code:sub(1, 18) ~= '#!/usr/bin/lua\n\n--' and 'wrong header'
-                or not new_file_cver and 'missing file_cver'
-                or #new_file_cver ~= 7 and 'invalid file_cver length'
-                or new_file_cver:find('[^0-9a-z]') and 'invalid file_cver chars'
-                or new_file_xver:sub(1, 7) ~= new_file_cver and 'file-version mismatch'
-                or new_file_cver < file_cver and 'downgrade'
-        if not invalid_reason then
-            local parse_attempt = 'STAGED_PATH=' .. shell_quote(staged_path) .. ' '
-                    .. shell_quote(lua_exe) .. ' -e '
-                    .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
-            local parse_ok, parse_output, parse_exit_code = run_command(parse_attempt, true, true)
-            if not parse_ok then
-                local parse_error = parse_output and parse_output ~= '' and parse_output
-                        or parse_exit_code and 'exit code ' .. tostring(parse_exit_code)
-                        or 'no error output'
-                invalid_reason = 'parse failed: ' .. displayable(parse_error, 170)
-            end
-        end
-        if invalid_reason then
-            remove_path(staged_path)
-            return false, "B77812 bad download (" .. invalid_reason .. ")"
-        end
-        local updated_config = copy_table(base_config)
-        updated_config.pending_task_id = task_id
-        updated_config.pending_task_method = task_method
-        updated_config.pending_update_state = 'prepared'
-        -- keep the confirmed file_xver until successful run_command('mv')
-        if not save_base_config(updated_config) then
-            remove_path(staged_path)
-            return false, "B33348 cannot save update state"
-        end
-        chmod(staged_path, get_mode(running_path))
-        if not run_command('mv ' .. shell_quote(staged_path) .. ' ' .. shell_quote(running_path)) then
-            remove_path(staged_path)
-            if not save_base_config(base_config) then
-                log_error("B62066 cannot restore base.conf after mv failure")
-            end
-            return false, "B57225 mv failed"
-        end
-        updated_config.file_xver = new_file_xver
-        updated_config.pending_update_state = 'installed'  -- 'mv' was successful
-        if not save_base_config(updated_config) then
-            log_error("B97163 cannot mark update as installed")  -- update task will probably fail
-        end
-        base_config = updated_config
-        log_info("update installed; restarting")
-        cleanup_and_exit(0)  -- supervisor will respawn
+        local target_xver = json_container(task_args, 'object') and task_args.target_xver
+        return update(task_id, target_xver, false)
     end
     if task_method == 'discover_upnp' then
         local pcap_base64 = json_container(task_args, 'object') and task_args.pcap or nil
@@ -4839,7 +4922,7 @@ end
 local function do_ping(on_authenticated)
     -- return the status response, or nil on failure
     -- report an earlier update before accepting another task, including during adoption recovery
-    local pending_id = base_config.pending_update_state == 'installed' and base_config.pending_task_id
+    local pending_id = base_config.pending_task_id
     local pending_ready = flush_pending_task_result()
     log_debug("starting ping cycle")
     local request_body = build_ping_request()
@@ -4850,6 +4933,7 @@ local function do_ping(on_authenticated)
     local result = jsonrpc_result(response_body)
     if result and result.status == 'ok' then
         if on_authenticated then on_authenticated() end
+        cleanup_based_dirs()
         log_info("ping succeeded with status " .. displayable(result.status, 60))
         local id, method = result.task_id, result.task_method
         if type(id) == 'string' and type(method) == 'string' then
@@ -4921,23 +5005,26 @@ if cli_verb == 'install' then
         close_log()
         os.exit(13)
     end
-    -- flock is the only 'install' prerequisite, but it's probably already installed
-    if not install_one_of('flock util-linux', 'flock') then
+    if not install_one_of('flock util-linux', 'flock')
+            or not install_one_of('curl', 'curl')
+            or not install_one_of('openssl openssl-util', 'openssl') then
         close_log()
         os.exit(4)
     end
-    local install_dir = find_install_dir()
-    local install_path = install_dir and (install_dir .. bbsubd .. '.lua') or nil
-    local exit_code = 99
-    if install_path and install_daemon_service(install_path) then
+    local parent = find_install_dir()
+    local installed, problem
+    if parent and mkdir(bbsubd_tmp_dir, '0700') then
+        install_dir = parent .. subd
+        installed, problem = update(nil, file_xver, true)
+        if installed then installed = install_daemon_service(install_dir .. '/base.lua') end
+    end
+    if installed then
         log_info("B32020 successfully installed; exiting")
-        exit_code = 0
     else
-        log_error("B21488 cannot install as a service wrapper")
-        exit_code = 4
+        log_error("B21488 cannot install as a service: " .. tostring(problem or 'wrapper failed'))
     end
     close_log()
-    os.exit(exit_code)
+    os.exit(installed and 0 or 4)
 end
 if cli_verb ~= 'daemonize' then
     log_error("B38333 cli_verb == " .. cli_verb)
@@ -4973,14 +5060,17 @@ end
 --
 
 mkdir(config_dir, '0700')
--- service wrapper holds the daemon lock before Lua reads base.conf or writes this version
-if base_config.file_xver ~= file_xver then
-    base_config.file_xver = file_xver
-    if not save_base_config(base_config) then
-        log_error("B79420 cannot save file_xver; continuing startup")
+restore_wg()  -- restore connectivity before trying the bridge download
+if legacy_running_path then
+    local ran, ok, problem = pcall(update, nil, file_xver, false)
+    if not ran or not ok then
+        local reason = ran and problem or ok
+        log_error("B79420 bridge migration failed; continuing pings: " .. tostring(reason))
     end
+elseif base_config.file_xver then
+    base_config.file_xver = nil
+    if not save_base_config(base_config) then log_error("B80429 cannot remove legacy file_xver") end
 end
-restore_wg()  -- use saved settings before any hub API call
 if not ensure_auth_keys() then
     log_error("B60585 cannot continue without key files; exiting")
     cleanup_and_exit(5)
