@@ -53,7 +53,7 @@ local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
 local lua_exe = hub_config('lua_exe', '/usr/bin/lua')
-local file_cver = '0todr1g'  -- updated at commit time via git_hooks/pre-commit
+local file_cver = '0tofqry'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -4706,7 +4706,7 @@ local function handle_task(task_id, task_method, task_args)
     end
     if task_method == 'update' then
         local requested_path = json_container(task_args, 'object') and task_args.path or nil
-        if requested_path ~= 'hub/bbbased.lua' then
+        if requested_path ~= 'hub/bbbased.lua' and requested_path ~= 'hub/base.lua' then
             return false, "B63317 invalid update path: " .. tostring(requested_path)
         end
         local running_path = arg and arg[0]
