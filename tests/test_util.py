@@ -7,7 +7,7 @@ import hub.util as util
 @pytest.mark.parametrize('scheme', ['http', 'https'])
 def test_adopt5c_code_prefixes(scheme):
     code = util.adopt5c_shell_code('x' * 44, 'test-ott', f'{scheme}://hub.example.org/5l/test')
-    lua_path = Path(util.project_root_path) / 'hub/bbbased.lua'
+    lua_path = Path(util.project_root_path) / 'hub/base.lua'
     in_prefixes = False
     prefixes = []
     for line in lua_path.read_text(encoding='utf-8').splitlines():

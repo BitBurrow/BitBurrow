@@ -35,7 +35,7 @@ active_long_polls = 0
 active_long_polls_lock = asyncio.Lock()
 
 adopt5l_route = '/5l/{subd}'  # download adopt5p.sh  (list of adopt stages in class Base())
-adopt5s_route = '/5s/{subd}'  # download bbbased.lua
+adopt5s_route = '/5s/{subd}'  # download base.lua
 log_err_route = '/er/{subd}'  # errors from base router
 jsonrpc_route = '/api/v1'
 router = APIRouter()
@@ -99,7 +99,7 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
 def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
     ip_address = request.client.host if request.client else '(unknown)'
     version, fv = db.get_adopt5s_version(subd)  # raises Berror if subd not valid
-    logger.info(f"B76218 base {subd} completed adopt5s from {ip_address} (bbbased {fv})")
+    logger.info(f"B76218 base {subd} completed adopt5s from {ip_address} (base {fv})")
     headers = {'Cache-Control': 'no-store'}
     headers['X-BitBurrow-File-Version'] = fv
     if version.other and 'signature' in version.other:
@@ -128,7 +128,7 @@ async def log_error(subd: str, request: Request) -> Response:
             'curl: (28)',
         )
         if disp[1:6] == '64445' and any(marker in message for marker in timeout_markers):
-            # Berror code 64445 in bbbased.lua is a ping failure of some sort
+            # Berror code 64445 in base.lua is a ping failure of some sort
             db.record_long_poll_timeout(subd)
             return  # already logged above; don't log the "ping rejected: ..."
     else:

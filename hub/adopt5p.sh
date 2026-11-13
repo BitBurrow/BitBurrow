@@ -22,7 +22,7 @@ HUB_CONFIG_EOF
 
 packager_exe=''
 temp_path=''
-bbbased_path=''
+base_lua_path=''
 header_path=''
 lua_exe=''
 
@@ -170,14 +170,14 @@ packager() {
 
 make_temp_path() {
     # temp directory is later removed in cleanup_temp_path()
-    if temp_path=$(mktemp -d "${TMPDIR:-/tmp}/bbbased.XXXXXX" 2>/dev/null) &&
+    if temp_path=$(mktemp -d "${TMPDIR:-/tmp}/bbbase.XXXXXX" 2>/dev/null) &&
             [ -d "$temp_path" ]; then
         return 0
     fi
     temp_path=''
     for attempt in 1 2 3; do
         if IFS= read -r suffix 2>/dev/null < /proc/sys/kernel/random/uuid; then
-            candidate="${TMPDIR:-/tmp}/bbbased.$suffix"
+            candidate="${TMPDIR:-/tmp}/bbbase.$suffix"
         else
             break
         fi
@@ -192,8 +192,8 @@ make_temp_path() {
 }
 
 cleanup_temp_path() {
-    if [ -n "$bbbased_path" ]; then
-        rm -f "$bbbased_path" "$header_path" 2>/dev/null || true
+    if [ -n "$base_lua_path" ]; then
+        rm -f "$base_lua_path" "$header_path" 2>/dev/null || true
     fi
     if [ -n "$temp_path" ]; then
         rmdir "$temp_path" 2>/dev/null || true
@@ -205,7 +205,7 @@ sleep 1; echo "" >&2  # clean separation from curl output
 echo "" >&2  # blank line
 echo "installing BitBurow ..." >&2
 make_temp_path || exit 1
-bbbased_path="$temp_path/bbbased.lua"
+base_lua_path="$temp_path/base.lua"
 header_path="$temp_path/headers"
 trap cleanup_temp_path 0
 find_packager_exe || true
@@ -278,7 +278,7 @@ fi
 loop_count=0
 file_xver=''
 while [ "$loop_count" -le 20 ]; do
-    if download "$(hub_config download_url)" "$bbbased_path" && [ -s "$bbbased_path" ]; then
+    if download "$(hub_config download_url)" "$base_lua_path" && [ -s "$base_lua_path" ]; then
         file_xver=$(awk '
             $1 ~ /^HTTP\// { version = "" }
             tolower($1) == "x-bitburrow-file-version:" { version = $2 }
@@ -286,20 +286,20 @@ while [ "$loop_count" -le 20 ]; do
         ' "$header_path" 2>/dev/null) || file_xver=''
         break  # a successful download is enough; version metadata is optional
     fi
-    rm -f "$bbbased_path"
+    rm -f "$base_lua_path"
     sleep 75
     loop_count=$((loop_count + 1))
 done
 
 ### run Lua script
-if [ -s "$bbbased_path" ]; then
+if [ -s "$base_lua_path" ]; then
     hub_config_data="$hub_config_data
 file_xver=$file_xver
 lua_exe=$lua_exe
 "
-    echo "running $lua_exe $bbbased_path install" >&2
+    echo "running $lua_exe $base_lua_path install" >&2
     run_as_root env HUBCONF="$hub_config_data" TMPDIR="${TMPDIR:-/tmp}" \
-        "$lua_exe" "$bbbased_path" install
+        "$lua_exe" "$base_lua_path" install
 else
     log_error "B29909 cannot download $(hub_config download_url)"
     exit 1

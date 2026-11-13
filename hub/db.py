@@ -414,7 +414,7 @@ class Platform(enum.StrEnum):
 
 any_platform = (Platform.INIT, Platform.SYSTEMD, Platform.WINDOWS, Platform.MACOS)
 default_xver = '0000000-aaaa'
-bbbased_path = 'hub/bbbased.lua'
+base_lua_path = 'hub/base.lua'
 
 
 class Base(SQLModel, table=True):
@@ -432,7 +432,7 @@ class Base(SQLModel, table=True):
     ott_id: int | None = Field(foreign_key='loginsession.id', default=None)  # one-time token
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='bases')
-    file_xver: str = default_xver  # last confirmed bbbased.lua version
+    file_xver: str = default_xver  # last confirmed base.lua version
     next_file_xver: str = ''  # set on adopt5s; '' means no update in progress
     update_deadline: DateTime = DateTime(1970, 1, 1, tzinfo=TimeZone.utc)
     platform: Platform | None = None
@@ -456,8 +456,8 @@ class Base(SQLModel, table=True):
         * adopt5k OTT written to /tmp
         * adopt5l "adopt5p.sh" downloaded
         * adopt5p "adopt5p.sh" launched
-        * adopt5s "bbbased.lua" downloaded
-        * adopt5w "bbbased.lua" launched
+        * adopt5s "base.lua" downloaded
+        * adopt5w "base.lua" launched
         * adopt6c OTT verified; auth_pubkey from base router accepted
         * adopt6e OTT invalidated on hub
         """
@@ -1103,7 +1103,7 @@ def parse_os_release(text: object) -> dict[str, str]:
 
 
 ###
-### DB table BasedVer - copies and metadata of 'bbbased.lua'
+### DB table BasedVer - copies and metadata of 'base.lua'
 ###
 
 
@@ -1136,12 +1136,12 @@ class BasedVer(SQLModel, table=True):
         return f'{self.cver}-{test_levels}'
 
 
-def update_bbbased_version() -> None:
-    """Add bbbased_path from disk to DB if not yet indexed."""
+def update_base_cver() -> None:
+    """Add base_lua_path from disk to DB if not yet indexed."""
     paths = util.read_versions_yaml()
-    cver = paths[bbbased_path]['version']
+    cver = paths[base_lua_path]['version']
     with Session(engine) as session:
-        path_version = f"{bbbased_path} version {cver}"
+        path_version = f"{base_lua_path} version {cver}"
         statement = select(BasedVer.cver).where(BasedVer.cver > cver).limit(1)
         newer_cver = session.exec(statement).first()
         if newer_cver is not None:
@@ -1151,7 +1151,7 @@ def update_bbbased_version() -> None:
         statement = select(BasedVer).where(BasedVer.cver == cver)
         if session.exec(statement).one_or_none() is not None:  # version already exists in DB
             return
-        file_path = os.path.join(util.project_root_path, bbbased_path)
+        file_path = os.path.join(util.project_root_path, base_lua_path)
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 code = f.read()
@@ -1161,29 +1161,29 @@ def update_bbbased_version() -> None:
         logger.info(f"B96927 indexing new {path_version}")
         other = {
             k: v
-            for k, v in paths[bbbased_path].items()
+            for k, v in paths[base_lua_path].items()
             if k not in ('path', 'version', 'signature')
         }
-        if 'signature' in paths[bbbased_path]:  # strip whitespace so it can be sent in HTML header
-            other['signature'] = re.sub(r'\s+', '', paths[bbbased_path]['signature'])
+        if 'signature' in paths[base_lua_path]:  # strip whitespace so it can be sent in HTML header
+            other['signature'] = re.sub(r'\s+', '', paths[base_lua_path]['signature'])
         session.add(BasedVer(cver=cver, code=code, other=other))
         session.commit()
 
 
-def check_bbbased_test_levels() -> None:
-    """Log errors if no version of bbbased is tested. Normally run 5 minutes after startup."""
+def check_base_test_levels() -> None:
+    """Log errors if no base version is tested. Normally run 5 minutes after startup."""
     with Session(engine) as session:
         statement = select(BasedVer).order_by(BasedVer.cver.desc()).limit(1)
         bv: BasedVer = session.exec(statement).one_or_none()  # *latest* version
         if bv is None:
-            logger.error(f"B53565 cannot find a bbbased version")  # should never happen
+            logger.error(f"B53565 cannot find a base version")  # should never happen
             return
         for p in Platform:
             if session.exec(select(Base.id).where(Base.platform == p).limit(1)).first() is None:
                 continue  # don't warn about platforms for which there are no base routers
             if bv.test_level(p).value < TestLevel.CAN_UPDATE.value:
                 canaries = canary_list(p)
-                error_msg = f"bbbased.lua {bv.cver} testing on {p.value} failed"
+                error_msg = f"base.lua {bv.cver} testing on {p.value} failed"
                 n = len(canaries)
                 if n == 0:
                     logger.warning(
@@ -1251,7 +1251,7 @@ def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
                 bv.used_fails += 1
                 if bv.used_fails >= 7 and bv.used_fails * 2 >= bv.used_total:
                     ratio = f"{bv.used_fails} of {bv.used_total} attempts"
-                    logger.error(f"B21382 bbbased {bv.cver} failed {ratio}; won't use")
+                    logger.error(f"B21382 base {bv.cver} failed {ratio}; won't use")
                     for p in Platform:  # perhaps excessive, but mark *all* platforms as failed
                         setattr(bv, f'test_level_{p.value}', TestLevel.FAILED)
                 session.add(bv)
@@ -1261,7 +1261,7 @@ def get_adopt5s_version(subd: str) -> tuple[BasedVer, str]:
         bv = newest_approved_ver(base, session)
         if bv is None:
             session.commit()  # retain timeout accounting even if no approved version remains
-            raise Berror(f"B95159 no bbbased version approved ({base.min_test_level=})")
+            raise Berror(f"B95159 no base version approved ({base.min_test_level=})")
         base.next_file_xver = bv.xver()  # freeze this download's test levels
         base.update_deadline = DateTime.now(TimeZone.utc) + TimeDelta(minutes=11)
         session.add(base)
@@ -1318,7 +1318,7 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 platform = Platform.INIT
             else:
                 platform = Platform.SYSTEMD
-            e = f"B42419 cannot read platform; using '{platform}' from os_id"  # bug in bbbased.lua
+            e = f"B42419 cannot read platform; using '{platform}' from os_id"  # bug in base.lua
             logger.warning(util.front_berror_code(e, subd, ip))
         if base.platform != platform:
             if base.platform is not None:
@@ -1362,9 +1362,9 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
             tls = default_xver[8:]
             ping_tls = {p: TestLevel(level) for p, level in zip(Platform, tls, strict=True)}
         ping_tl = ping_tls[platform]
-        ## 4. promote bbbased.lua version if appropriate
+        ## 4. promote base.lua version if appropriate
         promote_to = None
-        # for testing, resend same bbbased.lua file: prior → new-a, new-a → new-e, new-e → new-g
+        # for testing, resend same base.lua file: prior → new-a, new-a → new-e, new-e → new-g
         if ping_tl == TestLevel.CAN_PING.value:  # ping-after-update from this commit
             promote_to = TestLevel.CAN_UPDATE
         elif ping_tl < TestLevel.CAN_PING.value:  # ping-after-update from prior commit
@@ -1377,21 +1377,21 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
             if promote_to:
                 before = commit_bv.pver(platform)  # e.g. 0tf4ijm-.e..
                 if commit_level == TestLevel.FAILED:
-                    e = f"B98413 bbbased {before} is marked as failed; not promoting"
+                    e = f"B98413 base {before} is marked as failed; not promoting"
                     logger.warning(util.front_berror_code(e, subd, ip))
                 elif promote_to.value > commit_level.value:
                     setattr(commit_bv, f'test_level_{platform.value}', promote_to)
                     after = commit_bv.pver(platform)
                     session.add(commit_bv)  # don't session.commit() here (would end transaction)
-                    e = f"B39596 promoted bbbased {before} to test level {after[8:]}"
+                    e = f"B39596 promoted base {before} to test level {after[8:]}"
                     logger.info(util.front_berror_code(e, subd, ip))
         else:  # unknown version
-            e = f"B12284 unknown version bbbased {ping_xver}"
+            e = f"B12284 unknown version base {ping_xver}"
             logger.warning(util.front_berror_code(e, subd, ip))
-        ## 5. enqueue bbbased update if ready
+        ## 5. enqueue base update if ready
         approved_bv = newest_approved_ver(base, session)
         if approved_bv is None:
-            e = f"B74409 no approved bbbased version available on {platform}"
+            e = f"B74409 no approved base version available on {platform}"
             logger.debug(util.front_berror_code(e, subd, ip))
         else:
             test_levels = ''.join(
@@ -1411,11 +1411,11 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
         task_id = enqueue_task(
             base_id=base_id,
             method='update',
-            args={'path': bbbased_path},
+            args={'path': base_lua_path},
             priority=5,
             dedupe=3,
         )
-        e = f"B90867 launched task {task_id} update from bbbased {ping_pver}"
+        e = f"B90867 launched task {task_id} update from base {ping_pver}"
         logger.debug(util.front_berror_code(e, subd, ip))
 
 

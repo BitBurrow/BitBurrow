@@ -53,7 +53,7 @@ local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
 local lua_exe = hub_config('lua_exe', '/usr/bin/lua')
-local file_cver = '0tofqry'  -- updated at commit time via git_hooks/pre-commit
+local file_cver = '0toft5d'  -- updated at commit time via git_hooks/pre-commit
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -897,7 +897,7 @@ local function run_command_for(command, max_seconds, merge_stderr, failure_ok)
         end
         local deadline = started + max_seconds
         local pid
-        -- note: if bbbased is killed by service manager, detached shell can continue forever
+        -- note: if base.lua is killed by service manager, detached shell can continue forever
         if launch_method == 'setsid' then
             pid = normalize_pid(run_command('(exec 9>&-; setsid sh -c ' .. shell_quote(runner)
                 .. ' </dev/null >' .. shell_quote(output_path) .. ' 2>&1 & echo $!)', true, true))
@@ -1979,7 +1979,7 @@ local running_path = arg and arg[0] or ''
 if running_path == '' then fail_early("B72200 cannot find running_path") end
 
 local function print_help()
-    local program = arg and arg[0] or 'bbbased.lua'
+    local program = arg and arg[0] or 'base.lua'
     io.stdout:write(table.concat({
         "Usage: " .. program .. " [options] <verb>",
         "",
@@ -2183,9 +2183,10 @@ local function remove_temporary_installer()
     -- remove only the exact temporary layout created by adopt5p.sh
     if running_path:sub(1, #tmp_dir) ~= tmp_dir then return end
     local relative_path = running_path:sub(#tmp_dir + 1)
-    local temp_name = relative_path:match('^(bbbased%.[^/]+)/bbbased%.lua$')
+    local temp_name = relative_path:match('^(bbbase%.[^/]+)/base%.lua$')
     if not temp_name then return end
-    remove_paths(running_path, tmp_dir .. temp_name)
+    local temp_path = tmp_dir .. temp_name
+    remove_paths(running_path, temp_path .. '/headers', temp_path)
 end
 
 local function init_service_wrapper_text(lua_path)
@@ -3935,7 +3936,7 @@ local function start_upnp_capture(interface, capture_path, status_path, filter)
     local capture = {pid = pid, start_time = start_time}
     local watchdog_command = '(exec 9>&-; sleep ' .. tostring(max_upnp_capture_seconds)
             .. ' || exit 1; if ' .. capture_command(capture, '0') .. '; then printf "%s\\n" '
-            .. shell_quote('bbbased: UPnP capture time limit reached') .. ' >>'
+            .. shell_quote('base.lua: UPnP capture time limit reached') .. ' >>'
             .. shell_quote(status_path)
             .. '; ' .. capture_command(capture, 'TERM') .. '; fi) </dev/null >/dev/null 2>&1 & echo $!'
     local watchdog_pid = normalize_pid(run_command(watchdog_command, true, true))
@@ -3979,7 +3980,7 @@ local function capture_packet_count(status)
 end
 
 local function capture_time_limit_reached(status)
-    return tostring(status or ''):find('bbbased: UPnP capture time limit reached', 1, true) ~= nil
+    return tostring(status or ''):find('base.lua: UPnP capture time limit reached', 1, true) ~= nil
 end
 
 local function upnp_probe_summary(probes, record_count)

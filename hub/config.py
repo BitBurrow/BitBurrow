@@ -197,7 +197,7 @@ def migrate() -> int:  # update config data to current format; return pre-migrat
         hub_bloc = secrets.randbelow(16)  # could use: random.randint(0, 15)
         new_branch = yaml.safe_load(textwrap.dedent(f'''
                     Integer 0-15 used to calculate base router wg addresses. If you manage multiple
-                    hubs, each hub should have a unique hub_bloc to permit multiple bbbased.lua
+                    hubs, each hub should have a unique hub_bloc to permit multiple base.lua
                     instances on one base router.
                 ''').lstrip())
         insert_item_after('help.backend.ip', 'hub_bloc', new_branch)

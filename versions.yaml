@@ -1,6 +1,4 @@
 paths:
-  - path: hub/adopt5p.sh
-    version: 0todr1g
   - path: hub/bbbased.lua
     version: 0tofqry
     signature: |-
@@ -13,5 +11,19 @@ paths:
       +rjs1T6yF6j1kx1uL2eqTJLjJ4Tamwm2Ihmuq3lVkjm1wVSmxg6tGwSFBeU1ec+M
       oISv0EtlPFW++cayYb6TWT+D6GZNYJCtgdfrIqOUIB0Ek8+YBt2pxzs/xbqX3Cpf
     key_id: 0tlfc1c
+  - path: hub/base.lua
+    version: 0toft5d
+    signature: |-
+      comGnCol/fYpjmEXNq6NcDGHQJL+cuZyzxlgpU+px9I1WCg9JfpM/7fDlc8EEGhV
+      pqlAoC/JFF1nm/b4yfDjOdAzJzNJTfvuLmeSt0krGdSOJnPgC4ZNEQ5ZKUnu5YM0
+      CijT1NiQKPYS1F63QXm9Xj/7/PIUquvriMDHAVeHxkQ56TGX+1BtfVfkfzZ1fji8
+      OR02Tt5TzyL6slPuuEDJieONOSNhjObIcgRil7BqDCGYolCDHmRensyzF1mBXj05
+      FTyYzp+hSOSTU9wfYMUlQePKdbxr0qneXUEMT5TvsFVX0DwY1BsAySzVNxiXIZri
+      gLU1uTLPfCcUtIyucvHMKWO81FA9jrdrPSAAHs/0AsMs7qjRRVlD3kR/EdHsniEx
+      +6WzZeoKu4dFApRDqrvlTYWHrXIeCIcygEqjFtrWmL0sCcmYZOk7MVV67Br/4XKu
+      i24CAjTJCo4n9RevvwY5mMDWMJtOGbo4IGBmDZt7hEH0TotysixHdBaN9fBwx+Ok
+    key_id: 0tlfc1c
+  - path: hub/adopt5p.sh
+    version: 0toft5d
   - path: hub/
-    version: 0tofqry
+    version: 0toft5d

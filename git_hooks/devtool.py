@@ -15,9 +15,9 @@ import tempfile
 import textwrap
 import yaml  # sudo apt install python3-yaml
 
-bbbased_path = Path('hub/bbbased.lua')
+base_lua_path = Path('hub/base.lua')
 versions_path = Path('versions.yaml')
-watched_paths = ('hub/bbbased.lua', 'hub/adopt5p.sh', 'hub/')
+watched_paths = ('hub/base.lua', 'hub/adopt5p.sh', 'hub/')
 keys_path = Path.home() / '.config/openssl/bitburrow'  # contains a subdir for each key
 key_state_path = keys_path / 'key_state.yaml'
 key_passphrases: dict[Path, str] = dict()  # keep each key's passphrase in memory
@@ -339,7 +339,7 @@ def matching_watched_paths(files: set[str]) -> list[str]:
     ]
 
 
-def set_bbbased_file_cver(code: str, new_file_cver: str, var_name: str) -> str:
+def set_base_lua_file_cver(code: str, new_file_cver: str, var_name: str) -> str:
     """Replace a Lua version marker, preserving surrounding source."""
     code, count = re.subn(
         rf"^(local {var_name} = ')[^'\r\n]*(')",
@@ -348,7 +348,7 @@ def set_bbbased_file_cver(code: str, new_file_cver: str, var_name: str) -> str:
         flags=re.MULTILINE,
     )
     if count != 1:
-        raise Berror(f"B49932 expected 1 '{var_name}', found {count} in {bbbased_path}")
+        raise Berror(f"B49932 expected 1 '{var_name}', found {count} in {base_lua_path}")
     return code
 
 
@@ -376,7 +376,7 @@ def find_berror_dups() -> None:
 def select_signing_keys(state: dict) -> tuple[Key, Key]:
     """Return the active key and the key that must sign the next release."""
     active_key = read_key(state['active_key_id'])
-    parent_code = git_blob(f'HEAD~:{bbbased_path}') or ''
+    parent_code = git_blob(f'HEAD~:{base_lua_path}') or ''
     if state.get('previous_key_id') and not code_has_key(parent_code, active_key):
         # HEAD might be amended; its parent must already know the new signer; otherwise use
         # the key that signed its introduction, also for the first ordinary follow-up commit
@@ -475,11 +475,11 @@ def file_pubkeys_table(code: str) -> re.Match:
     )
     tables = list(pubkeys_table_re.finditer(mask_lua_noncode(code)))
     if len(tables) != 1:
-        raise Berror(f"B45802 expected 1 'file_pubkeys', found {len(tables)} in {bbbased_path}")
+        raise Berror(f"B45802 expected 1 'file_pubkeys', found {len(tables)} in {base_lua_path}")
     # locate live Lua syntax, then return the original text so generated edits preserve comments
     table = pubkeys_table_re.fullmatch(code, tables[0].start(), tables[0].end())
     if table is None:
-        raise Berror(f"B29342 unsupported 'file_pubkeys' declaration in {bbbased_path}")
+        raise Berror(f"B29342 unsupported 'file_pubkeys' declaration in {base_lua_path}")
     return table
 
 
@@ -589,13 +589,13 @@ def sign_code(file_cver: str | None = None) -> None:
     prepared = dict()
     worktree_code = None
     pending_key = None
-    if str(bbbased_path) in modified:
-        indexed = read_indexed_file(bbbased_path)
+    if str(base_lua_path) in modified:
+        indexed = read_indexed_file(base_lua_path)
         if indexed is None:
-            raise Berror(f"B50280 missing indexed file {bbbased_path}")
+            raise Berror(f"B50280 missing indexed file {base_lua_path}")
         code_mode, code = indexed
-        code = set_bbbased_file_cver(code, file_cver, 'file_cver')
-        worktree_code = set_bbbased_file_cver(read_text(bbbased_path), file_cver, 'file_cver')
+        code = set_base_lua_file_cver(code, file_cver, 'file_cver')
+        worktree_code = set_base_lua_file_cver(read_text(base_lua_path), file_cver, 'file_cver')
         # Check both editable regions before generating keys or changing repository files.
         file_pubkeys_table(code)
         file_pubkeys_table(worktree_code)
@@ -615,16 +615,18 @@ def sign_code(file_cver: str | None = None) -> None:
         if not code_has_key(code, active_key):
             raise Berror("B48906 the release must retain the active public key and its key ID")
         worktree_code = mirror_file_pubkeys(worktree_code, code)
-        entry = next(entry for entry in versions['paths'] if entry.get('path') == str(bbbased_path))
+        entry = next(
+            entry for entry in versions['paths'] if entry.get('path') == str(base_lua_path)
+        )
         entry.update(signature=sign_string(code, signing_key), key_id=signing_key.key_id)
-        prepared[bbbased_path] = (code_mode, code)
+        prepared[base_lua_path] = (code_mode, code)
     prepared[versions_path] = (versions_mode, dump_versions(versions))
     # all parsing and signing have succeeded; write the prepared index blobs in one operation,
     # then mirror generated values; interruptions during these writes need to be repaired manually
     stage_contents(prepared)
     atomic_write(versions_path, prepared[versions_path][1])
     if worktree_code is not None:
-        atomic_write(bbbased_path, worktree_code)
+        atomic_write(base_lua_path, worktree_code)
     if pending_key is not None:
         # the saved pending ID preserves this rotation request across abandoned commits
         (keys_path / 'rotate_keys_after_signing').unlink(missing_ok=True)
@@ -638,7 +640,7 @@ def rotate_keys() -> None:
     pending_id = state.get('pending_key_id')
     if pending_id is None and not state.get('bootstrap_pending'):
         return
-    committed_code = git_blob(f'HEAD:{bbbased_path}')
+    committed_code = git_blob(f'HEAD:{base_lua_path}')
     committed_versions = git_blob(f'HEAD:{versions_path}')
     if committed_code is None or committed_versions is None:
         return
@@ -646,7 +648,7 @@ def rotate_keys() -> None:
     if not code_has_key(committed_code, key):
         return
     versions = parse_versions(committed_versions)
-    entry = next((e for e in versions['paths'] if e.get('path') == str(bbbased_path)), dict())
+    entry = next((e for e in versions['paths'] if e.get('path') == str(base_lua_path)), dict())
     signing_id = entry.get('key_id')
     signing_ids = {state['active_key_id'], state.get('previous_key_id')} - {None}
     signature = entry.get('signature')

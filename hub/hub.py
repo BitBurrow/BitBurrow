@@ -331,13 +331,13 @@ async def async_background_tasks():
     while True:
         if day_count == 0:  # first day
             await asyncio.sleep(20)
-            db.update_bbbased_version()  # check for new version of 'hub/bbbased.lua'
+            db.update_base_cver()  # check for new version of 'hub/base.lua'
             await asyncio.sleep(15)
             await door.check_for_new_upnpc_client()
             await asyncio.sleep(15)
             await watch_tls_cert()
             await asyncio.sleep(5 * 60)
-            db.check_bbbased_test_levels()
+            db.check_base_test_levels()
         else:  # every other day
             await watch_tls_cert()
         await asyncio.sleep(a_day)
