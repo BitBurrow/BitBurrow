@@ -40,6 +40,7 @@ httpx2 = "^2.16.0"
 [tool.poetry.group.dev.dependencies]
 black = "^26.3.1"
 pytest = "^9.0.3"
+pytest-asyncio = "^1.5.0"
 
 
 [tool.poetry.group.lint.dependencies]
@@ -47,6 +48,9 @@ black = "^26.3.1"
 
 [tool.poetry.scripts]
 bbhub = "hub.hub:entry_point"
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "fixture-scope"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
