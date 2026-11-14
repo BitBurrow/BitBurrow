@@ -433,7 +433,7 @@ class Base(SQLModel, table=True):
     ott_id: int | None = Field(foreign_key='loginsession.id', default=None)  # one-time token
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='bases')
-    file_xver: str = default_xver  # last confirmed base.lua version
+    file_xver: str = default_xver  # last confirmed base release version
     next_file_xver: str = ''  # set when an update task is assigned; '' means no update in progress
     update_deadline: DateTime = DateTime(1970, 1, 1, tzinfo=TimeZone.utc)
     platform: Platform | None = None
@@ -790,12 +790,6 @@ def next_task(base_id: int, unstale: bool = True) -> BaseTask | None:
                 if task.method == 'update':
                     base = session.get(Base, base_id)
                     expire_updates(session)
-                    # fill only pre-migration queued tasks; new tasks are pinned at enqueue time
-                    if not task.args or not task.args.get('target_xver'):
-                        try:
-                            task.args = update_task_args(session, base, task.args or {})
-                        except Berror as e:
-                            logger.warning(str(e))
                     target_xver = (task.args or {}).get('target_xver')
                     bv = (
                         session.exec(
@@ -806,7 +800,11 @@ def next_task(base_id: int, unstale: bool = True) -> BaseTask | None:
                     )
                     # a pinned release can become unavailable while the task is queued
                     platforms = (base.platform,) if base.platform else any_platform
-                    if bv is None or all(bv.test_level(p) == TestLevel.FAILED for p in platforms):
+                    if (
+                        bv is None
+                        or target_xver[:7] < base.file_xver[:7]
+                        or all(bv.test_level(p) == TestLevel.FAILED for p in platforms)
+                    ):
                         task.status = BaseTaskStatus.FAILED
                         task.assigned_at = previous_assignment
                         task.finished_at = assigned_at
@@ -838,11 +836,14 @@ def enqueue_task(
     if priority < -9 or priority > 9:
         raise Berror(f"B25273 invalid priority {priority}")
     with Session(engine) as session:
-        if method == 'update':
+        if method == 'update' and not task_args.get('target_xver'):
             base = session.get(Base, base_id)
             if base is None:
                 raise Berror(f"B80405 cannot queue update for missing base {base_id}")
-            task_args = update_task_args(session, base, task_args)
+            bv = newest_approved_ver(base, session)
+            if bv is None:
+                raise Berror(f"B95159 no base version approved ({base.min_test_level=})")
+            task_args = dict(task_args, target_xver=bv.xver())
         if dedupe > 0:
             statement = (
                 select(BaseTask)
@@ -1152,7 +1153,7 @@ def parse_os_release(text: object) -> dict[str, str]:
 
 
 ###
-### DB table BasedVer - signed trees and test status of base daemon releases
+### DB table BasedVer - metadata and test status of a base daemon release
 ###
 
 
@@ -1171,7 +1172,6 @@ class BasedVer(SQLModel, table=True):
     test_level_macs: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.MACOS
     used_total: int = 0
     used_fails: int = 0
-    other: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
 
     def test_level(self, platform: Platform) -> TestLevel:
         return getattr(self, f'test_level_{platform.value}')
@@ -1179,13 +1179,11 @@ class BasedVer(SQLModel, table=True):
     def xver(self):  # e.g. 0tf4ijm-geac
         if len(self.cver) != 7:
             raise Berror(f"B49018 bad cver {self.cver}")
-        test_levels = ''.join([getattr(self, f'test_level_{p.value}').value for p in Platform])
+        test_levels = ''.join(self.test_level(p).value for p in Platform)
         return f'{self.cver}-{test_levels}'
 
     def pver(self, platform: Platform):  # e.g. 0tf4ijm-.e.. (to string-compare versions)
-        test_levels = ''.join(
-            getattr(self, f'test_level_{p.value}').value if p == platform else '.' for p in Platform
-        )
+        test_levels = ''.join(self.test_level(p).value if p == platform else '.' for p in Platform)
         return f'{self.cver}-{test_levels}'
 
 
@@ -1194,37 +1192,31 @@ def update_base_cver() -> None:
     try:
         with open(os.path.join(util.project_root_path, 'tree.json'), 'rb') as f:
             content = f.read()
-        tree = json.loads(content)
-        paths = util.tree_paths(tree)
+        paths = util.tree_paths(json.loads(content))
         cver = paths['base/']['cver']
-        tree_cver = paths['tree.json']['cver']
+        if paths['tree.json']['cver'] != cver or 'base/base.lua' not in paths:
+            raise Berror(f"B80417 invalid tree for base release {cver}")
         with Session(engine) as session:
             session.connection().exec_driver_sql('BEGIN IMMEDIATE')
             existing = session.exec(select(BasedVer).where(BasedVer.cver == cver)).one_or_none()
             if existing is not None:
-                if tree_cver != cver:
-                    logger.debug("B80415 'no-base' commit; keeping the signed base tree")
-                elif session.get(Blob, existing.blob_id).content != content:
+                if session.get(Blob, existing.blob_id).content != content:
                     # can happen via 2 commits within the same second
                     logger.error(f"B80416 conflicting commits for 'tree.json' cver {cver}")
                 return
-            if tree_cver != cver:
-                raise Berror(f"B80417 'tree.json' cver {tree_cver} != 'base/' cver {cver}")
             newer = session.exec(select(BasedVer.cver).where(BasedVer.cver > cver).limit(1)).first()
             if newer is not None:
                 logger.error(f"B15828 ignoring base version {cver} because newer {newer} exists")
                 return
             blob_id = set_blob('tree.json', content, cver, psession=session)
             for path, entry in paths.items():
-                if 'sha256sum' in entry:
+                if path.startswith('base/') and not path.endswith('/'):
                     with open(os.path.join(util.project_root_path, path), 'rb') as f:
                         data = f.read()
                     if hashlib.sha256(data).hexdigest() != entry['sha256sum']:
                         raise Berror(f"B80420 source hash mismatch: {path}")
                     set_blob(path, data, entry['cver'], psession=session)
-            base_path = 'base/base.lua'
-            other = {k: v for k, v in paths[base_path].items() if k in ('signature', 'key_id')}
-            session.add(BasedVer(cver=cver, blob_id=blob_id, other=other))
+            session.add(BasedVer(cver=cver, blob_id=blob_id))
             session.commit()
             logger.info(f"B96927 indexed new base version {cver}")
     except (OSError, ValueError, KeyError, Berror) as e:
@@ -1309,38 +1301,23 @@ def expire_updates(session: Session) -> None:
     session.flush()
 
 
-def update_task_args(session: Session, base: Base, args: dict) -> dict:
-    """Pin the target and retain the path understood by old daemons."""
-    target = args.get('target_xver')
-    if not target:
-        bv = newest_approved_ver(base, session)
-        if bv is None:
-            raise Berror(f"B95159 no base version approved ({base.min_test_level=})")
-        target = bv.xver()
-    return dict(args, target_xver=target, path='hub/base.lua')
-
-
-def get_adopt5s_version(subd: str, *, adoption: bool = False) -> tuple[BasedVer, str]:
-    """Look up a pinned task target, or choose an initial install without canary accounting."""
+def get_adoption_versions(subd: str) -> tuple[str, str]:
+    """Return the approved release xver and its base.lua cver for a new install."""
     with Session(engine) as session:
         base = session.exec(select(Base).where(Base.subd == subd)).one_or_none()
         if base is None:
             raise Berror(f"B41474 cannot find subd {subd}")
-        if base.next_file_xver and not adoption:
-            bv = session.exec(
-                select(BasedVer).where(BasedVer.cver == base.next_file_xver[:7])
-            ).first()
-            if bv is None:
-                raise Berror(f"B95637 missing BasedVer for {base.next_file_xver}")
-            return bv, base.next_file_xver
         bv = newest_approved_ver(base, session)
         if bv is None:
             raise Berror("B80426 no approved base version for installation")
-        return bv, bv.xver()
+        tree = json.loads(session.get(Blob, bv.blob_id).content)
+        return bv.xver(), util.tree_paths(tree)['base/base.lua']['cver']
 
 
 def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
-    """Record telemetry and confirm or schedule daemon updates."""
+    """This is long and complex. Handle with care. Note that, to reduce code complexity, versioning
+    logic for updates is intentionally imprecise in some low-impact places, e.g. a
+    past-deadline-update *may* count as successful."""
     uptime, idle = parse_proc_uptime(telem_data.get('proc_uptime'))
     load_01m, load_05m, load_15m = parse_proc_loadavg(telem_data.get('proc_loadavg'))
     meminfo = parse_proc_meminfo(telem_data.get('proc_meminfo'))
@@ -1421,7 +1398,7 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
         ping_tl = ping_xver[8 + any_platform.index(platform)]
         ## 4. promote base version if appropriate
         promote_to = None
-        # for testing, resend same base.lua file: prior → new-a, new-a → new-e, new-e → new-g
+        # for testing, reinstall the same release: prior → new-a, new-a → new-e, new-e → new-g
         if confirmed_update and ping_tl == TestLevel.CAN_PING.value:  # from next_file_xver
             promote_to = TestLevel.CAN_UPDATE
         elif ping_tl < TestLevel.CAN_PING.value:  # ping-after-update from prior commit
@@ -1503,7 +1480,7 @@ def get_blob(path: str, version: str | None = None) -> bytes | None:
 def set_blob(
     path: str,
     content: bytes,
-    version: str | None = None,
+    version: str | None = None,  # 'None' will use the current time as a version number
     psession: Session | None = None,
 ) -> int:
     """Store a blob and return its ID. A supplied session owns the commit."""
@@ -1517,14 +1494,13 @@ def set_blob(
             raise Berror(f"B80427 immutable blob already exists: {path} {version}")
         blob = Blob(path=path, version=version, content=content)
         session.add(blob)
-        try:
-            session.flush()
-            blob_id = blob.id
-            if psession is None:
-                session.commit()
-        except sqlalchemy.exc.IntegrityError as e:
-            raise Berror(f"B75375 blob {path} version {version} already exists") from e
+        session.flush()
+        blob_id = blob.id
+        if psession is None:
+            session.commit()
         return blob_id
+    except sqlalchemy.exc.IntegrityError as e:
+        raise Berror(f"B75375 blob {path} version {version} already exists") from e
     finally:
         if psession is None:
             session.close()

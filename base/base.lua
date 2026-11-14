@@ -8,7 +8,7 @@
 -- public keys to verify subsequent software updates
 --
 
-local file_pubkeys = {  -- key_id is file_cver which first included this pubkey
+local file_pubkeys = {  -- key_id is the file_cver which first included this pubkey
     {
         key_id = '0tlfc1c',
         pubkey = table.concat({
@@ -52,9 +52,6 @@ local log_err_route = hub_config('log_err_route')
 local ott_filename = hub_config('ott_filename')
 local subd = hub_config('subd')
 local lua_exe = hub_config('lua_exe', '/usr/bin/lua')
---[[ (dummy file_cver for migration only)
-local file_cver = '0togg6a'
-]]
 local bbsubd = 'bb' .. subd
 local config_dir = '/etc/' .. bbsubd .. '/'
 local base_config_path = config_dir .. 'base.conf'
@@ -249,16 +246,14 @@ local function trim_trailing_slashes(path)
     return (path:gsub('/+$', ''))
 end
 
-local function make_temp_path(in_dir, failure_ok, tag_prefix)
-    -- create a temp file and return its path, or nil on failure; all args optional;
-    -- tag_prefix is a string that identifies files that can be cleaned up independently
+local function make_temp_path(in_dir, failure_ok)
+    -- create a temp file and return its path, or nil on failure; all args optional
     if in_dir == nil then
         in_dir = bbsubd_tmp_dir
     else
         in_dir = trim_trailing_slashes(in_dir) .. '/'
     end
-    local template = bbsubd .. (tag_prefix and '.' .. tag_prefix or '') .. '.XXXXXX'
-    local cmd = 'mktemp ' .. shell_quote(in_dir .. template)
+    local cmd = 'mktemp ' .. shell_quote(in_dir .. bbsubd .. '.XXXXXX')
     local path = run_command(cmd, true, failure_ok)
     -- alternative `os.tmpname()` is less flexible, possibly less reliable
     if not path or path == '' then
@@ -1964,9 +1959,9 @@ end
 local function clear_pending_task_result()
     local updated_config = copy_table(base_config)
     updated_config.pending_task_id = nil
-    updated_config.pending_task_method = nil
-    updated_config.pending_update_state = nil
     updated_config.pending_update_target = nil
+    updated_config.pending_task_method = nil  -- remove obsolete value
+    updated_config.pending_update_state = nil  -- remove obsolete value
     if not save_base_config(updated_config) then return nil end
     base_config = updated_config
     return true
@@ -2044,41 +2039,28 @@ if cli_verb == 'daemonize' then
         fail_early("B46279 daemon requires the service lock on fd 9; start through the service")
     end
 end
-local file_xver, install_dir, active_based_dir, legacy_running_path
+local file_xver, install_dir, running_dir
 local function valid_xver(value)
     return type(value) == 'string' and #value >= 12 and value:sub(8, 8) == '-'
             and value:match('^[0-9a-z]+%-[0-9a-z]+$')
 end
 if cli_verb == 'install' or cli_verb == 'daemonize' or cli_verb == 'version' then
-    local problem
-    base_config, problem = read_base_config()
-    if not base_config and cli_verb ~= 'version' then fail_early(problem) end
-    base_config = base_config or {}
+    if cli_verb ~= 'version' then
+        local problem
+        base_config, problem = read_base_config()
+        if not base_config then fail_early(problem) end
+    end
     local resolved = run_command('readlink -f ' .. shell_quote(running_path), true, true)
     if not resolved or resolved:sub(1, 1) ~= '/' then
         fail_early("B47135 cannot resolve running script: " .. running_path)
     end
     running_path = resolved
-    active_based_dir = dirname(running_path) .. '/'
-    if cli_verb == 'install' then
-        file_xver = hub_config('target_xver')
-    else
-        file_xver = basename(dirname(running_path))
-        install_dir = dirname(dirname(running_path))
-        if not valid_xver(file_xver) and basename(running_path) == bbsubd .. '.lua' then
-            -- bridge version only: the old updater installed a flat file and saved its xver in
-            -- base.conf; successful migration replaces the flat file with a link for the old wrapper
-            legacy_running_path = running_path
-            install_dir = dirname(running_path) .. '/' .. subd
-            local source = read_text_file(running_path, false, true, 654321) or ''
-            local marker = source:match("\nlocal file_cver = '([0-9a-z]+)'")
-            file_xver = base_config.file_xver
-            if not valid_xver(file_xver) or file_xver:sub(1, 7) ~= marker then
-                file_xver = marker and marker .. '-aaaa'
-            end
-        end
+    running_dir = dirname(running_path)
+    if cli_verb ~= 'install' then
+        file_xver = basename(running_dir)
+        install_dir = dirname(running_dir)
+        if not valid_xver(file_xver) then fail_early("B62917 cannot determine executing xver") end
     end
-    if not valid_xver(file_xver) then fail_early("B62917 cannot determine executing xver") end
 end
 if cli_verb == nil then
     log_error("a verb is required")
@@ -2246,41 +2228,31 @@ local function systemd_service_wrapper_texts(lua_path)
 end
 
 local function install_service_wrapper_file(path, content, mode)
-    -- return success and whether the file was changed
     if read_text_file(path, true, true) == content and get_mode(path) == mode then
-        return true, false
+        return true
     end
     local tmp_path = make_temp_path(tmp_dir)  -- bbsubd_tmp_dir may not exist during installation
     if not tmp_path then return nil end
     local installed = write_text_file(tmp_path, content) and file_copy(tmp_path, path, mode)
     remove_path(tmp_path)
-    if not installed then return nil end
-    return true, true
+    return installed
 end
 
 local function install_init_service(lua_path)
-    -- return nil on failure, true after successful install or reinstall
     local init_path = '/etc/init.d/' .. bbsubd
-    if not install_service_wrapper_file(init_path, init_service_wrapper_text(lua_path), '0755') then return nil end
-    if not run_command(shell_quote(init_path) .. ' enabled', true, true) then
-        if not run_command(shell_quote(init_path) .. ' enable') then
-            return nil
-        end
+    if not install_service_wrapper_file(init_path, init_service_wrapper_text(lua_path), '0755') then
+        return nil
     end
-    if not run_command(shell_quote(init_path) .. ' running', true, true) then
-        if not run_command(shell_quote(init_path) .. ' start') then return nil end
-        log_debug("successfully installed; exiting")
-    else
-        if not run_command(shell_quote(init_path) .. ' restart') then return nil end
-        log_debug("successfully reinstalled; exiting")
+    local command = shell_quote(init_path)
+    if not run_command(command .. ' enabled', true, true)
+            and not run_command(command .. ' enable') then
+        return nil
     end
-    -- new service should run now; don't use this here: dofile(lua_path)
-    remove_temporary_installer()
-    return true
+    local running = run_command(command .. ' running', true, true)
+    return run_command(command .. (running and ' restart' or ' start'))
 end
 
 local function install_systemd_service(lua_path)
-    -- return nil on failure, true after successful install or reinstall
     local service_name = bbsubd .. '.service'
     local service_path = '/etc/systemd/system/' .. service_name
     local start_script_path = '/usr/local/sbin/' .. bbsubd .. '-start.sh'
@@ -2293,32 +2265,23 @@ local function install_systemd_service(lua_path)
     end
     remove_path('/etc/init.d/' .. bbsubd)
     if not run_command('systemctl daemon-reload') then return nil end
-    if not run_command('systemctl is-enabled ' .. shell_quote(service_name), true, true) then
-        if not run_command('systemctl enable ' .. shell_quote(service_name)) then
-            return nil
-        end
+    local service = shell_quote(service_name)
+    if not run_command('systemctl is-enabled ' .. service, true, true)
+            and not run_command('systemctl enable ' .. service) then
+        return nil
     end
-    if not run_command('systemctl is-active ' .. shell_quote(service_name), true, true) then
-        if not run_command('systemctl start ' .. shell_quote(service_name)) then return nil end
-        log_debug("successfully installed; exiting")
-    else
-        if not run_command('systemctl restart ' .. shell_quote(service_name)) then return nil end
-        log_debug("successfully reinstalled; exiting")
-    end
-    -- new service should run now; don't use this here: dofile(lua_path)
-    remove_temporary_installer()
-    return true
+    local running = run_command('systemctl is-active ' .. service, true, true)
+    return run_command((running and 'systemctl restart ' or 'systemctl start ') .. service)
 end
 
 -- values must match class Platform() in db.py
 local platform = run_command('command -v systemctl', true, true) and 'sysd' or 'init'
 
 local function install_daemon_service(lua_path)
-    if platform == 'sysd' then
-        return install_systemd_service(lua_path)
-    else  -- 'init'
-        return install_init_service(lua_path)
-    end
+    local install_service = platform == 'sysd' and install_systemd_service or install_init_service
+    local installed = install_service(lua_path)
+    if installed then remove_temporary_installer() end
+    return installed
 end
 
 local packager_cmds = nil
@@ -2896,17 +2859,14 @@ end
 
 local function send_pending_task_result()
     local task_id = base_config.pending_task_id
-    local task_method = base_config.pending_task_method
-    if task_id == nil and task_method == nil then return true end
-    if not task_id or task_id == '' or task_method ~= 'update'
-            or (base_config.pending_update_state ~= 'installed'
-                and base_config.pending_update_state ~= 'prepared') then
+    if not task_id then return true end
+    local target = base_config.pending_update_target
+    if task_id == '' or not valid_xver(target) then
         log_warning("B81916 invalid pending task result; clearing it")
         return clear_pending_task_result()
     end
-    local target = base_config.pending_update_target
-    local installed = not target or (target == file_xver and not legacy_running_path)
-    if not send_task_result(task_id, task_method, installed,
+    local installed = target == file_xver
+    if not send_task_result(task_id, 'update', installed,
                 installed and 'ok' or 'update interrupted before activation') then
         return nil
     end
@@ -3234,7 +3194,7 @@ do
             wg_status = nil; return nil, problem
         end
         -- IPv4 is now configured and up; respect the interface's IPv6 setting, without changing
-        -- global/default/LAN/WAN sysctls. The value of all.disable_ipv6 is not a capability test
+        -- global/default/LAN/WAN sysctls; the value of all.disable_ipv6 is not a capability test
         local disabled = read_text_file('/proc/sys/net/ipv6/conf/' .. conf.Interface.Name
             .. '/disable_ipv6', true)
         local ipv6_problem
@@ -4711,7 +4671,7 @@ do
         return download_file('curl -f --max-time 120 ' .. shell_quote(url), destination)
     end
     local function verify_tree(body)
-        -- this prefix must match the way devtool.py creates it; search: tag_tree_json_sig_prefix
+        -- keep this prefix in sync with sign_code() in devtool.py
         local first, signature, after, key_id = body:sub(1, 1024):match(
             '^{\n  "signature": "()([A-Za-z0-9+/]+=?=?)()",\n'
             .. '  "key_id": "([0-9a-z]+)",\n'
@@ -4736,16 +4696,17 @@ do
         if not ok then remove_path(temporary) end
         return ok
     end
-    update = function(task_id, target_xver, bootstrap)
+    update = function(task_id, target_xver)
         if not valid_xver(target_xver) then return false, "B80430 invalid target_xver" end
-        if target_xver == file_xver and not bootstrap and not legacy_running_path then
-            return true, 'ok'
-        end
+        if target_xver == file_xver then return true, 'ok' end
         local target_cver = target_xver:sub(1, 7)
-        if target_cver < file_xver:sub(1, 7) then return false, "B80431 update would downgrade" end
+        if file_xver and target_cver < file_xver:sub(1, 7) then
+            return false, "B80431 update would downgrade"
+        end
         local new_based_dir = install_dir .. '/' .. target_xver .. '/'
         local entry_point = install_dir .. '/base.lua'
-        if bootstrap and run_command('readlink -f ' .. shell_quote(entry_point), true, true)
+        if not task_id and is_readable(entry_point)
+                and run_command('readlink -f ' .. shell_quote(entry_point), true, true)
                 == new_based_dir .. 'base.lua' then
             return true, 'ok'
         end
@@ -4756,31 +4717,24 @@ do
         for _ = 1, 3 do
             if fetch('tree.json', target_cver, tree_path) then
                 body = read_text_file(tree_path, false, true, max_bytes)
-                if body and #body >= 10 then break end
+                if body and body ~= '' then break end
             end
             body = nil
         end
         remove_path(tree_path)
         if not body then return false, "B80434 tree download failed after three attempts" end
-        -- verify signature BEFORE decode_json() to protect against compromised hub
-        if not bootstrap then
-            local verified = verify_tree(body)
-            if verified ~= true then
-                return false, "B80436 bad tree signature: " .. verified
-            end
+        -- authenticate the manifest before parsing it
+        local verified = verify_tree(body)
+        if verified ~= true then
+            return false, "B80436 bad tree signature: " .. verified
         end
-        local tree = decode_json(body, max_bytes, 6)
-        if not json_container(tree, 'object') then
+        local tree = decode_json(body)
+        if not json_container(tree, 'object') or not json_container(tree.paths, 'array') then
             return false, "B80435 invalid 'tree.json' format"
         end
         local paths = tree_paths(tree)
-        if not paths['base/base.lua'] or not paths['base/'] then
-            remove_path(tree_path)
-            return false, "B69764 missing required paths in tree.json"
-        end
-        if paths['base/'].cver ~= target_cver then
-            remove_path(tree_path)
-            return false, "B80441 'base/' cver " .. paths['base/'].cver .. ' != ' .. target_cver
+        if not paths['base/base.lua'] or not paths['base/'] or paths['base/'].cver ~= target_cver then
+            return false, "B80441 tree does not describe base release " .. target_cver
         end
         if not mkdir(install_dir, '0700') or not mkdir(new_based_dir, '0700') then
             return false, "B80432 cannot create release directory"
@@ -4788,16 +4742,22 @@ do
         if not write_text_file(new_based_dir .. 'tree.json', body, '0644') then
             return false, "B80443 cannot save release tree"
         end
-        local old_body = read_text_file(active_based_dir .. 'tree.json', true, true, max_bytes)
-        local old_ok, old_paths = pcall(tree_paths, decode_json(old_body, max_bytes))
+        local old_paths = {}
+        -- a damaged local cache should only prevent reusing old files
+        if task_id then
+            local old_body = read_text_file(running_dir .. '/tree.json', true, true, max_bytes)
+            local ok, cached = pcall(tree_paths, decode_json(old_body, max_bytes))
+            if ok then old_paths = cached end
+        end
         for _, entry in ipairs(tree.paths) do
             local path = entry.path
             if path:sub(1, 5) == 'base/' and path:sub(-1) ~= '/' then
                 local name = basename(path)
                 local destination = new_based_dir .. name
-                local source = active_based_dir .. name
-                local old = old_ok and old_paths[path]
-                local reuse = bootstrap or (old and old.sha256sum == entry.sha256sum)
+                local source = running_dir .. '/' .. name
+                local old = old_paths[path]
+                local reuse = not task_id
+                        or (type(old) == 'table' and old.sha256sum == entry.sha256sum)
                 local ready = reuse and is_readable(source) and file_copy(source, destination, '0644')
                         and file_hash(destination) == entry.sha256sum
                 if not ready then
@@ -4808,29 +4768,28 @@ do
                             break
                         end
                     end
-                end
-                if not ready then
-                    remove_path(destination)
-                    return false, "B80437 download or hash check failed: " .. path
+                    if not ready then
+                        remove_path(destination)
+                        return false, "B80437 download or hash check failed: " .. path
+                    end
+                    if not chmod(destination, '0644') then return false, "B80439 chmod failed" end
                 end
                 if path:sub(-4) == '.lua' then
                     local command = 'STAGED_PATH=' .. shell_quote(destination) .. ' '
                             .. shell_quote(lua_exe) .. ' -e '
                             .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
-                    if #read_text_file(destination, true, true, max_bytes) <= 3
+                    if (path == 'base/base.lua'
+                                and #read_text_file(destination, true, true, max_bytes) <= 3)
                             or not run_command(command, true) then
                         remove_path(destination)
                         return false, "B80438 invalid Lua file: " .. path
                     end
                 end
-                if not chmod(destination, '0644') then return false, "B80439 chmod failed" end
             end
         end
         if task_id then
             local updated_config = copy_table(base_config)
             updated_config.pending_task_id = task_id
-            updated_config.pending_task_method = 'update'
-            updated_config.pending_update_state = 'prepared'
             updated_config.pending_update_target = target_xver
             if not save_base_config(updated_config) then
                 return false, "B33348 cannot save update state"
@@ -4841,16 +4800,12 @@ do
             if task_id then clear_pending_task_result() end
             return false, "B57225 cannot activate release symlink"
         end
-        if legacy_running_path and not publish_link(legacy_running_path, entry_point) then
-            if task_id then clear_pending_task_result() end
-            return false, "B80440 cannot redirect legacy service path"
-        end
-        if bootstrap then return true, 'ok' end
+        if not task_id then return true, 'ok' end
         log_info("update installed; restarting")
         cleanup_and_exit(0)
     end
     cleanup_based_dirs = function()
-        if cleaned or legacy_running_path then return end
+        if cleaned then return end
         local output = run_command('for path in ' .. shell_quote(install_dir) .. '/*; do '
             .. 'if [ -d "$path" ] && [ ! -L "$path" ]; then '
             .. 'printf "%s\\n" "${path##*/}"; fi; done', false, true)
@@ -4886,7 +4841,7 @@ local function handle_task(task_id, task_method, task_args)
     end
     if task_method == 'update' then
         local target_xver = json_container(task_args, 'object') and task_args.target_xver
-        return update(task_id, target_xver, false)
+        return update(task_id, target_xver)
     end
     if task_method == 'discover_upnp' then
         local pcap_base64 = json_container(task_args, 'object') and task_args.pcap or nil
@@ -5015,7 +4970,7 @@ if cli_verb == 'install' then
     local installed, problem
     if parent and mkdir(bbsubd_tmp_dir, '0700') then
         install_dir = parent .. subd
-        installed, problem = update(nil, file_xver, true)
+        installed, problem = update(nil, hub_config('target_xver'))
         if installed then installed = install_daemon_service(install_dir .. '/base.lua') end
     end
     if installed then
@@ -5029,17 +4984,6 @@ end
 if cli_verb ~= 'daemonize' then
     log_error("B38333 cli_verb == " .. cli_verb)
     os.exit(1)
-end
--- lock was verified before loading base.conf; abandoned updates are now safe to remove;
--- generic bbsubd.XXXXXX files may belong to installers, so only remove update-tagged files
-if running_path:match('^/') then
-    local prefix = dirname(running_path) .. '/' .. bbsubd .. '.update.'
-    local command = 'for path in ' .. shell_quote(prefix) .. '??????; do '
-            .. 'if [ -f "$path" ] && [ ! -L "$path" ]; then '
-            .. 'rm -f "$path" || exit 1; fi; done'
-    if not run_command(command, true, true) then
-        log_warning("B87092 cannot remove abandoned update files; continuing startup")
-    end
 end
 
 --
@@ -5060,17 +5004,7 @@ end
 --
 
 mkdir(config_dir, '0700')
-restore_wg()  -- restore connectivity before trying the bridge download
-if legacy_running_path then
-    local ran, ok, problem = pcall(update, nil, file_xver, false)
-    if not ran or not ok then
-        local reason = ran and problem or ok
-        log_error("B79420 bridge migration failed; continuing pings: " .. tostring(reason))
-    end
-elseif base_config.file_xver then
-    base_config.file_xver = nil
-    if not save_base_config(base_config) then log_error("B80429 cannot remove legacy file_xver") end
-end
+restore_wg()  -- use saved settings before any hub API call
 if not ensure_auth_keys() then
     log_error("B60585 cannot continue without key files; exiting")
     cleanup_and_exit(5)

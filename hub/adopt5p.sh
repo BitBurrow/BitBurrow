@@ -2,26 +2,12 @@
 
 hub_config_data='
 api_url={api_url}
-download_url={download_url}
 target_xver={target_xver}
-file_xver={target_xver}
-log_err_route={log_err_route}
 ott_filename={ott_filename}
 subd={subd}
 '
 install_url='{install_url}'
-
-hub_config() {
-    while IFS='=' read -r hub_config_key hub_config_value; do
-        if [ "$hub_config_key" = "$1" ]; then
-            printf '%s\n' "$hub_config_value"
-            return 0
-        fi
-    done <<HUB_CONFIG_EOF
-$hub_config_data
-HUB_CONFIG_EOF
-    return 1
-}
+log_err_route='{log_err_route}'
 
 packager_exe=''
 temp_path=''
@@ -31,11 +17,10 @@ lua_exe=''
 log_error() {
     echo "log_error $1" >&2  # the redirect to stderr fixes buffering issue on some systems
     if command -v curl >/dev/null 2>&1; then
-        curl -f --max-time 60 -X POST --data "$1" "$(hub_config log_err_route)" >/dev/null 2>&1 || true
+        curl -f --max-time 60 -X POST --data "$1" "$log_err_route" >/dev/null 2>&1 || true
         return 0
     fi
-    wget -q -T 60 --post-data="$1" "$(hub_config log_err_route)" >/dev/null 2>&1 || true
-    return 0
+    wget -q -T 60 --post-data="$1" "$log_err_route" >/dev/null 2>&1 || true
 }
 
 can_download() {
@@ -285,6 +270,7 @@ done
 ### run Lua script
 if [ -s "$base_lua_path" ]; then
     hub_config_data="$hub_config_data
+log_err_route=$log_err_route
 lua_exe=$lua_exe
 "
     echo "running $lua_exe $base_lua_path install" >&2

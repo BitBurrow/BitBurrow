@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -20,7 +19,6 @@ import yaml  # sudo apt install python3-yaml
 base_lua_path = Path('base/base.lua')
 tree_path = Path('tree.json')
 signature_placeholder = 'y5Tf2ghvd2jTi9m21geAP'
-watched_paths = ('base/base.lua', 'base/', 'hub/adopt5p.sh', 'hub/', 'tree.json')
 keys_path = Path.home() / '.config/openssl/bitburrow'  # contains a subdir for each key
 key_state_path = keys_path / 'key_state.yaml'
 key_passphrases: dict[Path, str] = dict()  # keep each key's passphrase in memory
@@ -46,13 +44,13 @@ class Dumper(yaml.SafeDumper):  # fix YAML output formatting
         return super().increase_indent(flow, False)
 
 
-def represent_versions_string(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+def represent_yaml_string(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
     return dumper.represent_scalar(
         'tag:yaml.org,2002:str', value, style='|' if '\n' in value else None
     )
 
 
-Dumper.add_representer(str, represent_versions_string)
+Dumper.add_representer(str, represent_yaml_string)
 
 
 def run_external(args: str | list[str], *, input: str | None = None) -> str:
@@ -173,13 +171,11 @@ def read_text(path: Path) -> str:
     return path.read_bytes().decode('utf-8', errors='surrogateescape')
 
 
-def parse_yaml(content: str, path: Path, *, allow_empty: bool = False) -> dict:
+def parse_yaml(content: str, path: Path) -> dict:
     try:
         value = yaml.safe_load(content)
     except yaml.YAMLError as error:
         raise Berror(f"B33898 unable to parse {path}: {error}")
-    if value is None and allow_empty:
-        return dict()
     if not isinstance(value, dict):
         raise Berror(f"B40581 expected a YAML mapping in {path}")
     return value
@@ -309,7 +305,7 @@ def write_key_state(state: dict) -> None:
     atomic_write(key_state_path, text)
 
 
-def dump_versions(versions: dict) -> str:
+def dump_yaml(versions: dict) -> str:
     """Serialize metadata as YAML with indented lists and readable multiline strings."""
     return yaml.dump(
         versions,
@@ -318,28 +314,6 @@ def dump_versions(versions: dict) -> str:
         sort_keys=False,
         allow_unicode=True,
     )
-
-
-def matching_watched_paths(files: set[str]) -> list[str]:
-    """Return watched files or directories affected by the supplied filenames."""
-    return [
-        w
-        for w in watched_paths
-        if w in files or (w.endswith('/') and any(name.startswith(w) for name in files))
-    ]
-
-
-def set_base_lua_file_cver(code: str, new_file_cver: str, var_name: str) -> str:
-    """Replace a Lua version marker, preserving surrounding source."""
-    code, count = re.subn(
-        rf"^(local {var_name} = ')[^'\r\n]*(')",
-        lambda match: match[1] + new_file_cver + match[2],
-        code,
-        flags=re.MULTILINE,
-    )
-    if count != 1:
-        raise Berror(f"B49932 expected 1 '{var_name}', found {count} in {base_lua_path}")
-    return code
 
 
 def verify_black() -> None:
@@ -366,12 +340,14 @@ def find_berror_dups() -> None:
 def select_signing_keys(state: dict) -> tuple[Key, Key]:
     """Return the active key and the key that must sign the next release."""
     active_key = read_key(state['active_key_id'])
-    parent_code = git_blob(f'HEAD~:{base_lua_path}') or git_blob('HEAD~:hub/base.lua') or ''
-    if state.get('previous_key_id') and not code_has_key(parent_code, active_key):
-        # HEAD might be amended; its parent must already know the new signer; otherwise use
-        # the key that signed its introduction, also for the first ordinary follow-up commit
-        return active_key, read_key(state['previous_key_id'])
-    # with no previous key, the active key is also the bootstrap signing key
+    if state.get('previous_key_id'):
+        # continue using the old signer through the first follow-up base release
+        recent = git_text(
+            'log', '--first-parent', '-2', '--format=%H', '--', str(tree_path)
+        ).splitlines()
+        older_code = git_blob(f'{recent[1]}:{base_lua_path}') if len(recent) == 2 else None
+        if not code_has_key(older_code or '', active_key):
+            return active_key, read_key(state['previous_key_id'])
     return active_key, active_key
 
 
@@ -554,7 +530,7 @@ def sign_doc(subd: str, filename: str) -> None:
                 key_id=signing_key.key_id,
             )
         )
-    sys.stdout.write(dump_versions(dict(tasks=tasks)))
+    sys.stdout.write(dump_yaml(dict(tasks=tasks)))
 
 
 def sign_code(file_cver: str | None = None) -> None:
@@ -563,99 +539,70 @@ def sign_code(file_cver: str | None = None) -> None:
     if not re.fullmatch('[0-9a-z]{7}', file_cver):
         raise Berror(f"B34290 expected a seven-character base-36 commit date: {file_cver!r}")
     modified = git_files('diff', '--cached', '--name-only', '--no-renames', '-z')
-    matched = matching_watched_paths(modified)
-    if not matched:
+    base_changed = str(tree_path) in modified or any(path.startswith('base/') for path in modified)
+    hub_changed = any(path.startswith('hub/') for path in modified)
+    if not base_changed and not hub_changed:
         return
     # HEAD is authoritative: an aborted pre-commit must not give unstaged files new versions
-    previous_text = git_blob(f'HEAD:{tree_path}')
-    if previous_text and previous_text.lstrip().startswith('paths:'):
-        previous_text = None  # rebuild entries for legacy support
-    previous = json.loads(previous_text) if previous_text else {'paths': []}
-    old_paths = {entry['path']: entry for entry in previous['paths']}
-    if file_cver <= old_paths.get('tree.json', {}).get('cver', ''):
-        raise Berror("B80401 commit cver must increase; wait a second or correct the clock")
-    base_changed = 'base/' in matched or not previous_text
-    indexed_base_files = sorted(git_files('ls-files', '-z', '--', 'base/'))
-    if str(base_lua_path) not in indexed_base_files:
+    previous = git_blob(f'HEAD:{tree_path}')
+    old_paths = (
+        {entry['path']: entry for entry in json.loads(previous)['paths']} if previous else {}
+    )
+    indexed = read_indexed_file(base_lua_path)
+    if indexed is None:
         raise Berror(f"B50280 missing indexed file {base_lua_path}")
-    # the downloader uses these names in URLs and installs them in one directory
+    code_mode, code = indexed
+    original_code = code
+    state = read_or_create_key_state(file_cver)
+    active_key, signing_key = select_signing_keys(state)
+    pending_key = None
+    if state.get('bootstrap_pending'):
+        code = prepend_file_pubkey(code, active_key)
+    else:
+        pending_key = get_pending_key(state, file_cver)
+    if pending_key is not None:
+        if ''.join(pending_key.public_key.split()) == ''.join(active_key.public_key.split()):
+            raise Berror("B16393 the pending public key is already the active public key")
+        code = prepend_file_pubkey(code, pending_key)
+    if not code_has_key(code, active_key):
+        raise Berror("B48906 the release must retain the active public key and its key ID")
+    if signing_key is not active_key and not code_has_key(code, signing_key):
+        raise Berror("B80446 the release must retain the public key used to sign it")
+    prepared = dict()
+    worktree_code = None
+    if code != original_code:
+        worktree_code = mirror_file_pubkeys(read_text(base_lua_path), code)
+        prepared[base_lua_path] = (code_mode, code)
+    entries = []
+    # the downloader uses these paths in URLs and installs all files in one directory
     names = {'tree.json'}
-    for name in indexed_base_files:
-        if re.search(r'[^A-Za-z0-9_./-]', name):
-            raise Berror(f"B80402 base path requires URL escaping: {name!r}")
-        leaf = Path(name).name
+    for path in sorted(git_files('ls-files', '-z', '--', 'base/')):
+        if re.search(r'[^A-Za-z0-9_./-]', path):
+            raise Berror(f"B80402 base path requires URL escaping: {path!r}")
+        leaf = Path(path).name
         if leaf in names:
             raise Berror(f"B80403 conflicting flattened filename {leaf!r}")
         names.add(leaf)
-    prepared = dict()
-    worktree_code = None
-    pending_key = None
-    signing_key = None
-    tree = {'signature': signature_placeholder, 'key_id': previous.get('key_id', ''), 'paths': []}
-    if base_changed:
-        if shutil.which('openssl') is None:
-            raise Berror("B71974 missing OpenSSL; install via: sudo apt install openssl")
-        code_mode, code = read_indexed_file(base_lua_path)
-        # bridge only: old daemons read this marker even inside its multiline comment;
-        # touch it on every base release so their header and marker cvers still match
-        code = set_base_lua_file_cver(code, file_cver, 'file_cver')
-        worktree_code = set_base_lua_file_cver(read_text(base_lua_path), file_cver, 'file_cver')
-        file_pubkeys_table(code)
-        file_pubkeys_table(worktree_code)
-        state = read_or_create_key_state(file_cver)
-        active_key, signing_key = select_signing_keys(state)
-        if state.get('bootstrap_pending'):
-            code = prepend_file_pubkey(code, active_key)
-        else:
-            pending_key = get_pending_key(state, file_cver)
-        if pending_key is not None:
-            if ''.join(pending_key.public_key.split()) == ''.join(active_key.public_key.split()):
-                raise Berror("B16393 the pending public key is already the active public key")
-            code = prepend_file_pubkey(code, pending_key)
-        if not code_has_key(code, active_key):
-            raise Berror("B48906 the release must retain the active public key and its key ID")
-        worktree_code = mirror_file_pubkeys(worktree_code, code)
-        prepared[base_lua_path] = (code_mode, code)
-        tree['key_id'] = signing_key.key_id
-    changed = modified.union(matched, ('tree.json',), map(str, prepared))
-    for path in [*indexed_base_files, 'base/', 'hub/adopt5p.sh', 'hub/', 'tree.json']:
-        if path not in changed and path in old_paths:
-            tree['paths'].append(old_paths[path])
-            continue
-        entry = {'path': path, 'cver': file_cver}
-        if not path.endswith('/') and path != 'tree.json':
-            indexed = prepared.get(Path(path)) or read_indexed_file(Path(path))
-            if indexed is None:
-                continue  # deleted files disappear from the tree
-            content = indexed[1]
-            entry['sha256sum'] = hashlib.sha256(
-                content.encode('utf-8', errors='surrogateescape')
-            ).hexdigest()
-            if path == str(base_lua_path):
-                # older clients still verify the detached signature on the main script
-                entry['signature'] = ''.join(sign_string(content, signing_key).split())
-                entry['key_id'] = signing_key.key_id
-        tree['paths'].append(entry)
+        content = code if path == str(base_lua_path) else read_indexed_file(Path(path))[1]
+        data = content.encode('utf-8', errors='surrogateescape')
+        if len(data) > 654321:  # same limit as download_file() in base.lua
+            raise Berror(f"B80447 base file exceeds the download limit: {path}")
+        digest = hashlib.sha256(data).hexdigest()
+        old = old_paths.get(path, {})
+        cver = old['cver'] if old.get('sha256sum') == digest else file_cver
+        entries.append({'path': path, 'cver': cver, 'sha256sum': digest})
+    entries.extend({'path': path, 'cver': file_cver} for path in ('base/', str(tree_path)))
+    # keep the serialized prefix in sync with verify_tree() in base.lua
+    tree = {'signature': signature_placeholder, 'key_id': signing_key.key_id, 'paths': entries}
     text = json.dumps(tree, indent=2) + '\n'
-    if signing_key is not None:
-        signature = ''.join(sign_string(text, signing_key).split())
-        signed = text.replace(signature_placeholder, signature, 1)
-        # this prefix must match base.lua parsing; search: tag_tree_json_sig_prefix
-        header = re.match(
-            r'\{\n  "signature": "([A-Za-z0-9+/]+=?=?)",\n  "key_id": "([0-9a-z]{7})",\n',
-            signed[:1024],
-        )
-        if (
-            header is None
-            or len(signature) % 4
-            or header.groups() != (signature, signing_key.key_id)
-            or signed[: header.start(1)] + signature_placeholder + signed[header.end(1) :] != text
-        ):
-            raise Berror("B80444 signed tree does not match base.lua signature format")
-        text = signed
-    prepared[tree_path] = ('100644', text)
+    signature = ''.join(sign_string(text, signing_key).split())
+    signed = text.replace(signature_placeholder, signature, 1)
+    prefix = f'{{\n  "signature": "{signature}",\n  "key_id": "{signing_key.key_id}",\n'
+    if not signed[:1024].startswith(prefix) or len(signed.encode('utf-8')) > 654321:
+        raise Berror("B80444 signed tree exceeds base.lua format or size limits")
+    prepared[tree_path] = ('100644', signed)
     stage_contents(prepared)
-    atomic_write(tree_path, text)
+    atomic_write(tree_path, signed, 0o644)
     if worktree_code is not None:
         atomic_write(base_lua_path, worktree_code)
     if pending_key is not None:

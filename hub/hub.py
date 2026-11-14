@@ -331,7 +331,7 @@ async def async_background_tasks():
     while True:
         if day_count == 0:  # first day
             await asyncio.sleep(20)
-            db.update_base_cver()  # check for a new signed 'base/' release
+            db.update_base_cver()  # check for new version of the base daemon
             await asyncio.sleep(15)
             await door.check_for_new_upnpc_client()
             await asyncio.sleep(15)
@@ -574,7 +574,7 @@ def entry_point():
         address_list = net.all_local_ips(conf.get('backend.ip'), ipv6_enclosure='[]')
         logger.info(f"❚ Starting BitBurrow hub")
         logger.info(f"❚   frontend URL: {conf.base_url()}/welcome")
-        logger.info(f"❚   version: {util.tree_paths()['hub/']['cver']}")
+        # FIXME: logger.info(f"❚   version: {util.tree_paths()['hub/']['cver']}")
         logger.info(f"❚     details: {version_details}")
         logger.info(f"❚   accounts (admin/manager/user/invite): {counts}")
         for address in address_list:
@@ -588,7 +588,7 @@ def entry_point():
             nicegui.ui.add_css(uif.prefix_css_urls(f.read()), shared=True)
         server_app.include_router(api.router)
         server_app.bind_entrypoint(api.jsonrpc_entrypoint)
-        server_app.add_exception_handler(Berror, api.handle_berror)  # e.g. GET /5s/abcd
+        server_app.add_exception_handler(Berror, api.handle_berror)  # e.g. GET /5l/abcd
         server_app.add_exception_handler(404, a_404_handler("B39369"))  # e.g. GET /ui/f.php
         nicegui.app.add_exception_handler(404, a_404_handler("B26511"))  # e.g. GET /f.php
         nicegui.ui.run_with(

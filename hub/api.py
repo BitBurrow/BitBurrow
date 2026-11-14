@@ -36,7 +36,6 @@ active_long_polls = 0
 active_long_polls_lock = asyncio.Lock()
 
 adopt5l_route = '/5l/{subd}'  # download adopt5p.sh  (list of adopt stages in class Base())
-adopt5s_route = '/5s/{subd}'  # bridge endpoint for old daemons
 log_err_route = '/er/{subd}'  # errors from base router
 jsonrpc_route = '/api/v1'
 router = APIRouter()
@@ -58,67 +57,29 @@ async def handle_berror(request: Request, exc: Berror) -> Response:
     )
 
 
-def get_file(
-    request: Request, subd: str, filename: str, expand, info_msg: str
-) -> PlainTextResponse:
-    ip_address = request.client.host if request.client else '(unknown)'
-    file_path = os.path.join(util.project_root_path, filename)
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-    except FileNotFoundError as e:
-        logger.error(f"B98850 cannot open: {file_path}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-    logger.info(info_msg.format(subd=subd, ip_address=ip_address))
-    return PlainTextResponse(
-        content=expand(content),
-        media_type='text/plain; charset=utf-8',
-        headers={'Cache-Control': 'no-store'},
-    )
-
-
 @router.get(adopt5l_route, response_class=PlainTextResponse)
 def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
     subd = lk.sanitize_subd(subd)  # unverified; 'adopt5p.sh' does not contain any secrets
-    version, target_xver = db.get_adopt5s_version(subd, adoption=True)
+    target_xver, script_cver = db.get_adoption_versions(subd)
     hub_url = conf.base_url()
-    base_path = 'base/base.lua'
-    cver = version.cver
-    if not version.other.get('legacy'):
-        paths = util.tree_paths(json.loads(db.get_blob('tree.json', version.cver)))
-        cver = paths[base_path]['cver']
-    install_url = f'{hub_url}/{cver}/{base_path}'
-    download_url = hub_url + adopt5s_route.format(subd=subd)
-    expand_braces = (  # these hub_config values are immutable
-        lambda s: s.replace('{api_url}', hub_url + jsonrpc_route)
-        .replace('{download_url}', download_url)
-        .replace('{install_url}', install_url)
+    ip_address = request.client.host if request.client else '(unknown)'
+    file_path = os.path.join(util.project_root_path, 'hub/adopt5p.sh')
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except FileNotFoundError:
+        logger.error(f"B98850 cannot open: {file_path}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    content = (
+        content.replace('{api_url}', hub_url + jsonrpc_route)
+        .replace('{install_url}', f'{hub_url}/{script_cver}/base/base.lua')
         .replace('{target_xver}', target_xver)
         .replace('{log_err_route}', hub_url + log_err_route.format(subd=subd))
         .replace('{ott_filename}', db.ott_filename(subd))
         .replace('{subd}', subd)
     )
-    return get_file(
-        request,
-        subd,
-        'hub/adopt5p.sh',
-        expand_braces,
-        "B28592 base {subd} completed adopt5l from {ip_address}",
-    )
-
-
-@router.get(adopt5s_route, response_class=PlainTextResponse)
-def get_adopt5s_download(request: Request, subd: str) -> PlainTextResponse:
-    ip_address = request.client.host if request.client else '(unknown)'
-    version, fv = db.get_adopt5s_version(subd)  # raises Berror if subd not valid
-    logger.info(f"B76218 base {subd} completed adopt5s from {ip_address} (base {fv})")
-    headers = {'Cache-Control': 'no-store'}
-    headers['X-BitBurrow-File-Version'] = fv
-    if version.other and 'signature' in version.other:
-        headers['X-BitBurrow-Signature'] = version.other['signature']  # cryptographic signature
-    if version.other and 'key_id' in version.other:
-        headers['X-BitBurrow-Key-Id'] = version.other['key_id']  # cver of key used to sign
-    return PlainTextResponse(db.get_blob('base/base.lua', version.cver), headers=headers)
+    logger.info(f"B28592 base {subd} completed adopt5l from {ip_address}")
+    return PlainTextResponse(content, headers={'Cache-Control': 'no-store'})
 
 
 class CverConvertor(starlette.convertors.StringConvertor):
@@ -129,7 +90,7 @@ starlette.convertors.register_url_convertor('is_cver', CverConvertor())  # check
 
 
 @router.get('/{cver:is_cver}/{path:path}')
-def get_adopt5s_download(cver: str, path: str) -> Response:
+def get_base_release_file(cver: str, path: str) -> Response:
     if path != 'tree.json' and not path.startswith('base/'):
         raise HTTPException(status_code=404)
     content = db.get_blob(path, cver)
