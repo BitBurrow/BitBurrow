@@ -1,5 +1,5 @@
 {
-  "signature": "nPjC4u1X+qtd2ZbK310yWt07dj9uXa3jUQn3pWFoe8WkISz5rxZ//iHDf+Gy7Lznfazutsyptc3V5OydSH+eB8FbQs7ZFgTayEoSbDm8972zdBveHD5dsm4fNS0PjNLRJ6eGtAEFPwjjUazr8zEufc6sTt4TfVPnVeRNTRqvIluCMlH/osDTMwoiE1XKazh/EbF7o8Jb8M0vaik/+h9xdPx1O1kfzYmLucbDqbjMTMnuDhIH2tDUGp1eYVBDx0TVs+seWkpGI/y9z0jfcR2B9X0ZyqCFhdbMeDFQn9K3G8LhIvAXppaf7N/cSWd+i0EKb2AWyArtujB3DlpM22K4Xn0Ad/iSMnrV6pF3FwMK4wj4ewof4WSFXYSL+0n8tefyvb3wXQ0laUCgsyD/kxh8INYepNGUI1bzvvbRDB2JuKRvfhMe1BNZZOaB94GWabp5iPklsDj2INnM+K5NXVLNkL0UeDjXoxEp22BnbrD/+kHBmuUR0lZA/X6XgpIIkBNR",
+  "signature": "r7bPFH9LWkA3zwzfNAYOJmlyU4ob419JYvkWqnYmSSKAGU9ju4f5m+py4bGWAuhAUWprbEeet4mVloVHgaY5zWcpKI5kZUzhXQ9aCHraxTPghqLMOkj3qC/oLDED9DkNGa9iJd/u1BwR/xkhja7BqH6T/FL1gBNEExlk0tVHL2m4YVlrxCbzAyyHadspXDcA9Y5qKeWENQBNtR3jS8+I+Ny/iN8lqAKoO8KHCDwBJiF2ER/13PFxfyqfBOnlZPedcrLnCQgZG0/k04BTNRflOAtubgAprJrbly+4uhYeilqotsMFQNTK+6oQnuDvBbeKDO6pdhR/3gYf10piVMF4a8EjXwvbR06qR02tIYZ61ffOTDz4NYBhhOjSRngEqvaJ1o2Enqi0Ye4A931JDkD/jpmthjWTpeIjc8eF5Q+Pj99PJLJDm+dV1KUunAPQm4+v9970s8dZqLQwupy5Nk5i7ej/8/65Qymy/9hmUdN58vuFS5YjZpoZSYuINFbKY9Zw",
   "key_id": "0tlfc1c",
   "paths": [
     {
@@ -8,17 +8,12 @@
       "sha256sum": "4e6413a9a81204b0e46337776d1468c459aec56af1a93f0f7d27fe67584d445d"
     },
     {
-      "path": "base/emulator/install.sh",
-      "cver": "0togayt",
-      "sha256sum": "3e21ecf15b391afeacc6f796855da3dca5ce6d413d9a2d1285ceaac6d1a4bff4"
-    },
-    {
       "path": "base/",
-      "cver": "0toid27"
+      "cver": "0toifw3"
     },
     {
       "path": "tree.json",
-      "cver": "0toid27"
+      "cver": "0toifw3"
     }
   ]
 }
