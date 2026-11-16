@@ -451,6 +451,14 @@ def entry_point():
             sys.exit(0)
         conf.load(args.config_file)
         set_logging(args)  # requires config file be loaded
+        if args.command == 'get-conf':  # do before migrate_db.migrate() to avoid Berror 36297
+            value = conf.get(args.cpath)
+            if isinstance(value, list):
+                for v in value:
+                    print(str(v))
+            else:
+                print(str(value))
+            sys.exit(0)
         if db.engine is None:
             db_file = conf.get('path.db')
             if db_file == '-':
@@ -519,14 +527,6 @@ def entry_point():
             sys.exit(0)
         elif args.command == 'test':
             sys.exit(0 if util.integrity_test_by_id(args.test_name) else 1)
-        elif args.command == 'get-conf':
-            value = conf.get(args.cpath)
-            if isinstance(value, list):
-                for v in value:
-                    print(str(v))
-            else:
-                print(str(value))
-            sys.exit(0)
         # args.command == 'serve':
         if conf.get('backend.web_proto') == 'https':
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
