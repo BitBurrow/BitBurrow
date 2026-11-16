@@ -451,7 +451,8 @@ def entry_point():
             sys.exit(0)
         conf.load(args.config_file)
         set_logging(args)  # requires config file be loaded
-        if args.command == 'get-conf':  # do before migrate_db.migrate() to avoid Berror 36297
+        # do bbhub commands that don't need the database here, to avoid Berror 36297
+        if args.command == 'get-conf':
             value = conf.get(args.cpath)
             if isinstance(value, list):
                 for v in value:
@@ -459,6 +460,21 @@ def entry_point():
             else:
                 print(str(value))
             sys.exit(0)
+        elif args.command == 'migrate-config':
+            conf.save(args.config_file)
+            print(f"Config file migrated: {args.config_file}")
+            sys.exit(0)
+        elif args.command == 'port-forward-script':
+            util.port_forward_script()
+            sys.exit(0)
+        elif args.command == 'tls-cert-script':
+            util.tls_cert_script()
+            sys.exit(0)
+        elif args.command == 'dnsdist-conf':
+            util.dnsdist_conf()
+            sys.exit(0)
+        elif args.command == 'test':
+            sys.exit(0 if util.integrity_test_by_id(args.test_name) else 1)
         if db.engine is None:
             db_file = conf.get('path.db')
             if db_file == '-':
@@ -475,10 +491,6 @@ def entry_point():
                 SQLModel.metadata.create_all(conn)
                 if has_tables is None:  # include SQLite schema changes in the transaction
                     conn.exec_driver_sql(f'PRAGMA user_version = {migrate_db.db_schema_version};')
-        if args.command == 'migrate-config':
-            conf.save(args.config_file)
-            print(f"Config file migrated: {args.config_file}")
-            sys.exit(0)
         if args.command == 'create-admin-account':
             login_key = db.new_account(db.AccountKind.ADMIN)
             print(f"Login key for your new {db.AccountKind.ADMIN} (KEEP THIS SAFE!): {login_key}")
@@ -516,17 +528,6 @@ def entry_point():
                 print(f"B60472 cannot queue RCE: {e}", file=sys.stderr)
                 raise SystemExit(1)
             raise SystemExit(0)
-        elif args.command == 'port-forward-script':
-            util.port_forward_script()
-            sys.exit(0)
-        elif args.command == 'tls-cert-script':
-            util.tls_cert_script()
-            sys.exit(0)
-        elif args.command == 'dnsdist-conf':
-            util.dnsdist_conf()
-            sys.exit(0)
-        elif args.command == 'test':
-            sys.exit(0 if util.integrity_test_by_id(args.test_name) else 1)
         # args.command == 'serve':
         if conf.get('backend.web_proto') == 'https':
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
