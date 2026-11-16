@@ -14,9 +14,10 @@ import hub.util as util
 ### How to make a new schema version of the database
 # 1. update your SQLModel classes (note that the migration below will not fill in default
 #      values for new fields)
-# 2. increment db_schema_version below
-# 3. append data/schema changes to migrate_versions(); see version 48 → 49
-# 4. run bbhub and verify that it does this correctly:
+# 2. if the base API has changed in an incompatible way, update oldest_compatible_base_cver
+# 3. increment db_schema_version below
+# 4. append data/schema changes to migrate_versions(); see version 48 → 49
+# 5. run bbhub and verify that it does this correctly:
 #    * copy `data.sqlite` to `data.1.sqlite`
 #    * build a fresh schema file
 #    * copy column intersections from the old DB
@@ -24,6 +25,7 @@ import hub.util as util
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
 db_schema_version = 53
+oldest_compatible_base_cver = '0togg6a'  # last 'bridge' base cver before removing deprecated API
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -293,6 +295,13 @@ def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
     #     version = ...
 
 
+def bases_older_than(working_cver: str, db_path: str) -> list[str]:
+    with sqlite_conn(db_path) as conn:
+        statement = 'SELECT subd FROM base WHERE file_xver != ? AND substr(file_xver, 1, 7) < ?;'
+        rows = conn.execute(statement, (db.default_xver, working_cver))
+        return [row[0] for row in rows]
+
+
 def migrate(db_path: str) -> None:
     if not os.path.exists(db_path):
         return  # not an error because it may have not been created yet
@@ -304,6 +313,12 @@ def migrate(db_path: str) -> None:
             return
         row = conn.execute('PRAGMA user_version;').fetchone()
         version = int(row[0] if row and row[0] is not None else 0)
+    old_bases = bases_older_than(oldest_compatible_base_cver, db_path)
+    if old_bases:
+        raise util.Berror(
+            f"B36297 some bases ({', '.join(old_bases)}) have incompatible versions "
+            f"and need to be updated to {oldest_compatible_base_cver} via an older hub release"
+        )
     if version >= db_schema_version:
         return
     legacy_version = 48  # last version whose sections run *after* rebuilding
