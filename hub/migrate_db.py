@@ -24,7 +24,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 53
+db_schema_version = 54
 oldest_compatible_base_cver = '0togg6a'  # last 'bridge' base cver before removing deprecated API
 
 logger = logging.getLogger(__name__)
@@ -290,6 +290,11 @@ def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
             conn.execute('DROP TABLE IF EXISTS basedver;')  # instead of a treacherous migration
             conn.execute("UPDATE base SET next_file_xver='' WHERE next_file_xver != '';")
         version = 53
+    if version < 54 <= target:  # version 53 → 54: set BasedVer.epoch to 30 for existing rows
+        with sqlite_conn(db_path) as conn:
+            if conn.execute('PRAGMA table_info(basedver);').fetchone() is not None:  # if it exists
+                conn.execute('ALTER TABLE basedver ADD COLUMN epoch INTEGER NOT NULL DEFAULT 30;')
+        version = 54
     # if version < ... <= target:
     #     ...
     #     version = ...

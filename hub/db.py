@@ -793,12 +793,15 @@ def next_task(base_id: int, unstale: bool = True) -> BaseTask | None:
                     target_xver = (task.args or {}).get('target_xver')
                     bv = (
                         session.exec(
-                            select(BasedVer).where(BasedVer.cver == target_xver[:7])
+                            select(BasedVer).where(
+                                BasedVer.cver == target_xver[:7],
+                                BasedVer.epoch <= update_max_epoch(base),
+                            )
                         ).first()
                         if target_xver
                         else None
                     )
-                    # a pinned release can become unavailable while the task is queued
+                    # recheck the pinned release against the base's current version and test status
                     platforms = (base.platform,) if base.platform else any_platform
                     if (
                         bv is None
@@ -840,7 +843,7 @@ def enqueue_task(
             base = session.get(Base, base_id)
             if base is None:
                 raise Berror(f"B80405 cannot queue update for missing base {base_id}")
-            bv = newest_approved_ver(base, session)
+            bv = newest_approved_ver(base, session, is_new_install=False)
             if bv is None:
                 raise Berror(f"B95159 no base version approved ({base.min_test_level=})")
             task_args = dict(task_args, target_xver=bv.xver())
@@ -1165,6 +1168,7 @@ class BasedVer(SQLModel, table=True):
     blob_id: int = Field(nullable=False)
     id: int | None = Field(primary_key=True, default=None)
     cver: str = Field(index=True, unique=True, default='')  # 7-char date; see net.b36datetime()
+    epoch: int = 0  # a base update must never skip an epoch; needed for 'bridge' versions
     # test_level_x must match class Platform() values
     test_level_init: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.INIT
     test_level_sysd: TestLevel = TestLevel.UNTESTED  # where base.platform == Platform.SYSTEMD
@@ -1192,22 +1196,33 @@ def update_base_cver() -> None:
     try:
         with open(os.path.join(util.project_root_path, 'tree.json'), 'rb') as f:
             content = f.read()
-        paths = util.tree_paths(json.loads(content))
+        tree = json.loads(content)
+        paths = util.tree_paths(tree)
         cver = paths['base/']['cver']
         if paths['tree.json']['cver'] != cver or 'base/base.lua' not in paths:
             raise Berror(f"B80417 invalid tree for base release {cver}")
+        new_epoch = tree.get('epoch')  # maintained by the programmer
+        if type(new_epoch) is not int:
+            raise Berror(f"B99640 invalid epoch value {new_epoch!r} in 'tree.json'")
         with Session(engine) as session:
             session.connection().exec_driver_sql('BEGIN IMMEDIATE')
             existing = session.exec(select(BasedVer).where(BasedVer.cver == cver)).one_or_none()
             if existing is not None:
-                if session.get(Blob, existing.blob_id).content != content:
-                    # can happen via 2 commits within the same second
-                    logger.error(f"B80416 conflicting commits for 'tree.json' cver {cver}")
-                return
-            newer = session.exec(select(BasedVer.cver).where(BasedVer.cver > cver).limit(1)).first()
-            if newer is not None:
-                logger.error(f"B15828 ignoring base version {cver} because newer {newer} exists")
-                return
+                if session.get(Blob, existing.blob_id).content == content:
+                    return  # same cver, same content
+                # can happen via 2 commits within the same second or out-of-sync clocks
+                raise Berror(f"B80416 conflicting commits for 'tree.json' cver {cver}")
+            newest = session.exec(select(BasedVer).order_by(BasedVer.cver.desc()).limit(1)).first()
+            if newest is not None:
+                if newest.cver > cver:
+                    e = f"B15828 ignoring base version {cver} because newer {newest.cver} exists"
+                    raise Berror(e)
+                newest_epoch = newest.epoch
+                in_v = f" ignoring base version {cver}"
+                if new_epoch < newest_epoch:
+                    raise Berror(f"B68956 epoch {new_epoch} < existing epoch {newest_epoch};{in_v}")
+                if new_epoch > newest_epoch + 1:
+                    raise Berror(f"B43609 epoch {new_epoch} > next epoch {newest_epoch+1};{in_v}")
             blob_id = set_blob('tree.json', content, cver, psession=session)
             for path, entry in paths.items():
                 if path.startswith('base/') and not path.endswith('/'):
@@ -1216,10 +1231,12 @@ def update_base_cver() -> None:
                     if hashlib.sha256(data).hexdigest() != entry['sha256sum']:
                         raise Berror(f"B80420 source hash mismatch: {path}")
                     set_blob(path, data, entry['cver'], psession=session)
-            session.add(BasedVer(cver=cver, blob_id=blob_id))
+            session.add(BasedVer(cver=cver, blob_id=blob_id, epoch=new_epoch))
             session.commit()
             logger.info(f"B96927 indexed new base version {cver}")
-    except (OSError, ValueError, KeyError, Berror) as e:
+    except Berror as e:
+        logger.error(str(e))
+    except (OSError, ValueError, KeyError) as e:
         logger.error(f"B57645 cannot index base release: {e}")
 
 
@@ -1250,12 +1267,22 @@ def check_base_test_levels() -> None:
                     logger.warning(f"B97013 {error_msg} ({n} canary {pl}: {",".join(canaries)})")
 
 
+def update_max_epoch(base: Base):
+    """Returns a SQLAlchemy expression to find the largest allowed epoch for the given base."""
+    epoch = select(BasedVer.epoch).where(BasedVer.cver == base.file_xver[:7]).scalar_subquery()
+    first_epoch = 30
+    return func.coalesce(epoch + 1, first_epoch)  # first non-NULL argument
+
+
 def newest_approved_ver(
     base: Base,
     session: Session,
+    is_new_install: bool,
 ) -> BasedVer | None:
-    """Return the newest BasedVer which has an approved test level for this Base."""
+    """Return the newest approved release the base can install."""
     statement = select(BasedVer).order_by(BasedVer.cver.desc())
+    if not is_new_install:
+        statement = statement.where(BasedVer.epoch <= update_max_epoch(base))
     bvs = session.exec(statement).all()
     if base.platform:
         for bv in bvs:
@@ -1307,7 +1334,7 @@ def get_adoption_versions(subd: str) -> tuple[str, str]:
         base = session.exec(select(Base).where(Base.subd == subd)).one_or_none()
         if base is None:
             raise Berror(f"B41474 cannot find subd {subd}")
-        bv = newest_approved_ver(base, session)
+        bv = newest_approved_ver(base, session, is_new_install=True)
         if bv is None:
             raise Berror("B80426 no approved base version for installation")
         tree = json.loads(session.get(Blob, bv.blob_id).content)
@@ -1420,7 +1447,7 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
             e = f"B12284 unknown version base {ping_xver}"
             logger.warning(util.front_berror_code(e, subd, ip))
         ## 5. enqueue base update if ready
-        approved_bv = newest_approved_ver(base, session)
+        approved_bv = newest_approved_ver(base, session, is_new_install=False)
         if approved_bv is None:
             e = f"B74409 no approved base version available on {platform}"
             logger.debug(util.front_berror_code(e, subd, ip))
