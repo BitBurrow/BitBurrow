@@ -244,6 +244,10 @@ def eat_engineio_stack_dump(record: logging.LogRecord) -> bool:
     if not record.exc_info:
         return True
     _, error, tb = record.exc_info
+    if isinstance(error, asyncio.CancelledError) and error.args == (
+        'Task cancelled, timeout graceful shutdown exceeded',
+    ):
+        return False  # Uvicorn already logged the shutdown timeout.
     if not isinstance(error, KeyError) or error.args != ('REQUEST_METHOD',):
         return True
     while tb is not None and tb.tb_next is not None:
