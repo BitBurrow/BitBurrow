@@ -24,7 +24,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 54
+db_schema_version = 55
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -294,6 +294,27 @@ def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
             if conn.execute('PRAGMA table_info(basedver);').fetchone() is not None:  # if it exists
                 conn.execute('ALTER TABLE basedver ADD COLUMN epoch INTEGER NOT NULL DEFAULT 30;')
         version = 54
+    if version < 55 <= target:  # version 54 → 55: move open update confirmations to their tasks
+        with sqlite_conn(db_path) as conn:
+            conn.execute('BEGIN IMMEDIATE;')
+            if conn.execute('PRAGMA table_info(basetask);').fetchone() is not None:
+                # add the nullable column here so the copier preserves NULL for other tasks
+                conn.execute('ALTER TABLE basetask ADD COLUMN update_deadline DATETIME;')
+                # an old base could have several assignments. Keep its last tracked target
+                conn.execute('''UPDATE basetask SET update_deadline = base.update_deadline
+                    FROM base
+                    WHERE base.next_file_xver != '' AND basetask.id = (
+                        SELECT task.id FROM basetask AS task
+                        WHERE task.base_id = base.id AND task.method = 'update'
+                            AND task.assigned_at IS NOT NULL
+                            AND json_extract(task.args, '$.target_xver') = base.next_file_xver
+                        ORDER BY task.assigned_at DESC, task.id DESC LIMIT 1
+                    );''')
+                conn.execute(
+                    '''UPDATE basetask SET status = 'FAILED', finished_at = CURRENT_TIMESTAMP
+                    WHERE method = 'update' AND status = 'ASSIGNED' AND update_deadline IS NULL;'''
+                )
+        version = 55
     # if version < ... <= target:
     #     ...
     #     version = ...

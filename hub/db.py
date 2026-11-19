@@ -435,8 +435,6 @@ class Base(SQLModel, table=True):
     auth_pubkey: str = ''  # pubkey for API auth after initial auth via ott_id
     account: Account | None = Relationship(back_populates='bases')
     file_xver: str = default_xver  # last confirmed base release version
-    next_file_xver: str = ''  # set when an update task is assigned; '' means no update in progress
-    update_deadline: DateTime = DateTime(1970, 1, 1, tzinfo=TimeZone.utc)
     platform: Platform | None = None
     setup_ui_path: str = ''  # path of last-active step in 'setup-adopt.yaml'; '' means root
     upnp_igd_url: str = 'untried'  # UPnP control URL or r'^(untried|disabled|unavailable|failed)$'
@@ -690,13 +688,18 @@ def new_intf(base_id: int, base_intf_id=None, base_is_hub: bool = False) -> int:
 class BaseTaskStatus(enum.Enum):
     QUEUED = 20  # new, waiting
     ASSIGNED = 40  # given to a base to do
-    DONE = 60
+    DONE = 60  # task complete, but an update still needs a matching ping if update_deadline is set
     FAILED = 80
 
 
 class BaseTask(SQLModel, table=True):
     __table_args__ = (
-        sqlalchemy.Index('ix_base_task_next', 'base_id', 'status', 'priority', 'position'),
+        sqlalchemy.Index(  # only one task per base can have a not-None update_deadline
+            'ix_base_task_pending_update',
+            'base_id',
+            unique=True,
+            sqlite_where=sqlalchemy.text('update_deadline IS NOT NULL'),
+        ),
     )
     id: int | None = Field(primary_key=True, default=None)
     base_id: int = Field(index=True, foreign_key='base.id')
@@ -717,6 +720,10 @@ class BaseTask(SQLModel, table=True):
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
         default=None,
     )
+    update_deadline: DateTime | None = Field(  # 'not None' until the update attempt is settled
+        sa_column=Column(sqlalchemy.DateTime(timezone=True)),
+        default=None,
+    )
 
 
 def get_task(task_id):
@@ -724,106 +731,95 @@ def get_task(task_id):
         return session.get(BaseTask, task_id)
 
 
+def requeue_stale_tasks(session: Session, base_id: int, now: DateTime) -> None:
+    statement = (
+        sqlalchemy.update(BaseTask)
+        .where(
+            BaseTask.base_id == base_id,
+            BaseTask.status == BaseTaskStatus.ASSIGNED,
+            BaseTask.method.not_in(('rce', 'update')),  # updates expire instead
+            BaseTask.assigned_at < now - TimeDelta(seconds=600),
+        )
+        .values(status=BaseTaskStatus.QUEUED, assigned_at=None)
+        .returning(BaseTask.id)
+    )
+    task_ids = session.execute(statement).scalars().all()
+    if len(task_ids) == 1:
+        logger.warning(f"B14627 requeued stale task {task_ids[0]}, {base_id=}")
+    elif task_ids:
+        logger.warning(f"B14628 requeued {len(task_ids)} stale tasks, {base_id=}")
+
+
+def next_queued_task_statement(base_id: int, now: DateTime):
+    pending = (
+        select(BaseTask.id)
+        .where(BaseTask.base_id == base_id, BaseTask.update_deadline > now)
+        .subquery()
+    )
+    awaiting_other_update = select(pending.c.id).where(pending.c.id != BaseTask.id).exists()
+    return (
+        select(BaseTask)
+        .where(
+            BaseTask.base_id == base_id,
+            BaseTask.status == BaseTaskStatus.QUEUED,
+            (BaseTask.method != 'update') | ~awaiting_other_update,
+        )
+        .order_by(BaseTask.priority.desc(), BaseTask.position, BaseTask.id)
+        .limit(1)
+    )
+
+
+def update_task_is_eligible(session: Session, base: Base, target_xver: str | None) -> bool:
+    """Recheck the pinned release against the installed release and current test levels."""
+    if not isinstance(target_xver, str) or len(target_xver) != len(default_xver):
+        return False
+    target_cver = target_xver[:7]
+    if target_cver < base.file_xver[:7]:
+        return False
+    statement = select(BasedVer).where(
+        BasedVer.cver == target_cver,
+        BasedVer.epoch >= oldest_compatible_base_epoch,
+        BasedVer.epoch <= update_max_epoch(base),
+    )
+    release = session.exec(statement).one_or_none()
+    platforms = (base.platform,) if base.platform else any_platform
+    return release is not None and any(release.test_level(p) != TestLevel.FAILED for p in platforms)
+
+
 def next_task(base_id: int, unstale: bool = True) -> BaseTask | None:
-    """Assign and return the next (top) queued task for a base."""
-    with Session(engine) as session:
-
-        def stale_tasks_check(stale_after_seconds: int = 600) -> None:
-            now = DateTime.now(TimeZone.utc)
-            stale_before = now - TimeDelta(seconds=stale_after_seconds)
-            statement = (
-                sqlalchemy.update(BaseTask)
-                .where(BaseTask.base_id == base_id)
-                .where(BaseTask.status == BaseTaskStatus.ASSIGNED)
-                .where(BaseTask.method != 'rce')
-                .where(BaseTask.assigned_at != None)
-                .where(BaseTask.assigned_at < stale_before)
-                .where(
-                    (BaseTask.method != 'update') | (BaseTask.assigned_at < now - update_timeout)
-                )
-                .values(
-                    status=BaseTaskStatus.QUEUED,
-                    assigned_at=sqlalchemy.case(
-                        (BaseTask.method == 'update', BaseTask.assigned_at), else_=None
-                    ),
-                )
-                .returning(BaseTask.id)
-            )
-            task_ids = session.execute(statement).scalars().all()
-            session.commit()
-            if len(task_ids) == 1:
-                logger.warning(f"B14627 requeued stale task {task_ids[0]}, {base_id=}")
-            elif task_ids:
-                logger.warning(f"B14628 requeued {len(task_ids)} stale tasks, {base_id=}")
-
-        if unstale:
-            stale_tasks_check()
-        retries = 0
-        while retries < 20:
-            statement = (
-                select(BaseTask.id, BaseTask.assigned_at)
-                .where(BaseTask.base_id == base_id)
-                .where(BaseTask.status == BaseTaskStatus.QUEUED)
-                .order_by(
-                    BaseTask.priority.desc(),  # high priority trumps position
-                    BaseTask.position.asc(),
-                    BaseTask.id.asc(),  # is is tie-breaker if all others are equal
-                )
-                .limit(1)
-            )
-            queued_task = session.exec(statement).first()
-            if queued_task is None:
-                return None  # no pending tasks
-            task_id, previous_assignment = queued_task
-            assigned_at = DateTime.now(TimeZone.utc)
-            update_statement = (
-                sqlalchemy.update(BaseTask)
-                .where(BaseTask.id == task_id)
-                .where(BaseTask.status == BaseTaskStatus.QUEUED)
-                .values(
-                    status=BaseTaskStatus.ASSIGNED,
-                    assigned_at=assigned_at,
-                )
-            )
-            result = session.exec(update_statement)
-            if result.rowcount == 1:
-                task = session.get(BaseTask, task_id)
-                if task.method == 'update':
-                    base = session.get(Base, base_id)
-                    expire_updates(session)
-                    target_xver = (task.args or {}).get('target_xver')
-                    bv = (
-                        session.exec(
-                            select(BasedVer).where(
-                                BasedVer.cver == target_xver[:7],
-                                BasedVer.epoch >= oldest_compatible_base_epoch,
-                                BasedVer.epoch <= update_max_epoch(base),
-                            )
-                        ).first()
-                        if target_xver
-                        else None
-                    )
-                    # recheck the pinned release against the base's current version and test status
-                    platforms = (base.platform,) if base.platform else any_platform
-                    if (
-                        bv is None
-                        or target_xver[:7] < base.file_xver[:7]
-                        or all(bv.test_level(p) == TestLevel.FAILED for p in platforms)
-                    ):
-                        task.status = BaseTaskStatus.FAILED
-                        task.assigned_at = previous_assignment
-                        task.finished_at = assigned_at
-                        session.add(task)
-                        session.commit()
-                        continue
-                    if target_xver != base.file_xver and base.next_file_xver != target_xver:
-                        base.next_file_xver = target_xver
-                        base.update_deadline = assigned_at + update_timeout
-                session.commit()
-                return session.get(BaseTask, task_id)
+    """Assign the next eligible task, keeping one update confirmation open per base."""
+    with Session(engine, expire_on_commit=False) as session:
+        if not unstale:
+            # idle long polls can skip acquiring SQLite's write lock
+            probe = next_queued_task_statement(base_id, DateTime.now(TimeZone.utc))
+            if session.exec(probe.with_only_columns(BaseTask.id)).first() is None:
+                return None
             session.rollback()
-            retries += 1
-        raise Berror(f"B19708 could not find next task, {base_id=}")
+        session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+        now = DateTime.now(TimeZone.utc)
+        expire_updates(session, now, base_id=base_id)
+        if unstale:
+            requeue_stale_tasks(session, base_id, now)
+        statement = next_queued_task_statement(base_id, now)
+        while (task := session.exec(statement).first()) is not None:
+            if task.method != 'update':
+                break
+            base = session.get(Base, base_id)
+            target_xver = (task.args or {}).get('target_xver')
+            if not update_task_is_eligible(session, base, target_xver):
+                task.status = BaseTaskStatus.FAILED
+            elif target_xver == base.file_xver:
+                task.status = BaseTaskStatus.DONE  # the base already reported this exact release
+            else:
+                if task.update_deadline is None:
+                    task.update_deadline = now + update_timeout
+                break
+            task.finished_at = now
+        if task is not None:
+            task.status = BaseTaskStatus.ASSIGNED
+            task.assigned_at = now
+        session.commit()
+        return task
 
 
 def enqueue_task(
@@ -860,7 +856,8 @@ def enqueue_task(
                             BaseTaskStatus.QUEUED,
                             BaseTaskStatus.ASSIGNED,
                         ],
-                    ),
+                    )
+                    | BaseTask.update_deadline.is_not(None),
                 )
             )
             if dedupe <= 3:  # args must match
@@ -906,6 +903,19 @@ def finish_task(
     prior_statuses: tuple[BaseTaskStatus, ...],
 ) -> bool:
     """Apply one validated task completion using the caller's session."""
+    now = DateTime.now(TimeZone.utc)
+    if task.method == 'update' and task.assigned_at is not None:
+        if task.update_deadline is None:
+            # acknowledge saved reports so the base can clear them after confirmation or expiry
+            return False
+        if task.update_deadline.replace(tzinfo=TimeZone.utc) <= now:
+            expire_updates(session, now, base_id=task.base_id)
+            session.commit()
+            return False
+        if status == BaseTaskStatus.FAILED and task.status in prior_statuses:
+            fail_update(session, task, now)
+            session.commit()
+            return True
     if task.status == status:
         logger.info(f"B30309 accepting already-recorded result for task {task.id}")
         return False
@@ -917,7 +927,7 @@ def finish_task(
         .where(BaseTask.status.in_(prior_statuses))
         .values(
             status=status,
-            finished_at=DateTime.now(TimeZone.utc),
+            finished_at=now,
         )
     )
     result = session.exec(statement)
@@ -937,6 +947,7 @@ def mark_task_status(
     if status not in (BaseTaskStatus.DONE, BaseTaskStatus.FAILED):
         raise Berror(f"B14766 invalid task status {status}")
     with Session(engine) as session:
+        session.connection().exec_driver_sql('BEGIN IMMEDIATE')
         task = session.get(BaseTask, task_id)
         if task is None or (base_id is not None and task.base_id != base_id):
             raise Berror(f"B92552 task {task_id} was not assigned")
@@ -954,12 +965,14 @@ def finish_task_result(
     if status not in (BaseTaskStatus.DONE, BaseTaskStatus.FAILED):
         raise Berror(f"B14767 invalid task status {status}")
     with Session(engine) as session:
+        if method == 'update':
+            session.connection().exec_driver_sql('BEGIN IMMEDIATE')
         task = session.get(BaseTask, task_id)
         if task is None or task.base_id != base_id or task.method != method:
             raise Berror(f"B92553 task {task_id} was not assigned")
         prior_statuses = (BaseTaskStatus.ASSIGNED,)
         if method == 'update' and task.assigned_at is not None:
-            # a restarted base can have a saved result for a requeued or expired update
+            # a restarted base can report an update requeued by the old hub
             prior_statuses += (BaseTaskStatus.QUEUED, BaseTaskStatus.FAILED)
         elif method == 'discover_upnp' and status == BaseTaskStatus.DONE:
             prior_statuses += (BaseTaskStatus.FAILED,)
@@ -1302,36 +1315,43 @@ def newest_approved_ver(
     return None
 
 
-def expire_updates(session: Session) -> None:
-    """Account for accepted update attempts once; adoption never creates an attempt."""
-    now = DateTime.now(TimeZone.utc)
-    statement = select(Base).where(Base.next_file_xver != '', Base.update_deadline <= now)
-    for base in session.exec(statement).all():
-        bv = session.exec(select(BasedVer).where(BasedVer.cver == base.next_file_xver[:7])).first()
-        if bv is not None:
-            bv.used_total += 1
-            bv.used_fails += 1
-            logger.info(
-                f"B10537 base {base.subd} failed to update to {base.next_file_xver} before the deadline"
+def fail_update(session: Session, task: BaseTask, now: DateTime) -> None:
+    """Settle an open update attempt and account for its failure once."""
+    task.update_deadline = None
+    task.status = BaseTaskStatus.FAILED
+    task.finished_at = now
+    target_cver = task.args['target_xver'][:7]
+    bv = session.exec(select(BasedVer).where(BasedVer.cver == target_cver)).one_or_none()
+    if bv is None:
+        return
+    bv.used_total += 1
+    bv.used_fails += 1
+    if bv.used_fails >= 7 and bv.used_fails * 2 >= bv.used_total:
+        logger.error(f"B21382 base {bv.cver} failed {bv.used_fails} of {bv.used_total} attempts")
+        for platform in Platform:
+            setattr(bv, f'test_level_{platform.value}', TestLevel.FAILED)
+        statement = (
+            sqlalchemy.update(BaseTask)
+            .where(
+                BaseTask.status == BaseTaskStatus.QUEUED,
+                BaseTask.method == 'update',
+                BaseTask.update_deadline.is_(None),
+                BaseTask.args['target_xver'].as_string().startswith(bv.cver + '-'),
             )
-            if bv.used_fails >= 7 and bv.used_fails * 2 >= bv.used_total:
-                logger.error(
-                    f"B21382 base {bv.cver} failed {bv.used_fails} of {bv.used_total} attempts"
-                )
-                for platform in Platform:
-                    setattr(bv, f'test_level_{platform.value}', TestLevel.FAILED)
-                statement = (
-                    sqlalchemy.update(BaseTask)
-                    .where(BaseTask.status == BaseTaskStatus.QUEUED)
-                    .where(BaseTask.method == 'update')
-                    .where(BaseTask.args['target_xver'].as_string().startswith(bv.cver + '-'))
-                    .values(status=BaseTaskStatus.FAILED, finished_at=now)
-                )
-                session.exec(statement)
-            session.add(bv)
-        base.next_file_xver = ''
-        session.add(base)
-    session.flush()
+            .values(status=BaseTaskStatus.FAILED, finished_at=now)
+        )
+        session.exec(statement)
+
+
+def expire_updates(session: Session, now: DateTime, *, base_id: int | None = None) -> None:
+    """Fail overdue confirmations within the caller's write transaction."""
+    statement = select(BaseTask, Base.subd).join(Base).where(BaseTask.update_deadline <= now)
+    if base_id is not None:
+        statement = statement.where(BaseTask.base_id == base_id)
+    for task, subd in session.exec(statement).all():
+        target_xver = task.args['target_xver']
+        logger.info(f"B10537 base {subd} failed to update to {target_xver} before the deadline")
+        fail_update(session, task, now)
 
 
 def get_adoption_versions(subd: str) -> tuple[str, str]:
@@ -1348,9 +1368,7 @@ def get_adoption_versions(subd: str) -> tuple[str, str]:
 
 
 def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
-    """This is long and complex. Handle with care. Note that, to reduce code complexity, versioning
-    logic for updates is intentionally imprecise in some low-impact places, e.g. a
-    past-deadline-update *may* count as successful."""
+    """Record telemetry, confirm the active update if reported, and schedule eligible updates."""
     uptime, idle = parse_proc_uptime(telem_data.get('proc_uptime'))
     load_01m, load_05m, load_15m = parse_proc_loadavg(telem_data.get('proc_loadavg'))
     meminfo = parse_proc_meminfo(telem_data.get('proc_meminfo'))
@@ -1365,11 +1383,12 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
         base: Base = session.get(Base, base_id)
         if base is None:
             raise Berror(f"B56665 cannot find base {base_id}")
-        expire_updates(session)
+        now = DateTime.now(TimeZone.utc)
+        expire_updates(session, now)
         ## 1. store telemetry; as of 2026-05-19, adds around 99 KB per base per day to DB size
         telemetry = Telemetry(
             base_id=base.id,
-            created_at=DateTime.now(TimeZone.utc),
+            created_at=now,
             ip=ip,
             uptime=uptime,
             idle=idle,
@@ -1405,8 +1424,13 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 logger.warning(util.front_berror_code(e, subd, ip))
             base.platform = platform
         ## 3. process file_xver provided by the base router
+        statement = select(BaseTask).where(
+            BaseTask.base_id == base_id, BaseTask.update_deadline.is_not(None)
+        )
+        pending_update = session.exec(statement).one_or_none()
+        target_xver = pending_update.args['target_xver'] if pending_update is not None else None
         ping_xver = telem_data.get('file_xver')  # file_xver reported by base router
-        if not isinstance(ping_xver, str) or not re.fullmatch('[0-9a-z]{7}-[0aceg]{4,}', ping_xver):
+        if not isinstance(ping_xver, str) or len(ping_xver) != len(default_xver):
             e = f"B89068 invalid file_xver: {ping_xver}"
             logger.warning(util.front_berror_code(e, subd, ip))
             ping_xver = default_xver
@@ -1418,21 +1442,24 @@ def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
                 e = f"B05553 unintended backport from {base.file_xver} to {ping_xver}"
                 logger.warning(util.front_berror_code(e, subd, ip))
             base.file_xver = ping_xver
-            if base.next_file_xver and ping_xver != base.next_file_xver:
-                e = f"B97229 downloaded {base.next_file_xver} but reports {ping_xver}"
+            if target_xver and ping_xver != target_xver:
+                e = f"B97229 expected update to {target_xver} but reports {ping_xver}"
                 logger.warning(util.front_berror_code(e, subd, ip))
         statement = select(BasedVer).where(BasedVer.cver == ping_xver[:7])
         commit_bv = session.exec(statement).one_or_none()
-        confirmed_update = ping_xver == base.next_file_xver
+        confirmed_update = pending_update is not None and ping_xver == target_xver
         if confirmed_update:
+            pending_update.update_deadline = None
+            if pending_update.status != BaseTaskStatus.DONE:
+                pending_update.status = BaseTaskStatus.DONE
+                pending_update.finished_at = now
             if commit_bv is not None:
                 commit_bv.used_total += 1
-            base.next_file_xver = ''
         ping_tl = ping_xver[8 + any_platform.index(platform)]
         ## 4. promote base version if appropriate
         promote_to = None
         # for testing, reinstall the same release: prior → new-a, new-a → new-e, new-e → new-g
-        if confirmed_update and ping_tl == TestLevel.CAN_PING.value:  # from next_file_xver
+        if confirmed_update and ping_tl == TestLevel.CAN_PING.value:
             promote_to = TestLevel.CAN_UPDATE
         elif ping_tl < TestLevel.CAN_PING.value:  # ping-after-update from prior commit
             promote_to = TestLevel.CAN_PING
