@@ -579,7 +579,7 @@ def entry_point():
         address_list = net.all_local_ips(conf.get('backend.ip'), ipv6_enclosure='[]')
         logger.info(f"❚ Starting BitBurrow hub")
         logger.info(f"❚   frontend URL: {conf.base_url()}/welcome")
-        # FIXME: logger.info(f"❚   version: {util.tree_paths()['hub/']['cver']}")
+        logger.info(f"❚   version: {util.tree_paths('hub/tree.json')['']['cver']}")
         logger.info(f"❚     details: {version_details}")
         logger.info(f"❚   accounts (admin/manager/user/invite): {counts}")
         for address in address_list:

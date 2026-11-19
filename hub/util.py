@@ -547,8 +547,8 @@ def read_yaml(filename: str) -> object:
         return dict()
 
 
-def tree_paths(tree: dict | None = None) -> dict[str, dict]:
-    if tree is None:
-        with open(os.path.join(project_root_path, 'tree.json'), 'rb') as stream:
+def tree_paths(tree: dict | str | None = None) -> dict[str, dict]:
+    if not isinstance(tree, dict):
+        with open(os.path.join(project_root_path, tree or 'base/tree.json'), 'rb') as stream:
             tree = json.load(stream)
     return {entry['path']: entry for entry in tree['paths']}

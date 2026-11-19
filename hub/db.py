@@ -1194,16 +1194,16 @@ class BasedVer(SQLModel, table=True):
 def update_base_cver() -> None:
     """Import a base release and its immutable files in one transaction."""
     try:
-        with open(os.path.join(util.project_root_path, 'tree.json'), 'rb') as f:
+        with open(os.path.join(util.project_root_path, 'base/tree.json'), 'rb') as f:
             content = f.read()
         tree = json.loads(content)
         paths = util.tree_paths(tree)
-        cver = paths['base/']['cver']
-        if paths['tree.json']['cver'] != cver or 'base/base.lua' not in paths:
+        cver = paths['tree.json']['cver']
+        if not paths.get('base.lua', {}).get('sha256sum'):
             raise Berror(f"B80417 invalid tree for base release {cver}")
         new_epoch = tree.get('epoch')  # maintained by the programmer
         if type(new_epoch) is not int:
-            raise Berror(f"B99640 invalid epoch value {new_epoch!r} in 'tree.json'")
+            raise Berror(f"B99640 invalid epoch value {new_epoch!r} in 'base/tree.json'")
         with Session(engine) as session:
             session.connection().exec_driver_sql('BEGIN IMMEDIATE')
             existing = session.exec(select(BasedVer).where(BasedVer.cver == cver)).one_or_none()
@@ -1211,7 +1211,7 @@ def update_base_cver() -> None:
                 if session.get(Blob, existing.blob_id).content == content:
                     return  # same cver, same content
                 # can happen via 2 commits within the same second or out-of-sync clocks
-                raise Berror(f"B80416 conflicting commits for 'tree.json' cver {cver}")
+                raise Berror(f"B80416 conflicting commits for 'base/tree.json' cver {cver}")
             newest = session.exec(select(BasedVer).order_by(BasedVer.cver.desc()).limit(1)).first()
             if newest is not None:
                 if newest.cver > cver:
@@ -1223,17 +1223,27 @@ def update_base_cver() -> None:
                     raise Berror(f"B68956 epoch {new_epoch} < existing epoch {newest_epoch};{in_v}")
                 if new_epoch > newest_epoch + 1:
                     raise Berror(f"B43609 epoch {new_epoch} > next epoch {newest_epoch+1};{in_v}")
-            blob_id = set_blob('tree.json', content, cver, psession=session)
-            for path, entry in paths.items():
-                if path.startswith('base/') and not path.endswith('/'):
+            blob_id = set_blob('base/tree.json', content, cver, psession=session)
+            # the epoch 30 base requests /<release>/tree.json and checks its 'base/' cver
+            with open(os.path.join(util.project_root_path, 'tree.json'), 'rb') as f:
+                legacy = f.read()
+            legacy_paths = util.tree_paths(json.loads(legacy))
+            if legacy_paths['base/']['cver'] != cver:
+                raise Berror(f"B87934 legacy tree does not describe base release {cver}")
+            set_blob('tree.json', legacy, cver, psession=session)
+            for prefix, entries in (('base/', paths), ('', legacy_paths)):
+                for name, entry in entries.items():
+                    path = prefix + name
+                    if 'sha256sum' not in entry or not path.startswith('base/'):
+                        continue
                     with open(os.path.join(util.project_root_path, path), 'rb') as f:
                         data = f.read()
                     if hashlib.sha256(data).hexdigest() != entry['sha256sum']:
                         raise Berror(f"B80420 source hash mismatch: {path}")
-                    set_blob(path, data, entry['cver'], psession=session)
+                    set_blob(path, data, entry.get('cver', cver), psession=session)
             session.add(BasedVer(cver=cver, blob_id=blob_id, epoch=new_epoch))
             session.commit()
-            logger.info(f"B96927 indexed new base version {cver}")
+            logger.info(f"B96927 indexed new base version {cver} (epoch {new_epoch})")
     except Berror as e:
         logger.error(str(e))
     except (OSError, ValueError, KeyError) as e:
@@ -1337,8 +1347,10 @@ def get_adoption_versions(subd: str) -> tuple[str, str]:
         bv = newest_approved_ver(base, session, is_new_install=True)
         if bv is None:
             raise Berror("B80426 no approved base version for installation")
-        tree = json.loads(session.get(Blob, bv.blob_id).content)
-        return bv.xver(), util.tree_paths(tree)['base/base.lua']['cver']
+        blob = session.get(Blob, bv.blob_id)
+        path = 'base/base.lua' if blob.path == 'tree.json' else 'base.lua'
+        entry = util.tree_paths(json.loads(blob.content))[path]
+        return bv.xver(), entry.get('cver', bv.cver)
 
 
 def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:

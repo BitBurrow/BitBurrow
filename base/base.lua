@@ -468,7 +468,7 @@ end
 local function download_file(command, path, max_download_bytes, quiet)
     -- limit download size to prevent DOS from a compromised hub
     local status_path = make_temp_path(nil, quiet)
-    max_download_bytes = max_download_bytes or 654321  -- default max 0.6 MB
+    max_download_bytes = max_download_bytes or 654321  -- default max 0.6 MB; search tag_base_max_dl_bytes
     local log_report = quiet and log_debug or log_error
     if not status_path then return nil end
     -- read a bounded pipe; older curl versions ignore --max-filesize when Content-Length
@@ -4650,7 +4650,7 @@ end
 local update, cleanup_based_dirs
 do
     local placeholder = 'y5Tf2ghvd2jTi9m21geAP'
-    local max_bytes = 654321
+    local max_bytes = 654321  -- search tag_base_max_dl_bytes
     local cleaned = false
     local download_root = (api_url:gsub('/api/v1$', ''))
     local function tree_paths(tree)
@@ -4715,7 +4715,7 @@ do
         if not tree_path then return false, "B80442 cannot create tree staging file" end
         local body
         for _ = 1, 3 do
-            if fetch('tree.json', target_cver, tree_path) then
+            if fetch('base/tree.json', target_cver, tree_path) then
                 body = read_text_file(tree_path, false, true, max_bytes)
                 if body and body ~= '' then break end
             end
@@ -4733,7 +4733,10 @@ do
             return false, "B80435 invalid 'tree.json' format"
         end
         local paths = tree_paths(tree)
-        if not paths['base/base.lua'] or not paths['base/'] or paths['base/'].cver ~= target_cver then
+        if not paths['base.lua']
+                or not paths['base.lua'].sha256sum
+                or not paths['tree.json']
+                or paths['tree.json'].cver ~= target_cver then
             return false, "B80441 tree does not describe base release " .. target_cver
         end
         if not mkdir(install_dir, '0700') or not mkdir(new_based_dir, '0700') then
@@ -4751,18 +4754,18 @@ do
         end
         for _, entry in ipairs(tree.paths) do
             local path = entry.path
-            if path:sub(1, 5) == 'base/' and path:sub(-1) ~= '/' then
+            if entry.sha256sum then  -- only hashed entries are installed
                 local name = basename(path)
                 local destination = new_based_dir .. name
                 local source = running_dir .. '/' .. name
-                local old = old_paths[path]
+                local old = old_paths[path] or old_paths['base/' .. path]  -- pre-bridge cache
                 local reuse = not task_id
                         or (type(old) == 'table' and old.sha256sum == entry.sha256sum)
                 local ready = reuse and is_readable(source) and file_copy(source, destination, '0644')
                         and file_hash(destination) == entry.sha256sum
                 if not ready then
                     for _ = 1, 3 do
-                        if fetch(path, entry.cver, destination)
+                        if fetch('base/' .. path, entry.cver or target_cver, destination)
                                 and file_hash(destination) == entry.sha256sum then
                             ready = true
                             break
@@ -4778,7 +4781,7 @@ do
                     local command = 'STAGED_PATH=' .. shell_quote(destination) .. ' '
                             .. shell_quote(lua_exe) .. ' -e '
                             .. shell_quote('assert(loadfile(os.getenv("STAGED_PATH")))')
-                    if (path == 'base/base.lua'
+                    if (path == 'base.lua'
                                 and #read_text_file(destination, true, true, max_bytes) <= 3)
                             or not run_command(command, true) then
                         remove_path(destination)

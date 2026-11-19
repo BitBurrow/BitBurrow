@@ -17,7 +17,7 @@ import textwrap
 import yaml  # sudo apt install python3-yaml
 
 base_lua_path = Path('base/base.lua')
-tree_path = Path('tree.json')
+base_tree_path = base_lua_path.with_name('tree.json')
 signature_placeholder = 'y5Tf2ghvd2jTi9m21geAP'
 keys_path = Path.home() / '.config/openssl/bitburrow'  # contains a subdir for each key
 key_state_path = keys_path / 'key_state.yaml'
@@ -128,19 +128,17 @@ def git_files(*args: str) -> set[str]:
     return {name for name in git_text(*args).split('\0') if name}
 
 
-def read_indexed_file(path: Path) -> tuple[str, str] | None:
-    """Return the index mode and contents, including files which are unchanged from HEAD."""
-    records = git_text('ls-files', '--stage', '-z', '--', str(path)).split('\0')
-    records = [record for record in records if record]
-    if not records:
-        return None
-    if len(records) != 1:
-        raise Berror(f"B64531 resolve the index conflict for {path} before signing")
-    metadata, _ = records[0].split('\t', 1)
-    mode, object_id, stage = metadata.split()
-    if stage != '0' or mode not in ('100644', '100755'):
-        raise Berror(f"B81277 expected a regular, conflict-free indexed file at {path}")
-    return mode, git_text('cat-file', 'blob', object_id)
+def indexed_blobs() -> dict[Path, tuple[str, str]]:
+    """Snapshot the commit index, including modes and blob IDs and excluding intent-to-add."""
+    tree_id = git_text('write-tree').strip()
+    blobs = {}
+    for record in git_text('ls-tree', '-rz', tree_id).split('\0'):
+        if record:
+            metadata, name = record.split('\t', 1)
+            mode, kind, oid = metadata.split()
+            if kind == 'blob':
+                blobs[Path(name)] = (mode, oid)
+    return blobs
 
 
 def stage_contents(files: dict[Path, tuple[str, str]]) -> None:
@@ -343,7 +341,7 @@ def select_signing_keys(state: dict) -> tuple[Key, Key]:
     if state.get('previous_key_id'):
         # continue using the old signer through the first follow-up base release
         recent = git_text(
-            'log', '--first-parent', '-2', '--format=%H', '--', str(tree_path)
+            'log', '--first-parent', '-2', '--format=%H', '--', str(base_tree_path)
         ).splitlines()
         older_code = git_blob(f'{recent[1]}:{base_lua_path}') if len(recent) == 2 else None
         if not code_has_key(older_code or '', active_key):
@@ -473,15 +471,6 @@ def prepend_file_pubkey(code: str, key: Key) -> str:
     return code[: table.start('body')] + entry + body + code[table.end('body') :]
 
 
-def mirror_file_pubkeys(worktree_code: str, staged_code: str) -> str:
-    """Copy the staged public-key table body into the worktree source."""
-    table = file_pubkeys_table(worktree_code)
-    body = file_pubkeys_table(staged_code)['body']
-    # preserve the worktree's surrounding code and declaration comments, even during partial
-    # staging; the generated table body is deliberately replaced with the staged value
-    return worktree_code[: table.start('body')] + body + worktree_code[table.end('body') :]
-
-
 def sign_string(code: str, signing_key: Key) -> str:
     """Return a wrapped base64 RSA-PSS/SHA-512 signature of the supplied source text."""
     rsa_pss_options = (
@@ -533,78 +522,157 @@ def sign_doc(subd: str, filename: str) -> None:
     sys.stdout.write(dump_yaml(dict(tasks=tasks)))
 
 
+def tree_object(pairs: list) -> dict:
+    """Reject duplicate keys and signed children as the JSON decoder builds their parents."""
+    obj = dict(pairs)
+    if len(obj) != len(pairs):
+        raise ValueError("duplicate JSON key")
+    children = list(obj.values())
+    while children:
+        child = children.pop()
+        if isinstance(child, list):
+            children.extend(child)
+        elif isinstance(child, dict) and 'signature' in child:
+            raise ValueError("signature is allowed only at the root")
+    return obj
+
+
+def updated_trees(
+    blobs: dict[Path, tuple[str, str]], modified: set[Path], file_cver: str
+) -> dict[Path, dict]:
+    modified = modified.copy()
+    if base_tree_path not in blobs and any(base_tree_path.parent in p.parents for p in modified):
+        raise Berror(f"B50280 missing indexed file {base_tree_path}")
+    directories = {directory for path in blobs for directory in path.parents}
+    manifests = sorted(
+        (p for p in blobs if p.name == 'tree.json'), key=lambda p: (-len(p.parts), p)
+    )
+    trees = {}
+    for manifest in manifests:  # a generated child tree is a staged change for its ancestors
+        changes = {p for p in modified if manifest.parent in p.parents}
+        if not changes:
+            continue
+        mode, oid = blobs[manifest]
+        if mode not in ('100644', '100755'):
+            raise Berror(f"B81277 expected a regular indexed file at {manifest}")
+        try:
+            tree = json.loads(git_text('cat-file', 'blob', oid), object_pairs_hook=tree_object)
+        except ValueError as e:
+            raise Berror(f"B45386 invalid {manifest}: {e}") from e
+        if not isinstance(tree, dict):
+            raise Berror(f"B32015 expected a JSON object in {manifest}")
+        if 'signature' in tree and 'key_id' not in tree:
+            raise Berror(f"B57232 signature without key_id in {manifest}")
+        changed_dirs = {d for p in changes - {manifest} for d in p.parents}
+        entries = tree.get('paths', [])
+        if not isinstance(entries, list) or any(
+            not isinstance(e, dict) or not isinstance(e.get('path'), str) for e in entries
+        ):
+            raise Berror(f"B30478 expected path entries with string names in {manifest}")
+        self_entries = [e for e in entries if e['path'] == 'tree.json']
+        if manifest == base_tree_path and (not self_entries or 'cver' not in self_entries[-1]):
+            raise Berror(f"B29520 missing tree.json cver in {manifest}")
+        dirty = 'signature' in tree  # signing alone changes the manifest's own cver
+        names = {'tree.json'}  # base payloads are installed in a single directory
+        for entry in entries:
+            name = entry['path']
+            path = manifest.parent / name
+            directory = name == '' or name.endswith('/')
+            if name == '/' or path not in (directories if directory else blobs):
+                raise Berror(f"B64531 invalid indexed path {name!r} in {manifest}")
+            changed = path in (changed_dirs if directory else changes)
+            if 'sha256sum' in entry:
+                if directory or path.name == 'tree.json':
+                    raise Berror(f"B12773 sha256sum not allowed for {name!r} in {manifest}")
+                mode, oid = blobs[path]
+                if manifest == base_tree_path:
+                    if mode == '120000' or re.search(r'[^A-Za-z0-9_./-]', name):
+                        raise Berror(f"B80402 expected a regular, URL-safe base payload at {path}")
+                    if path.name in names:
+                        raise Berror(f"B80403 conflicting flattened filename {path.name!r}")
+                    names.add(path.name)
+                    if int(git_text('cat-file', '-s', oid)) > 654321:  # tag_base_max_dl_bytes
+                        raise Berror(f"B80447 base file exceeds the download limit: {path}")
+                if changed:
+                    data = subprocess.check_output(['git', 'cat-file', 'blob', oid])
+                    digest = hashlib.sha256(data).hexdigest()
+                    if entry['sha256sum'] != digest:
+                        entry['sha256sum'] = digest
+                        dirty = True
+            if changed and 'cver' in entry and entry['cver'] != file_cver:
+                entry['cver'] = file_cver
+                dirty = True
+        if dirty:
+            for entry in self_entries:
+                if 'cver' in entry:
+                    entry['cver'] = file_cver
+            trees[manifest] = tree
+            modified.add(manifest)
+    return trees
+
+
 def sign_code(file_cver: str | None = None) -> None:
-    """Hash indexed bytes and sign the exact tree text, then mirror generated changes."""
+    """Update affected indexed manifests using a single timestamp and signer."""
     file_cver = file_cver or b36datetime()
     if not re.fullmatch('[0-9a-z]{7}', file_cver):
         raise Berror(f"B34290 expected a seven-character base-36 commit date: {file_cver!r}")
-    modified = git_files('diff', '--cached', '--name-only', '--no-renames', '-z')
-    base_changed = str(tree_path) in modified or any(path.startswith('base/') for path in modified)
-    hub_changed = any(path.startswith('hub/') for path in modified)
-    if not base_changed and not hub_changed:
+    modified = {Path(p) for p in git_files('diff', '--cached', '--name-only', '--no-renames', '-z')}
+    if not modified:
         return
-    # HEAD is authoritative: an aborted pre-commit must not give unstaged files new versions
-    previous = git_blob(f'HEAD:{tree_path}')
-    old_paths = (
-        {entry['path']: entry for entry in json.loads(previous)['paths']} if previous else {}
-    )
-    indexed = read_indexed_file(base_lua_path)
-    if indexed is None:
-        raise Berror(f"B50280 missing indexed file {base_lua_path}")
-    code_mode, code = indexed
-    original_code = code
-    state = read_or_create_key_state(file_cver)
-    active_key, signing_key = select_signing_keys(state)
+    blobs = indexed_blobs()
+    trees = updated_trees(blobs, modified, file_cver)
+    prepared = {}
+    bootstrap = False
     pending_key = None
-    if state.get('bootstrap_pending'):
-        code = prepend_file_pubkey(code, active_key)
-    else:
-        pending_key = get_pending_key(state, file_cver)
-    if pending_key is not None:
-        if ''.join(pending_key.public_key.split()) == ''.join(active_key.public_key.split()):
-            raise Berror("B16393 the pending public key is already the active public key")
-        code = prepend_file_pubkey(code, pending_key)
-    if not code_has_key(code, active_key):
-        raise Berror("B48906 the release must retain the active public key and its key ID")
-    if signing_key is not active_key and not code_has_key(code, signing_key):
-        raise Berror("B80446 the release must retain the public key used to sign it")
-    prepared = dict()
-    worktree_code = None
-    if code != original_code:
-        worktree_code = mirror_file_pubkeys(read_text(base_lua_path), code)
-        prepared[base_lua_path] = (code_mode, code)
-    entries = []
-    # the downloader uses these paths in URLs and installs all files in one directory
-    names = {'tree.json'}
-    for path in sorted(git_files('ls-files', '-z', '--', 'base/')):
-        if re.search(r'[^A-Za-z0-9_./-]', path):
-            raise Berror(f"B80402 base path requires URL escaping: {path!r}")
-        leaf = Path(path).name
-        if leaf in names:
-            raise Berror(f"B80403 conflicting flattened filename {leaf!r}")
-        names.add(leaf)
-        content = code if path == str(base_lua_path) else read_indexed_file(Path(path))[1]
-        data = content.encode('utf-8', errors='surrogateescape')
-        if len(data) > 654321:  # same limit as download_file() in base.lua
-            raise Berror(f"B80447 base file exceeds the download limit: {path}")
-        digest = hashlib.sha256(data).hexdigest()
-        old = old_paths.get(path, {})
-        cver = old['cver'] if old.get('sha256sum') == digest else file_cver
-        entries.append({'path': path, 'cver': cver, 'sha256sum': digest})
-    entries.extend({'path': path, 'cver': file_cver} for path in ('base/', str(tree_path)))
-    # keep the serialized prefix in sync with verify_tree() in base.lua
-    tree = {'signature': signature_placeholder, 'key_id': signing_key.key_id, 'paths': entries}
-    text = json.dumps(tree, indent=2) + '\n'
-    signature = ''.join(sign_string(text, signing_key).split())
-    signed = text.replace(signature_placeholder, signature, 1)
-    prefix = f'{{\n  "signature": "{signature}",\n  "key_id": "{signing_key.key_id}",\n'
-    if not signed[:1024].startswith(prefix) or len(signed.encode('utf-8')) > 654321:
-        raise Berror("B80444 signed tree exceeds base.lua format or size limits")
-    prepared[tree_path] = ('100644', signed)
-    stage_contents(prepared)
-    atomic_write(tree_path, signed, 0o644)
-    if worktree_code is not None:
-        atomic_write(base_lua_path, worktree_code)
+    if any('signature' in tree for tree in trees.values()):
+        state = read_or_create_key_state(file_cver)
+        active_key, signing_key = select_signing_keys(state)
+        bootstrap = state.get('bootstrap_pending', False)
+        if not bootstrap:
+            pending_key = get_pending_key(state, file_cver)
+    if bootstrap or pending_key is not None or 'signature' in trees.get(base_tree_path, {}):
+        if base_lua_path not in blobs:
+            raise Berror(f"B39524 missing indexed file {base_lua_path}")
+        mode, oid = blobs[base_lua_path]
+        original = code = git_text('cat-file', 'blob', oid)
+        if bootstrap:
+            code = prepend_file_pubkey(code, active_key)
+        if pending_key is not None:
+            if ''.join(pending_key.public_key.split()) == ''.join(active_key.public_key.split()):
+                raise Berror("B16393 the pending public key is already the active public key")
+            code = prepend_file_pubkey(code, pending_key)
+        if not code_has_key(code, active_key):
+            raise Berror("B48906 the release must retain the active public key and its key ID")
+        if signing_key is not active_key and not code_has_key(code, signing_key):
+            raise Berror("B80446 the release must retain the public key used to sign it")
+        if code != original:
+            prepared[base_lua_path] = (mode, code)
+            # hash both manifests against the rotated code before publishing anything to the index
+            oid = git_text('hash-object', '-w', '--stdin', input=code).strip()
+            rotated = blobs | {base_lua_path: (mode, oid)}
+            trees = updated_trees(rotated, modified | {base_lua_path}, file_cver)
+    for path, tree in trees.items():
+        if 'signature' in tree:
+            # verify_tree() in both generations of base.lua authenticates this exact prefix.
+            tree = {'signature': None, 'key_id': None, **tree}
+            tree.update(signature=signature_placeholder, key_id=signing_key.key_id)
+        content = json.dumps(tree, indent=2) + '\n'
+        if 'signature' in tree:
+            signature = ''.join(sign_string(content, signing_key).split())
+            content = content.replace(signature_placeholder, signature, 1)
+            if path in (Path('tree.json'), base_tree_path):
+                prefix = f'{{\n  "signature": "{signature}",\n  "key_id": "{signing_key.key_id}"'
+                if not content[:1024].startswith(prefix) or len(content) > 654321:
+                    # search: tag_base_max_dl_bytes
+                    raise Berror("B80444 signed tree exceeds base.lua format or size limits")
+        prepared[path] = (blobs[path][0], content)
+    if prepared:
+        stage_contents(prepared)
+        for path, (_, content) in prepared.items():
+            # Leave partial staging, unstaged deletions and symlink replacements intact.
+            if path.is_file() and path.resolve() == Path.cwd() / path:
+                if read_text(path) == git_text('cat-file', 'blob', blobs[path][1]):
+                    atomic_write(path, content)
     if pending_key is not None:
         (keys_path / 'rotate_keys_after_signing').unlink(missing_ok=True)
 
@@ -618,7 +686,7 @@ def rotate_keys() -> None:
     if pending_id is None and not state.get('bootstrap_pending'):
         return
     committed_code = git_blob(f'HEAD:{base_lua_path}')
-    committed_tree = git_blob(f'HEAD:{tree_path}')
+    committed_tree = git_blob(f'HEAD:{base_tree_path}')
     if committed_code is None or committed_tree is None:
         return
     key = read_key(pending_id or state['active_key_id'])

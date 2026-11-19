@@ -1,0 +1,20 @@
+{
+  "signature": "xTBs98TzZrfiUcWNCxZzgbnIthLWMuIxCk+fQwo/0hGwdpg07JNRJ5c+b75P9f42v63m7v/DB5l74uGqgYfIVrw278LFVvoJSG4baViWJ7Knb6gFgOp5dnTGpUX94tx5ypyube/NxS1UswHd2zj1mUJSX59eh0SnInZP8Elv//KG6NNqG4+ptdObRVjv7eqjhCcYxl+e7mLb+vz5Rirdj+Jrx7vUpE5R0OPXmRELP1d9ojTEBy2lP65ljDxnEYtyTXRz5IcHwIjtb86Uic65ePvkyQgGKsKEu783Y3oCVafCzXi1CBfWA1IbBybAdmJzkD2HMDQPYmwabtJ5fB+wVhfsAieyHNPUzMONFDVtF/oZMBsQ7SegrOnqi+TqCdImVlgOlS5TCcYq1Lz+x0nbqUlBy9QosNfm4N74ab0i6jQ65/LfgeUA0TpqnvvBNJjf0g4vdk/UkG9FjT6HNJyaLXGceKInCY+g/GISXGJ8fSmKTpcjpH7jue8PQ6jVM3aG",
+  "key_id": "0tlfc1c",
+  "epoch": 31,
+  "paths": [
+    {
+      "path": "base.lua",
+      "cver": "0toquvz",
+      "sha256sum": "24749720c537632e3a2d4fa5183c389cad6075aa4fb046df243d307560f6329b"
+    },
+    {
+      "path": "",
+      "cver": "0toquvz"
+    },
+    {
+      "path": "tree.json",
+      "cver": "0toquvz"
+    }
+  ]
+}

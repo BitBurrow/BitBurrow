@@ -1,0 +1,13 @@
+{
+  "paths": [
+    {
+      "path": "adopt5p.sh",
+      "cver": "0000000",
+      "sha256sum": "4e6413a9a81204b0e46337776d1468c459aec56af1a93f0f7d27fe67584d445d"
+    },
+    {
+      "path": "",
+      "cver": "0toqvmz"
+    }
+  ]
+}

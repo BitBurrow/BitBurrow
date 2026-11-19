@@ -91,14 +91,15 @@ starlette.convertors.register_url_convertor('is_cver', CverConvertor())  # check
 
 @router.get('/{cver:is_cver}/{path:path}')
 def get_base_release_file(cver: str, path: str) -> Response:
-    if path != 'tree.json' and not path.startswith('base/'):
+    manifest = path in ('tree.json', 'base/tree.json')
+    if not manifest and not path.startswith('base/'):
         raise HTTPException(status_code=404)
     content = db.get_blob(path, cver)
     if content is None:
         raise HTTPException(status_code=404)
     return Response(
         content=content,
-        media_type='application/json' if path == 'tree.json' else 'application/octet-stream',
+        media_type='application/json' if manifest else 'application/octet-stream',
         headers={'Cache-Control': 'public, max-age=31536000, immutable'},
     )
 
