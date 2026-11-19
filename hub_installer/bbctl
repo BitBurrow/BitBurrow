@@ -4,41 +4,54 @@ set -e
 usage() {
     cat <<EOF
 Usage:
-  bbctl init LXC_NAME
-  bbctl phase1 LXC_NAME [COMMIT]
-  bbctl phase3 LXC_NAME [COMMIT]
-  bbctl setup LXC_NAME [COMMAND [ARGS...]]
-  bbctl admin LXC_NAME [COMMAND [ARGS...]]
-  bbctl hub LXC_NAME [ARGS...]
-  bbctl upgrade LXC_NAME [COMMIT]
+  bbctl LXC_NAME init
+  bbctl LXC_NAME phase1 [--commit COMMIT]
+  bbctl LXC_NAME phase3 [--commit COMMIT]
+  bbctl LXC_NAME setup [COMMAND [ARGS...]]
+  bbctl LXC_NAME admin [COMMAND [ARGS...]]
+  bbctl LXC_NAME hub [ARGS...]
+  bbctl LXC_NAME upgrade [--commit COMMIT]
   bbctl help
 EOF
 }
 
-case ${1:-} in
-    help|'') usage; exit 0 ;;
-    init|phase1|phase3|setup|admin|hub|upgrade) ;;
-    *) usage >&2; exit 1 ;;
-esac
-[[ $# -ge 2 ]] || { usage >&2; exit 1; }
-bbsetup_url="https://raw.githubusercontent.com/BitBurrow/BitBurrow/main/hub_installer/bbsetup"
-command=$1
-lxc_name=$2
-shift 2
+usage_error() {
+    usage >&2
+    exit 1
+}
 
+if [[ $# -eq 0 || ( $# -eq 1 && $1 == help ) ]]; then usage; exit 0; fi
+[[ $# -ge 2 && -n $1 && $1 != -* ]] || usage_error
+lxc_name=$1
+command=$2
+shift 2
+commit_arg=()
+case $command in
+    init) [[ $# -eq 0 ]] || usage_error ;;
+    phase1|phase3|upgrade)
+        case $# in
+            0) commit=HEAD ;;
+            1) [[ $1 == --commit=* ]] || usage_error; commit=${1#--commit=} ;;
+            2) [[ $1 == --commit ]] || usage_error; commit=$2 ;;
+            *) usage_error ;;
+        esac
+        [[ $commit == HEAD || $commit =~ ^[[:xdigit:]]{4,40}$ ]] || usage_error
+        [[ $commit == HEAD ]] || commit_arg=("$commit")
+        ;;
+    setup|admin|hub) ;;
+    *) usage_error ;;
+esac
+bbsetup_url="https://raw.githubusercontent.com/BitBurrow/BitBurrow/main/hub_installer/bbsetup"
 case $command in
     init)
-        [[ $# -eq 0 ]] || { usage >&2; exit 1; }
         lxc launch ubuntu: "$lxc_name"
         ;;
     phase1)
-        [[ $# -le 1 ]] || { usage >&2; exit 1; }
-        lxc exec "$lxc_name" -- sudo --user ubuntu -i wget --output-document=bbsetup $bbsetup_url
-        lxc exec "$lxc_name" -- sudo --user ubuntu -i sudo bash bbsetup phase1 "$@"
+        lxc exec "$lxc_name" -- sudo --user ubuntu -i wget --output-document=bbsetup "$bbsetup_url"
+        lxc exec "$lxc_name" -- sudo --user ubuntu -i sudo bash bbsetup phase1 "${commit_arg[@]}"
         ;;
     phase3)
-        [[ $# -le 1 ]] || { usage >&2; exit 1; }
-        lxc exec "$lxc_name" -- sudo --user ubuntu -i sudo bash bbsetup phase3 "$@"
+        lxc exec "$lxc_name" -- sudo --user ubuntu -i sudo bash bbsetup phase3 "${commit_arg[@]}"
         lxc exec "$lxc_name" -- sudo --user bitburrow -i /home/bitburrow/bitburrow/.venv/bin/bbhub test all
         ;;
     setup)
@@ -51,8 +64,7 @@ case $command in
         lxc exec "$lxc_name" -- sudo --user bitburrow -i /home/bitburrow/bitburrow/.venv/bin/bbhub "$@"
         ;;
     upgrade)
-        [[ $# -le 1 ]] || { usage >&2; exit 1; }
-        lxc exec "$lxc_name" -- sudo --user ubuntu -i wget --output-document=bbsetup $bbsetup_url
-        lxc exec "$lxc_name" -- sudo --user ubuntu -i sudo bash bbsetup phase3 "$@"
+        lxc exec "$lxc_name" -- sudo --user ubuntu -i wget --output-document=bbsetup "$bbsetup_url"
+        lxc exec "$lxc_name" -- sudo --user ubuntu -i sudo bash bbsetup phase3 "${commit_arg[@]}"
         ;;
 esac

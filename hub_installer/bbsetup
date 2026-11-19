@@ -1,7 +1,9 @@
 #!/bin/bash
 # cSpell:disable  # don't spell check this file
 set -e
-[[ $# -ge 1 && $# -le 2 && ( $1 == phase1 || $1 == phase3 ) && ( $# -eq 1 || $2 =~ ^[[:xdigit:]]{4,40}$ ) ]] || exit 1
+[[ $# -ge 1 && $# -le 2 && ( $1 == phase1 || $1 == phase3 ) ]] || exit 1
+git_commit=${2-HEAD}
+[[ $git_commit == HEAD || $git_commit =~ ^[[:xdigit:]]{4,40}$ ]] || exit 1
 # phase1 → install hub, generate a config file template
 # phase2 → edit config.yaml, run port-forward-script (not this file)
 # phase3 → do phase1, systemd service, BIND, Certbot"
@@ -105,16 +107,16 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
       removes: /home/bitburrow/bitburrow/.git/shallow
     become_user: bitburrow
     changed_when: false
-    when: git_commit != ''
+    when: git_commit != 'HEAD'
 
   - name: Install bbhub 🦶1--git clone
     git:
       repo: https://github.com/BitBurrow/BitBurrow.git
       dest: /home/bitburrow/bitburrow/
-      version: "{{ git_commit if git_commit else 'main' }}"
+      version: "{{ 'main' if git_commit == 'HEAD' else git_commit }}"
       update: true
-      depth: "{{ 1 if not git_commit else omit }}"
-      refspec: "{{ '+refs/heads/*:refs/remotes/origin/*' if git_commit else omit }}"
+      depth: "{{ 1 if git_commit == 'HEAD' else omit }}"
+      refspec: "{{ '+refs/heads/*:refs/remotes/origin/*' if git_commit != 'HEAD' else omit }}"
     become_user: bitburrow
     register: git_result
     failed_when: >
@@ -432,7 +434,7 @@ cat <<"_EOF3703_" >"$SUDO_USER_HOME/hub/install.yaml"
 _EOF3703_
 
 ## run Ansible script locally
-cat <<"_EOF6471_" |sudo --user $SUDO_USER bash -s -- "$@"
+cat <<"_EOF6471_" |sudo --user "$SUDO_USER" bash -s -- "$1" "$git_commit"
 mkdir -p ~/hub/ && cd $_
-ansible-playbook -i localhost, install.yaml --extra-vars "phase=$1 git_commit=${2:-}"
+ansible-playbook -i localhost, install.yaml --extra-vars "phase=$1 git_commit=$2"
 _EOF6471_
