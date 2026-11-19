@@ -14,7 +14,7 @@ import hub.util as util
 ### How to make a new schema version of the database
 # 1. update your SQLModel classes (note that the migration below will not fill in default
 #      values for new fields)
-# 2. if the base API has changed in an incompatible way, update oldest_compatible_base_cver
+# 2. if the base API has changed in an incompatible way, update db.oldest_compatible_base_epoch
 # 3. increment db_schema_version below
 # 4. append data/schema changes to migrate_versions(); see version 48 → 49
 # 5. run bbhub and verify that it does this correctly:
@@ -25,7 +25,6 @@ import hub.util as util
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
 db_schema_version = 54
-oldest_compatible_base_cver = '0togg6a'  # last 'bridge' base cver before removing deprecated API
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -300,11 +299,17 @@ def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
     #     version = ...
 
 
-def bases_older_than(working_cver: str, db_path: str) -> list[str]:
+def bases_older_than(working_epoch: int, db_path: str) -> list[str]:
     with sqlite_conn(db_path) as conn:
-        statement = 'SELECT subd FROM base WHERE file_xver != ? AND substr(file_xver, 1, 7) < ?;'
-        rows = conn.execute(statement, (db.default_xver, working_cver))
-        return [row[0] for row in rows]
+        statement = 'SELECT subd FROM base WHERE file_xver != ?'
+        params: list[str | int] = [db.default_xver]
+        # a pre-54 database has no recorded epochs for installed bases
+        if any(col[1] == 'epoch' for col in conn.execute('PRAGMA table_info(basedver)')):
+            statement += ''' AND NOT EXISTS (
+                SELECT 1 FROM basedver WHERE cver = substr(base.file_xver, 1, 7) AND epoch >= ?
+            )'''
+            params.append(working_epoch)
+        return [row[0] for row in conn.execute(statement, params)]
 
 
 def migrate(db_path: str) -> None:
@@ -318,11 +323,11 @@ def migrate(db_path: str) -> None:
             return
         row = conn.execute('PRAGMA user_version;').fetchone()
         version = int(row[0] if row and row[0] is not None else 0)
-    old_bases = bases_older_than(oldest_compatible_base_cver, db_path)
+    old_bases = bases_older_than(db.oldest_compatible_base_epoch, db_path)
     if old_bases:
         raise util.Berror(
             f"B36297 some bases ({', '.join(old_bases)}) have incompatible versions "
-            f"and need to be updated to {oldest_compatible_base_cver} via an older hub release"
+            f"and need to reach epoch {db.oldest_compatible_base_epoch} via a bridge hub"
         )
     if version >= db_schema_version:
         return

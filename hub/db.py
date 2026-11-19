@@ -415,6 +415,7 @@ class Platform(enum.StrEnum):
 
 any_platform = (Platform.INIT, Platform.SYSTEMD, Platform.WINDOWS, Platform.MACOS)
 default_xver = '0000000-aaaa'
+oldest_compatible_base_epoch = 31  # first base epoch requesting '/<cver>/base/tree.json'
 update_timeout = TimeDelta(minutes=20)
 
 
@@ -795,6 +796,7 @@ def next_task(base_id: int, unstale: bool = True) -> BaseTask | None:
                         session.exec(
                             select(BasedVer).where(
                                 BasedVer.cver == target_xver[:7],
+                                BasedVer.epoch >= oldest_compatible_base_epoch,
                                 BasedVer.epoch <= update_max_epoch(base),
                             )
                         ).first()
@@ -1224,18 +1226,9 @@ def update_base_cver() -> None:
                 if new_epoch > newest_epoch + 1:
                     raise Berror(f"B43609 epoch {new_epoch} > next epoch {newest_epoch+1};{in_v}")
             blob_id = set_blob('base/tree.json', content, cver, psession=session)
-            # the epoch 30 base requests /<release>/tree.json and checks its 'base/' cver
-            with open(os.path.join(util.project_root_path, 'tree.json'), 'rb') as f:
-                legacy = f.read()
-            legacy_paths = util.tree_paths(json.loads(legacy))
-            if legacy_paths['base/']['cver'] != cver:
-                raise Berror(f"B87934 legacy tree does not describe base release {cver}")
-            set_blob('tree.json', legacy, cver, psession=session)
-            for prefix, entries in (('base/', paths), ('', legacy_paths)):
-                for name, entry in entries.items():
-                    path = prefix + name
-                    if 'sha256sum' not in entry or not path.startswith('base/'):
-                        continue
+            for name, entry in paths.items():
+                if 'sha256sum' in entry:
+                    path = 'base/' + name
                     with open(os.path.join(util.project_root_path, path), 'rb') as f:
                         data = f.read()
                     if hashlib.sha256(data).hexdigest() != entry['sha256sum']:
@@ -1279,9 +1272,11 @@ def check_base_test_levels() -> None:
 
 def update_max_epoch(base: Base):
     """Returns a SQLAlchemy expression to find the largest allowed epoch for the given base."""
-    epoch = select(BasedVer.epoch).where(BasedVer.cver == base.file_xver[:7]).scalar_subquery()
-    first_epoch = 30
-    return func.coalesce(epoch + 1, first_epoch)  # first non-NULL argument
+    return (
+        select(BasedVer.epoch + 1)
+        .where(BasedVer.cver == base.file_xver[:7], BasedVer.epoch >= oldest_compatible_base_epoch)
+        .scalar_subquery()
+    )
 
 
 def newest_approved_ver(
@@ -1291,6 +1286,7 @@ def newest_approved_ver(
 ) -> BasedVer | None:
     """Return the newest approved release the base can install."""
     statement = select(BasedVer).order_by(BasedVer.cver.desc())
+    statement = statement.where(BasedVer.epoch >= oldest_compatible_base_epoch)
     if not is_new_install:
         statement = statement.where(BasedVer.epoch <= update_max_epoch(base))
     bvs = session.exec(statement).all()
@@ -1347,10 +1343,8 @@ def get_adoption_versions(subd: str) -> tuple[str, str]:
         bv = newest_approved_ver(base, session, is_new_install=True)
         if bv is None:
             raise Berror("B80426 no approved base version for installation")
-        blob = session.get(Blob, bv.blob_id)
-        path = 'base/base.lua' if blob.path == 'tree.json' else 'base.lua'
-        entry = util.tree_paths(json.loads(blob.content))[path]
-        return bv.xver(), entry.get('cver', bv.cver)
+        tree = json.loads(session.get(Blob, bv.blob_id).content)
+        return bv.xver(), util.tree_paths(tree)['base.lua'].get('cver', bv.cver)
 
 
 def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:

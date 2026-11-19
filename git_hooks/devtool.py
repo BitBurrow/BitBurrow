@@ -586,8 +586,12 @@ def updated_trees(
                     raise Berror(f"B12773 sha256sum not allowed for {name!r} in {manifest}")
                 mode, oid = blobs[path]
                 if manifest == base_tree_path:
-                    if mode == '120000' or re.search(r'[^A-Za-z0-9_./-]', name):
-                        raise Berror(f"B80402 expected a regular, URL-safe base payload at {path}")
+                    if (
+                        mode == '120000'
+                        or name != Path(name).as_posix()  # curl would normalize this before request
+                        or re.search(r'[^A-Za-z0-9_./-]', name)
+                    ):
+                        raise Berror(f"B80402 expected canonical, URL-safe regular file: {name!r}")
                     if path.name in names:
                         raise Berror(f"B80403 conflicting flattened filename {path.name!r}")
                     names.add(path.name)
@@ -647,20 +651,20 @@ def sign_code(file_cver: str | None = None) -> None:
             raise Berror("B80446 the release must retain the public key used to sign it")
         if code != original:
             prepared[base_lua_path] = (mode, code)
-            # hash both manifests against the rotated code before publishing anything to the index
+            # reprocess affected tree.json files with the rotated base.lua before staging them
             oid = git_text('hash-object', '-w', '--stdin', input=code).strip()
             rotated = blobs | {base_lua_path: (mode, oid)}
             trees = updated_trees(rotated, modified | {base_lua_path}, file_cver)
     for path, tree in trees.items():
         if 'signature' in tree:
-            # verify_tree() in both generations of base.lua authenticates this exact prefix.
+            # keep the serialized prefix in sync with verify_tree() in base.lua
             tree = {'signature': None, 'key_id': None, **tree}
             tree.update(signature=signature_placeholder, key_id=signing_key.key_id)
         content = json.dumps(tree, indent=2) + '\n'
         if 'signature' in tree:
             signature = ''.join(sign_string(content, signing_key).split())
             content = content.replace(signature_placeholder, signature, 1)
-            if path in (Path('tree.json'), base_tree_path):
+            if path == base_tree_path:
                 prefix = f'{{\n  "signature": "{signature}",\n  "key_id": "{signing_key.key_id}"'
                 if not content[:1024].startswith(prefix) or len(content) > 654321:
                     # search: tag_base_max_dl_bytes

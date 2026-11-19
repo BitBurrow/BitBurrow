@@ -4758,7 +4758,7 @@ do
                 local name = basename(path)
                 local destination = new_based_dir .. name
                 local source = running_dir .. '/' .. name
-                local old = old_paths[path] or old_paths['base/' .. path]  -- pre-bridge cache
+                local old = old_paths[path]
                 local reuse = not task_id
                         or (type(old) == 'table' and old.sha256sum == entry.sha256sum)
                 local ready = reuse and is_readable(source) and file_copy(source, destination, '0644')

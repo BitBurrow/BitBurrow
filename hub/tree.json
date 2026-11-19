@@ -2,12 +2,16 @@
   "paths": [
     {
       "path": "adopt5p.sh",
-      "cver": "0000000",
-      "sha256sum": "4e6413a9a81204b0e46337776d1468c459aec56af1a93f0f7d27fe67584d445d"
+      "cver": "0toiatw",
+      "sha256sum": "3dd4d38a4f45854b1e7a604d38bcac3329ae14c947bbba735691de7d99e213b0"
     },
     {
       "path": "",
-      "cver": "0toqvmz"
+      "cver": "0tor3ci"
+    },
+    {
+      "path": "tree.json",
+      "cver": "0tor3ci"
     }
   ]
 }
