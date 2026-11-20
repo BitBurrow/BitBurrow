@@ -2635,11 +2635,8 @@ do
         end
         local new_based_dir = install_dir .. '/' .. target_xver .. '/'
         local entry_point = install_dir .. '/base.lua'
-        if not task_id and is_readable(entry_point)
-                and run_command('readlink -f ' .. shell_quote(entry_point), true, true)
-                == new_based_dir .. 'base.lua' then
-            return true, 'ok'
-        end
+        local entry_point_link = run_command('readlink -f ' .. shell_quote(entry_point), true, true)
+        local already_active = not task_id and entry_point_link == new_based_dir .. 'base.lua'
         -- keep unverified downloads out of persistent release storage
         local tree_path = make_temp_path(nil, true)
         if not tree_path then return false, "B80442 cannot create tree staging file" end
@@ -2672,7 +2669,9 @@ do
         if not mkdir(install_dir, '0700') or not mkdir(new_based_dir, '0700') then
             return false, "B80432 cannot create release directory"
         end
-        if not write_text_file(new_based_dir .. 'tree.json', body, '0644') then
+        local manifest = new_based_dir .. 'tree.json'
+        if read_text_file(manifest, true, true, max_bytes) ~= body
+                and not write_text_file(manifest, body, '0644') then
             return false, "B80443 cannot save release tree"
         end
         local old_paths = {}
@@ -2686,8 +2685,11 @@ do
             local path = entry.path
             if entry.sha256sum then  -- only hashed entries are installed
                 local name = basename(path)
-                local destination = new_based_dir .. name
+                local installed = new_based_dir .. name
+                local destination = make_temp_path(new_based_dir, true)
+                if not destination then return false, "B84820 cannot stage release file: " .. path end
                 local source = running_dir .. '/' .. name
+                if already_active and is_readable(installed) then source = installed end
                 local old = old_paths[path]
                 local reuse = not task_id
                         or (type(old) == 'table' and old.sha256sum == entry.sha256sum)
@@ -2705,7 +2707,10 @@ do
                         remove_path(destination)
                         return false, "B80437 download or hash check failed: " .. path
                     end
-                    if not chmod(destination, '0644') then return false, "B80439 chmod failed" end
+                    if not chmod(destination, '0644') then
+                        remove_path(destination)
+                        return false, "B80439 chmod failed"
+                    end
                 end
                 if path:sub(-4) == '.lua' then
                     local command = 'STAGED_PATH=' .. shell_quote(destination) .. ' '
@@ -2718,8 +2723,13 @@ do
                         return false, "B80438 invalid Lua file: " .. path
                     end
                 end
+                if not os.rename(destination, installed) then
+                    remove_path(destination)
+                    return false, "B80445 cannot replace release file: " .. path
+                end
             end
         end
+        if already_active then return true, 'ok' end
         if task_id then
             local updated_config = copy_table(base_config)
             updated_config.pending_task_id = task_id
