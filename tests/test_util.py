@@ -1,7 +1,14 @@
+from hashlib import sha256
 from pathlib import Path
 import subprocess
 import pytest
 import hub.util as util
+
+
+def test_vendored_dkjson_checksum() -> None:
+    dkjson_path = Path(util.project_root_path) / 'base/dkjson.lua'
+    expected = '197cb50834c642f84b4cf99fe724932c50e6d9c92faec7ad89aa25e91df4d481'
+    assert sha256(dkjson_path.read_bytes()).hexdigest() == expected
 
 
 @pytest.mark.parametrize('scheme', ['http', 'https'])

@@ -6,12 +6,14 @@ target_xver={target_xver}
 ott_filename={ott_filename}
 subd={subd}
 '
-install_url='{install_url}'
+script_url='{script_url}'
+dkjson_url='{dkjson_url}'
 log_err_route='{log_err_route}'
 
 packager_exe=''
 temp_path=''
-base_lua_path=''
+script_lua_path=''
+dkjson_lua_path=''
 lua_exe=''
 
 log_error() {
@@ -35,6 +37,20 @@ download() {
     if command -v wget >/dev/null 2>&1; then
         wget -q -T 120 -O "$2" "$1" >/dev/null 2>&1 && return 0
     fi
+    return 1
+}
+
+download_with_retries() {
+    loop_count=0
+    while [ "$loop_count" -le 20 ]; do
+        if [ "$loop_count" -gt 0 ]; then sleep 75; fi
+        if download "$1" "$2" && [ -s "$2" ]; then
+            return 0
+        fi
+        rm -f "$2"
+        loop_count=$((loop_count + 1))
+    done
+    log_error "B29909 cannot download $1"
     return 1
 }
 
@@ -175,10 +191,9 @@ make_temp_path() {
 }
 
 cleanup_temp_path() {
-    if [ -n "$base_lua_path" ]; then
-        rm -f "$base_lua_path" 2>/dev/null || true
-    fi
     if [ -n "$temp_path" ]; then
+        rm -f "$script_lua_path" 2>/dev/null || true
+        rm -f "$dkjson_lua_path" 2>/dev/null || true
         rmdir "$temp_path" 2>/dev/null || true
     fi
 }
@@ -188,7 +203,8 @@ sleep 1; echo "" >&2  # clean separation from curl output
 echo "" >&2  # blank line
 echo "installing BitBurow ..." >&2
 make_temp_path || exit 1
-base_lua_path="$temp_path/base.lua"
+script_lua_path="$temp_path/base.lua"
+dkjson_lua_path="$temp_path/dkjson.lua"
 trap cleanup_temp_path 0
 find_packager_exe || true
 
@@ -256,27 +272,15 @@ if [ "$loop_count" -gt 3 ]; then
     log_error "B59241 cannot install lua"
 fi
 
-### download Lua script
-loop_count=0
-while [ "$loop_count" -le 20 ]; do
-    if download "$install_url" "$base_lua_path" && [ -s "$base_lua_path" ]; then
-        break
-    fi
-    rm -f "$base_lua_path"
-    sleep 75
-    loop_count=$((loop_count + 1))
-done
+### download Lua files
+download_with_retries "$script_url" "$script_lua_path" || exit 1
+download_with_retries "$dkjson_url" "$dkjson_lua_path" || exit 1
 
 ### run Lua script
-if [ -s "$base_lua_path" ]; then
-    hub_config_data="$hub_config_data
+hub_config_data="$hub_config_data
 log_err_route=$log_err_route
 lua_exe=$lua_exe
 "
-    echo "running $lua_exe $base_lua_path install" >&2
-    run_as_root env HUBCONF="$hub_config_data" TMPDIR="${TMPDIR:-/tmp}" \
-        "$lua_exe" "$base_lua_path" install
-else
-    log_error "B29909 cannot download $install_url"
-    exit 1
-fi
+echo "running $lua_exe $script_lua_path install" >&2
+run_as_root env HUBCONF="$hub_config_data" TMPDIR="${TMPDIR:-/tmp}" \
+    "$lua_exe" "$script_lua_path" install

@@ -58,11 +58,7 @@ async def handle_berror(request: Request, exc: Berror) -> Response:
 
 
 @router.get(adopt5l_route, response_class=PlainTextResponse)
-def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
-    subd = lk.sanitize_subd(subd)  # unverified; 'adopt5p.sh' does not contain any secrets
-    target_xver, script_cver = db.get_adoption_versions(subd)
-    hub_url = conf.base_url()
-    ip_address = request.client.host if request.client else '(unknown)'
+def get_adopt5l(request: Request, subd: str) -> PlainTextResponse:
     file_path = os.path.join(util.project_root_path, 'hub/adopt5p.sh')
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -70,9 +66,17 @@ def get_adopt5l_script(request: Request, subd: str) -> PlainTextResponse:
     except FileNotFoundError:
         logger.error(f"B98850 cannot open: {file_path}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
+    target_xver, tree = db.get_adopt5l_version(subd)  # exception if subd does not exist
+    paths = util.tree_paths(tree)
+    script_cver = paths['base.lua'].get('cver')
+    dkjson_cver = paths['dkjson.lua'].get('cver')
+    hub_url = conf.base_url()
+    dkjson_url = f'{hub_url}/{dkjson_cver}/base/dkjson.lua' if dkjson_cver else ''
+    ip_address = request.client.host if request.client else '(unknown)'
     content = (
         content.replace('{api_url}', hub_url + jsonrpc_route)
-        .replace('{install_url}', f'{hub_url}/{script_cver}/base/base.lua')
+        .replace('{script_url}', f'{hub_url}/{script_cver}/base/base.lua')
+        .replace('{dkjson_url}', f'{hub_url}/{dkjson_cver}/base/dkjson.lua')
         .replace('{target_xver}', target_xver)
         .replace('{log_err_route}', hub_url + log_err_route.format(subd=subd))
         .replace('{ott_filename}', db.ott_filename(subd))

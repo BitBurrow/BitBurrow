@@ -1354,17 +1354,16 @@ def expire_updates(session: Session, now: DateTime, *, base_id: int | None = Non
         fail_update(session, task, now)
 
 
-def get_adoption_versions(subd: str) -> tuple[str, str]:
-    """Return the approved release xver and its base.lua cver for a new install."""
+def get_adopt5l_version(subd: str) -> tuple[str, dict]:
+    """Return the approved release xver, tree.json data."""
     with Session(engine) as session:
         base = session.exec(select(Base).where(Base.subd == subd)).one_or_none()
         if base is None:
             raise Berror(f"B41474 cannot find subd {subd}")
-        bv = newest_approved_ver(base, session, is_new_install=True)
+        bv: BasedVer | None = newest_approved_ver(base, session, is_new_install=True)
         if bv is None:
             raise Berror("B80426 no approved base version for installation")
-        tree = json.loads(session.get(Blob, bv.blob_id).content)
-        return bv.xver(), util.tree_paths(tree)['base.lua'].get('cver', bv.cver)
+        return bv.xver(), json.loads(session.get(Blob, bv.blob_id).content)
 
 
 def process_ping(base_id: int, ip: str, telem_data: dict, subd: str) -> None:
