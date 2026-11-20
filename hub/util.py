@@ -254,6 +254,7 @@ def adopt5c_shell_code(token: str, ott_filename: str, download_url: str) -> str:
         + f'echo {token[0:22]}>$T\n'
         + f'echo {token[22:]}>>$T\n'
         + f'U={download_url}\n'
+        + f'sleep 51; '  # 0 seconds is known to fail on some routers; minimum safe time is unknown
         + '(curl $U || wget -O- $U) |sh\n'
     )
 

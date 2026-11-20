@@ -1567,7 +1567,7 @@ local function delete_adopt5c_code(path)
         'echo ',
         'echo ',
         'U=http',
-        '(curl $U',
+        'sleep 51',
     }
     if run_command('test -L ' .. shell_quote(path), false, true) then  -- if is a symlink
         path = run_command('readlink -f ' .. shell_quote(path), true)
@@ -1619,7 +1619,7 @@ local function delete_adopt5c_code(path)
         end
     end
     if not delete_at then
-        log_debug("adopt5c code not found in " .. path)
+        log_warning("adopt5c code not found in " .. path)
         return true
     end
     local kept = {}

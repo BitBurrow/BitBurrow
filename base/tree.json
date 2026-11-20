@@ -1,12 +1,12 @@
 {
-  "signature": "JU+eSCPkmMY9i/anwfj8rNG7FWpfVyFkxlwS43EWGeymn74/7BKWGvPX/AhQJEaSVOQSeZ3RoJXTBp6gRC8eC02lh8xk64Zh23ulLn+K1j0tUFTGCEMMcGZiq7KBClHsAeevI1LHutoC9eNQ20jBnzYPappXNLXxfootkwfkZhF9bQcEeYKqGual+ZfmLqBbz7Sx+pkIlsxONe82Ay/wDW1wGxkYHI3vCp29J8GkazBX989y/Jmma1c4JGL1oYvYYiEPluZxPMtcY1VvU5SKPydaGtlJQ5+Hl93skqxEysYiQSpChLaaWG4jm1OKkygOytcxO/Hip9L2PySQdJWa/Uid74bdoxUY1J4URQQzVyBgUi4SFQFS8yoeMHJ0SmPMkW4+9Q63BOFOORO4V+3l+HVD9SUqR45dqHsltjjHWzMxWdUxNXrOmM0tpgeilSPxP3qpPloByOZTL+wVARTB7n2Hnqjpbdm2DiC7yEK66ePbwEG0wQTf4REDac1suLie",
+  "signature": "O6VnjBxc4yu1I8NV3i87jfuMyDVoTYGKh6er3DlI20q0LTFBvGm5OJQBV79p9pRcS4VIrftYnJpNp3TC92qgBbZYlPR9G+bKd++07MFAhbmCq90gtuUVWJxVuRp+hdcgrUV+mf4poNJQuGeT7MfPrH5WlvRASsWj9qVEt4Nqg5e7ZhtuHu8LeuFlpTLODkOUmqhbPFV2+RprfgeA6OOmU+liLSLuAWucPxeFOgUCHTl37xfMFz8cbRPnibu3WMWN1gZb/E0eHhdUCTqVCxip1FqHls1v7IKZoDNM22vA4XafTWZ5+netKPGaiJK1NldxG5/xtNh2l2Kib+0/mndc0+Fd11eXW2s6h3H0DI0Z+o2Fugk3yhjtSvwHzRRu8MeXU3vkFKJYLny1gEXAWhe5tvK24VrUT6wgo/ibVY4Cc9YQyB4/8AHIroDKGauXkol6TcZfQlh9Lrj1BV4EcjwK6218mTqVXlXA+lZHeC6EKTTZstUvdRDV7WpJmInXTnAz",
   "key_id": "0tlfc1c",
   "epoch": 32,
   "paths": [
     {
       "path": "base.lua",
-      "cver": "0tostep",
-      "sha256sum": "4c71bff2db3fc692e9b2dbfd052ffcf0455df38b03fe76e6373e4499b9b0d508"
+      "cver": "0tot0k4",
+      "sha256sum": "3e0bf6b135fe3bf8f21ffc1a81b3353f11d0021429fb2275e02dd642e66eacb7"
     },
     {
       "path": "dkjson.lua",
@@ -15,11 +15,11 @@
     },
     {
       "path": "",
-      "cver": "0tostep"
+      "cver": "0tot0k4"
     },
     {
       "path": "tree.json",
-      "cver": "0tostep"
+      "cver": "0tot0k4"
     }
   ]
 }
