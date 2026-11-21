@@ -253,21 +253,15 @@ def home(client: Client):
         css = 'w-full max-w-xl mx-auto'
         cards_container.clear()
         with cards_container:
-            with ui.card().classes(f'{css} text-center'):
-                if len(cards) < 1:
-                    ui.label("You don't have any base routers.")
-                    ui.label("To set up a base router, type a name for it below.")
-                else:
-                    ui.label("To set up a new base router, type a name for it below.")
-                with ui.column().classes(css):
-                    idelem['base_name'] = uif.input(
-                        label='Base router name',
-                        font_size='18px',
-                        icon='router',
-                        max_length=70,
+            if not cards:  # directions for new users
+                with ui.column().classes(
+                    'fixed-center w-full max-w-md items-center px-6 text-center'
+                ):
+                    ui.icon('router', size='3rem', color='primary')
+                    ui.label(
+                        "You have not yet set up any base routers. "
+                        "Use the '+' button below to add one."
                     )
-                    idelem['new_base'] = uif.button(text="Set up", align='right')
-                    idelem['new_base'].on_click(callback=on_add_item)
             for card in cards:
                 with ui.card().classes(css):
                     with ui.column().classes('min-w-0 gap-0'):
@@ -325,12 +319,15 @@ def home(client: Client):
             if not button.is_deleted:  # re-rendering the cards deletes the original button
                 button.enable()
 
-    async def on_add_item():
-        base_name = idelem['base_name'].value[:70] or f'Base {lk.generate_login_key(3)}'
+    async def on_add_item() -> None:
+        base_name = f'Base {lk.generate_login_key(3)}'
         subd = db.new_base(account_id=aid, is_base=True, name=base_name)
         ui.navigate.to(f'/setup/{subd}')
 
     render_cards()
+    uif.floating_button(icon='add', position='bottom-right').props(
+        'aria-label="Set up a base router"'
+    ).tooltip('Set up a base router').on_click(on_add_item)
 
 
 ###
@@ -373,7 +370,6 @@ def setup(client: Client, subd: str):
             uif.render_header(is_logged_in=True)
             idelem = uif.render_content(sections)
             return
-    stage_state = 'adopt'
     upnp_running = False
     upnp_status_label = None
 
@@ -466,35 +462,8 @@ def setup(client: Client, subd: str):
         finally:
             upnp_running = False
 
-    def stage_chip(title: str, stage: str, n: int) -> None:
-        active = stage_state == stage
-        props = 'unelevated' if active else 'outline'
-        classes = 'stage-pill px-3 py-2 rounded-full whitespace-nowrap min-w-0 ' + (
-            ' stage-pill--active' if active else ' stage-pill--inactive'
-        )
-
-        async def on_stage_click() -> None:
-            await set_stage(stage)
-
-        with ui.button(on_click=on_stage_click).props(props).classes(classes):
-            ui.label(str(n)).classes('stage-pill__num')
-            ui.label(title).classes('stage-pill__label')
-
-    @ui.refreshable
-    def render_tab_buttons():
-        with ui.row().classes('w-full items-center justify-center gap-2 py-3 flex-nowrap'):
-            stage_chip('Connect', 'adopt', 1)
-            ui.element('div').classes('stage-connector')
-            stage_chip('Enable access', 'enable', 2)
-            ui.element('div').classes('stage-connector')
-            stage_chip('Add device', 'add', 3)
-
-    async def set_stage(stage: str) -> None:
-        nonlocal stage_state
-        stage_state = stage
-        render_tab_buttons.refresh()
-        panels.set_value(stage)
-        if stage == 'enable':
+    async def on_tab_change(e) -> None:
+        if e.value == 'outposts':
             await discover_upnp()
 
     def render_add_devices():
@@ -515,38 +484,28 @@ def setup(client: Client, subd: str):
         ui.separator().classes('w-full max-w-5xl my-6')
         device_list = ui.column().classes('w-full max-w-5xl gap-3')
 
-    def add_custom_css():  # style for render_tab_buttons()
-        ui.add_head_html('''
-                <style>
-                .stage-pill {
-                  max-width: 32vw;
-                }
-                .stage-pill .q-btn__content {
-                  display: inline-flex;
-                  align-items: center;
-                  gap: 0.5rem;
-                  min-width: 0;
-                  font-size: clamp(0.85rem, 2.8vw, 1.1rem);
-                  line-height: 1.2;
-                }
-                .stage-pill__num {
-                  flex: 0 0 auto;
-                  font-weight: 700;
-                  opacity: 0.9;
-                }
-                .stage-pill__label {
-                  min-width: 0;
-                  overflow: hidden;
-                  text-overflow: ellipsis;
-                }
-                .stage-connector {
-                  height: 2px;
-                  width: clamp(10px, 3vw, 18px);
-                  opacity: 0.35;
-                  background: currentColor;
-                }
-                </style>
-            ''')
+    def save_name(e) -> None:
+        name_field = e.sender
+        if name_field.value == base.name:
+            return
+        name = (name_field.value or '').strip()
+        if not 1 <= len(name) <= 70:
+            name_field.value = base.name
+            ui.notify("Enter a name of 1 to 70 characters.", type='warning')
+            return
+        if name != base.name:
+            with db.base_by_subd(subd, aid) as current_base:
+                if current_base is None:
+                    ui.notify("This base router could not be found.", type='negative')
+                    return
+                current_base.name = name
+            base.name = name
+            ui.notify("Base router name saved.", type='positive')
+        name_field.value = name
+
+    def set_base_name(obj) -> None:
+        obj.set_value(base.name)
+        obj.on('blur', save_name)
 
     sections = uif.parse_markdown_sections('setup')
     ui.run_javascript(f"document.title = '{sections[0]}'")
@@ -621,16 +580,16 @@ def setup(client: Client, subd: str):
     idelem_lambdas = {
         'adopt5c_regenerate': set_adopt5c_regenerate,
         'adopt5c_code': set_adopt5c_code,
+        'base_name': set_base_name,
     }
-    add_custom_css()
-    render_tab_buttons()
-    with ui.tabs().classes('hidden') as tabs:
-        ui.tab('adopt')
-        ui.tab('enable')
-        ui.tab('add')
+    tabs = ui.tabs(on_change=on_tab_change).classes('w-full')
+    with tabs.props('align=left no-caps active-color=primary indicator-color=primary'):
+        ui.tab('adopt', label='Connect')
+        ui.tab('outposts', label='Outposts')
+        ui.tab('settings', label='Settings')
     with ui.tab_panels(tabs, value='adopt').props(
         'animated transition-prev="slide-right" transition-next="slide-left" keep-alive'
-    ).classes('w-full') as panels:
+    ).classes('w-full'):
         with ui.tab_panel('adopt'):
             adopt_idelem = uif.render_stepper(
                 'adopt',
@@ -639,15 +598,27 @@ def setup(client: Client, subd: str):
                 on_path_change=lambda path: db.set_setup_ui_path(base.id, path),
             )
             restoring_step = False
-        with ui.tab_panel('enable'):
+        with ui.tab_panel('outposts'):
             with ui.card().classes('w-full max-w-5xl mb-4'):
                 ui.label('UPnP discovery').classes('text-lg font-medium')
                 upnp_status_label = ui.label('Checking whether UPnP is available…').classes(
                     'text-base'
                 )
             uif.render_stepper('enable')
-        with ui.tab_panel('add'):
             render_add_devices()
+        with ui.tab_panel('settings'):
+            ui.label('Test settings').classes('text-lg font-medium mt-4')
+            with ui.element('div').classes('grid w-full grid-cols-1 gap-4 sm:grid-cols-2'):
+                ui.input(label='LAN IP address', value='192.168.8.1')
+                ui.input(label='LAN subnet mask', value='255.255.255.0')
+                ui.input(label='Wi-Fi network name', value='BitBurrow')
+                ui.select(['Auto', '1', '6', '11'], label='2.4 GHz Wi-Fi channel', value='Auto')
+                ui.input(label='Primary DNS server')
+                ui.number(label='DHCP lease time (hours)', value=12, min=1)
+                ui.switch('DHCP server', value=True)
+                ui.switch('Guest Wi-Fi')
+                ui.switch('IPv6', value=True)
+                ui.switch('Automatic firmware updates', value=True)
 
 
 ###

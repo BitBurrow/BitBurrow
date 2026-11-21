@@ -322,9 +322,9 @@ def button(text='', align='left'):
     return ui.button(text).classes(cls) if cls else ui.button(text)
 
 
-def floating_button(icon=''):
+def floating_button(icon='', position='bottom-right'):
     ui.add_head_html('''<style>html, body { overflow-x: hidden; }</style>''')
-    with ui.page_sticky(x_offset=18, y_offset=18):
+    with ui.page_sticky(position=position, x_offset=18, y_offset=18):
         return ui.button(icon=icon).props('round fab color=primary')
 
 

@@ -1,5 +1,6 @@
 pre_md: |-
   Connect a new base router to the BitBurrow hub.
+  {{ input(id='base_name', label='Base router name', icon='router', max_length=70) }}
 dialogs:
   adopt5c_regenerate:
     message: >-
