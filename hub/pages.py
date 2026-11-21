@@ -566,19 +566,7 @@ def setup(client: Client, subd: str):
                 return
         await load_adopt5c_code(obj, 'regenerate')
 
-    def set_adopt5c_regenerate(obj):
-        obj.on(
-            'click',
-            on_regenerate_adopt5c_code,
-            js_handler=(
-                '(e) => { const a = e.target.closest("a"); '
-                'if (a && a.getAttribute("href") === "#adopt5c_regenerate") '
-                '{ e.preventDefault(); emit(); } }'
-            ),
-        )
-
     idelem_lambdas = {
-        'adopt5c_regenerate': set_adopt5c_regenerate,
         'adopt5c_code': set_adopt5c_code,
         'base_name': set_base_name,
     }
@@ -590,7 +578,17 @@ def setup(client: Client, subd: str):
     with ui.tab_panels(tabs, value='adopt').props(
         'animated transition-prev="slide-right" transition-next="slide-left" keep-alive'
     ).classes('w-full'):
-        with ui.tab_panel('adopt'):
+        # register the regeneration listener when the panel is built, before the first render;
+        # fixes Berror 63275 nicegui: Event listeners changed after initial definition
+        with ui.tab_panel('adopt').on(
+            'click',
+            on_regenerate_adopt5c_code,
+            js_handler=(
+                '(e) => { const a = e.target.closest("a"); '
+                'if (a && a.getAttribute("href") === "#adopt5c_regenerate") '
+                '{ e.preventDefault(); emit(); } }'
+            ),
+        ):
             adopt_idelem = uif.render_stepper(
                 'adopt',
                 idelem_lambdas,
