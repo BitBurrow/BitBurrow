@@ -463,7 +463,7 @@ def setup(client: Client, subd: str):
             upnp_running = False
 
     async def on_tab_change(e) -> None:
-        if e.value == 'outposts':
+        if e.value == 'status':
             await discover_upnp()
 
     def render_add_devices():
@@ -570,11 +570,16 @@ def setup(client: Client, subd: str):
         'adopt5c_code': set_adopt5c_code,
         'base_name': set_base_name,
     }
-    tabs = ui.tabs(on_change=on_tab_change).classes('w-full')
-    with tabs.props('align=left no-caps active-color=primary indicator-color=primary'):
-        ui.tab('adopt', label='Connect')
-        ui.tab('outposts', label='Outposts')
-        ui.tab('settings', label='Settings')
+    with ui.footer(fixed=True, bordered=True).classes('p-0').style(
+        'background-color: var(--app-bg); color: inherit; '
+        'padding-bottom: env(safe-area-inset-bottom);'
+    ):
+        with ui.tabs(on_change=on_tab_change).classes('w-full max-w-4xl mx-auto').props(
+            'align=justify no-caps active-color=primary indicator-color=primary switch-indicator'
+        ) as tabs:
+            ui.tab('adopt', label='Set-up', icon='checklist')
+            ui.tab('status', label='Status', icon='monitor_heart')
+            ui.tab('settings', label='Settings', icon='settings')
     with ui.tab_panels(tabs, value='adopt').props(
         'animated transition-prev="slide-right" transition-next="slide-left" keep-alive'
     ).classes('w-full'):
@@ -596,7 +601,7 @@ def setup(client: Client, subd: str):
                 on_path_change=lambda path: db.set_setup_ui_path(base.id, path),
             )
             restoring_step = False
-        with ui.tab_panel('outposts'):
+        with ui.tab_panel('status'):
             with ui.card().classes('w-full max-w-5xl mb-4'):
                 ui.label('UPnP discovery').classes('text-lg font-medium')
                 upnp_status_label = ui.label('Checking whether UPnP is available…').classes(
