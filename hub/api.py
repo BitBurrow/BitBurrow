@@ -645,7 +645,10 @@ async def task_result(
                 processor.finish(base)
             status = 'succeeded' if ok else 'failed'
             e = f"B35214 finished task {task_id} {task_method} {status}: {repr(output[:100])}"
-            (logger.debug if ok else logger.info)(util.front_berror_code(e, subd, ip))
+            if ok or (task_method == 'rce' and output.startswith('RCE exited with status ')):
+                logger.debug(util.front_berror_code(e, subd, ip))  # success, ignorning exit status
+            else:
+                logger.info(util.front_berror_code(e, subd, ip))  # RCE itself failed
         except (Berror, db.CredentialsError) as e:
             logger.warning(f"{e} (base {subd} at {ip})")
             raise BaseError("B34089 invalid task_result request")
