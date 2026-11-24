@@ -24,7 +24,7 @@ import hub.util as util
 #    * atomically replace the old file
 # Docs: https://sqlite.org/pragma.html#pragma_user_version
 
-db_schema_version = 55
+db_schema_version = 56
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
@@ -112,7 +112,7 @@ def temporary_db(db_path: str):
 
 def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
     """Run migration sections with version < section_version <= target."""
-    # migrate() calls this twice: 49+ on the stored schema, then pre-49 on the rebuilt schema.
+    # migrate() calls this twice: 49+ on the stored schema, then pre-49 on the rebuilt schema
     if version < 23 <= target:  # version 22 → 23: renamed 2 Intf data fields
         with sqlite_conn(db_path) as conn:
             conn.execute('''ALTER TABLE "Intf" RENAME COLUMN "privkey" TO "wg_privkey";''')
@@ -252,8 +252,8 @@ def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
                 columns = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}");')}
                 if 'device_id' in columns:
                     conn.execute(f'ALTER TABLE "{table}" RENAME COLUMN device_id TO base_id;')
-            # Older legacy schemas may predate LoginSession.kind; their old section
-            # initializes it after rebuilding.
+            # older legacy schemas may predate LoginSession.kind; their old section
+            # initializes it after rebuilding
             columns = {r[1] for r in conn.execute('PRAGMA table_info(loginsession);')}
             if 'kind' in columns:
                 conn.execute('''UPDATE loginsession SET kind='BASE_OTT' WHERE kind='DEVICE_OTT';''')
@@ -315,6 +315,8 @@ def migrate_versions(db_path: str, version: int, target: int, engine) -> None:
                     WHERE method = 'update' AND status = 'ASSIGNED' AND update_deadline IS NULL;'''
                 )
         version = 55
+    if version < 56 <= target:  # version 55 → 56: refactor DB indexes in class Telemetry
+        version = 56
     # if version < ... <= target:
     #     ...
     #     version = ...

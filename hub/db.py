@@ -1,5 +1,6 @@
 import argon2
 import base64
+import bisect
 from contextlib import contextmanager
 from datetime import datetime as DateTime, timedelta as TimeDelta, timezone as TimeZone
 import dns.exception
@@ -1035,8 +1036,9 @@ def timeout_upnp_discovery(task_id: int, base_id: int) -> bool:
 
 
 class Telemetry(SQLModel, table=True):
+    __table_args__ = (sqlalchemy.Index('ix_telemetry_base_created_at', 'base_id', 'created_at'),)
     id: int | None = Field(primary_key=True, default=None)
-    base_id: int = Field(index=True, foreign_key='base.id')
+    base_id: int = Field(foreign_key='base.id')  # indexing via ix_telemetry_base_created_at
     created_at: DateTime = Field(
         sa_column=Column(sqlalchemy.DateTime(timezone=True)),
         default_factory=lambda: DateTime.now(TimeZone.utc),
@@ -1058,6 +1060,97 @@ class Telemetry(SQLModel, table=True):
     def_route_tx: int | None = None  # bytes
     os_id: str | None = None  # 'ID' in: man os-release
     os_version_id: str | None = None  # 'VERSION_ID' in: man os-release
+
+
+def get_ping_data_range(base_id: int, now: DateTime) -> tuple[DateTime, DateTime]:
+    """Return UTC 10-minute bounds; no telemetry gives an empty range at the end."""
+    now = now.replace(tzinfo=now.tzinfo or TimeZone.utc).astimezone(TimeZone.utc)
+    data_range_end = now.replace(minute=now.minute // 10 * 10, second=0, microsecond=0)
+    with Session(engine) as session:
+        first_ping = session.exec(
+            select(func.min(Telemetry.created_at)).where(Telemetry.base_id == base_id)
+        ).one()
+    if first_ping is None:
+        return data_range_end, data_range_end
+    first_ping = first_ping.replace(tzinfo=TimeZone.utc)
+    data_range_begin = first_ping.replace(
+        minute=first_ping.minute // 10 * 10, second=0, microsecond=0
+    )
+    if data_range_begin < first_ping:
+        data_range_begin += TimeDelta(minutes=10)
+    return data_range_begin, data_range_end  # both rounded in to avoid partial 10-minute slots
+
+
+def get_ping_slots(base_id: int, start: DateTime, end: DateTime) -> list[DateTime]:
+    """Return sorted, distinct starts of completed 10-minute slots containing a ping."""
+    start = start.replace(tzinfo=start.tzinfo or TimeZone.utc).astimezone(TimeZone.utc)
+    end = end.replace(tzinfo=end.tzinfo or TimeZone.utc).astimezone(TimeZone.utc)
+    slot = TimeDelta(minutes=10)
+    end = start + ((end - start) // slot) * slot
+    if end <= start:
+        return []
+    with Session(engine) as session:
+        statement = select(Telemetry.created_at).where(
+            Telemetry.base_id == base_id,
+            Telemetry.created_at >= start,
+            Telemetry.created_at < end,
+        )
+        # stream only timestamps; SQLite returns the stored UTC times without tzinfo
+        return sorted(
+            {
+                start + ((stamp.replace(tzinfo=TimeZone.utc) - start) // slot) * slot
+                for stamp in session.exec(statement).yield_per(1000)
+            }
+        )
+
+
+def uptime_permille(
+    base_id: int,
+    start: DateTime,
+    end: DateTime,
+    slots: list[DateTime] | None = None,
+) -> int:
+    """Return 0–1000 for completed 10-minute slots with a successful ping in [start, end).
+    Times should be on exact 10-minute boundaries."""
+    start = start.replace(tzinfo=start.tzinfo or TimeZone.utc).astimezone(TimeZone.utc)
+    end = end.replace(tzinfo=end.tzinfo or TimeZone.utc).astimezone(TimeZone.utc)
+    slot = TimeDelta(minutes=10)
+    count = (end - start) // slot
+    if count <= 0:
+        return 0
+    end = start + count * slot
+    if slots is None:
+        slots = get_ping_slots(base_id, start, end)
+    successful = bisect.bisect_left(slots, end) - bisect.bisect_left(slots, start)
+    return successful * 1000 // count
+
+
+class UptimeHistory:
+    """A bounded UTC snapshot, with one history query shared by all sampled intervals."""
+
+    def __init__(self, base_id: int, now: DateTime):
+        self.base_id = base_id
+        self.begin, self.end = get_ping_data_range(base_id, now)
+        self.slots: list[DateTime] = list()
+        self.loaded_start: DateTime | None = None
+
+    def sample(self, start: DateTime, end: DateTime) -> tuple[int, int] | None:
+        """Return (permille, data_points), or None if no full clock-aligned slots fit."""
+        start = start.replace(tzinfo=start.tzinfo or TimeZone.utc).astimezone(TimeZone.utc)
+        end = end.replace(tzinfo=end.tzinfo or TimeZone.utc).astimezone(TimeZone.utc)
+        start, end = max(start, self.begin), min(end, self.end)
+        slot = TimeDelta(minutes=10)
+        # keep only whole slots, including when a caller requests an unaligned interval
+        remainder = (start - self.begin) % slot
+        if remainder:
+            start += slot - remainder
+        data_points = (end - start) // slot
+        if data_points <= 0:
+            return None
+        if self.loaded_start is None or start < self.loaded_start:
+            self.slots = get_ping_slots(self.base_id, start, self.end)
+            self.loaded_start = start
+        return uptime_permille(self.base_id, start, end, slots=self.slots), data_points
 
 
 def parse_float_int(value: str, scale: int = 1) -> int | None:

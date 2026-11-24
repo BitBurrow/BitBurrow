@@ -10,6 +10,7 @@ from nicegui import app, ui, Client
 import hub.api as api
 import hub.uif as uif
 import hub.db as db
+import hub.heatmap as heatmap
 import hub.login_key as lk
 import hub.auth as auth
 import hub.config as conf
@@ -274,6 +275,7 @@ def home(client: Client):
                             kv_row('LOGIN', card['login'])
                         kv_row('LAST IP', card['last_ip'])
                         kv_row('LAST SEEN', card['last_seen'])
+                    heatmap.render_uptime(card['id'])
                     with ui.row().classes('w-full no-wrap items-center justify-end gap-2'):
                         ui.button(
                             'Set up',
@@ -577,7 +579,7 @@ def setup(client: Client, subd: str):
         with ui.tabs(on_change=on_tab_change).classes('w-full max-w-4xl mx-auto').props(
             'align=justify no-caps active-color=primary indicator-color=primary switch-indicator'
         ) as tabs:
-            ui.tab('adopt', label='Set-up', icon='checklist')
+            ui.tab('adopt', label='Set-up', icon='format_list_numbered')
             ui.tab('status', label='Status', icon='monitor_heart')
             ui.tab('settings', label='Settings', icon='settings')
     with ui.tab_panels(tabs, value='adopt').props(
