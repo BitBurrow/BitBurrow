@@ -468,7 +468,10 @@ class Base(SQLModel, table=True):
             else:
                 return "adopt5a"  # OTT has been created
         else:
-            return "adopt6c"  # OTT verified; auth_pubkey accepted
+            if self.ott_id is not None:
+                return "adopt6c"  # OTT verified; auth_pubkey accepted
+            else:
+                return "adopt6e"  # OTT cleared
 
 
 def set_setup_ui_path(base_id: int, path: str) -> None:

@@ -10,6 +10,35 @@ dialogs:
       disconnected, or has been factory-reset.
     cancel: Cancel
     confirm: Regenerate code now
+messages:
+  adopt6e_status:
+    adopt0c: |-
+      Current status: **⏻ base created**
+
+      Please return to "Copying startup code", above, to generate a startup code.
+    adopt5a: |-
+      Current status: **⌛ startup code created**
+
+      The hub is waiting for the startup code to be copied to the base router and the router
+      to reboot. This can take a few minutes. The above status will be updated
+      automatically.
+      
+      If there is no change after rebooting and waiting 5 minutes,
+      try the following:
+
+      * Check that the base router has power and internet.
+      * Retry the above "Copying startup code" and following steps.
+      * Disconnect the base router from power for 5 seconds, reconnect, and wait
+        5 minutes again.
+    adopt6c: |-
+      Current status: **⌛ base router has contacted the hub**
+
+      The hub is waiting for one final step.
+    adopt6e: |-
+      Current status: **✅ base router has connected**
+
+      The base is connected and ready. Tap Next to continue.
+    missing: This base router could not be found.
 steps:
 - path: ''
   title: Choose how to connect
@@ -143,4 +172,13 @@ steps:
     1. If your device automatically reconnects to the existing router's WiFi,
        reconnect to the new base router's WiFi to continue.
   id: adopt5i
-
+- path: /Manual/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
+  title: Waiting for router to connect
+  md: |-
+    {{ label(id='adopt6e_status', text='') }}
+  id: adopt6e
+- path: /Manual/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
+  title: Choosing how to enable access
+  md: |-
+    Work-in-progress ...
+  id: inbound_udp_method

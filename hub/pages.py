@@ -314,6 +314,7 @@ def home(client: Client):
         button.disable()
         try:
             db.delete_base(card['id'])
+            api.base_adoption_changed.emit(card['id'])
             nonlocal cards
             cards = build_rows()
             render_cards()
@@ -352,6 +353,8 @@ async def setup_adopt5c_code(request: fastapi.Request, subd: str, action: str) -
             raise fastapi.HTTPException(404, "This base router could not be found.")
         ip = request.client.host if request.client else "(unknown)"
         code = db.get_adopt5c_code(base.id, api.adopt5l_route, action=action, ip=ip)
+    if action != 'view':
+        api.base_adoption_changed.emit(base.id)
     return PlainTextResponse(code, headers={'Cache-Control': 'no-store'})
 
 
@@ -514,6 +517,7 @@ def setup(client: Client, subd: str):
     uif.render_header(is_logged_in=True)
     idelem = uif.render_content(sections)
     adopt5c_code_obj = None
+    adopt6e_label = None
     adopt5c_code_lock = asyncio.Lock()
     adopt5c_code_url = f'{conf.get('frontend.site_code')}/setup/{base.subd}/adopt5c_code'
     restoring_step = True  # True→rebuilding, use 'view'; False→stepper is built, use 'issue'
@@ -554,7 +558,7 @@ def setup(client: Client, subd: str):
             if current_base is None:
                 ui.notify("This base router could not be found.")
                 return
-        if current_base.adopt_state() >= 'adopt6c':
+        if current_base.adopt_state() >= 'adopt6e':
             # note: if base is up, this is a race because next ping will invalidate the OTT
             # search: tag_invalidate_base_ott
             text = adopt_idelem['dialogs']['adopt5c_regenerate']
@@ -568,10 +572,28 @@ def setup(client: Client, subd: str):
                 return
         await load_adopt5c_code(obj, 'regenerate')
 
+    def set_adopt6e_label(obj):
+        nonlocal adopt6e_label
+        adopt6e_label = obj
+        if not restoring_step:
+            on_adopt6e_status_refresh(base.id)
+
+    def on_adopt6e_status_refresh(changed_base_id):
+        obj = adopt6e_label
+        if obj is None or obj.is_deleted or changed_base_id != base.id:
+            return
+        with db.base_by_subd(subd, aid) as updated_base:
+            state = updated_base.adopt_state() if updated_base else None
+        messages = adopt_idelem['messages']['adopt6e_status']
+        obj.set_content(messages.get(state, messages['missing']))
+
     idelem_lambdas = {
-        'adopt5c_code': set_adopt5c_code,
         'base_name': set_base_name,
+        'adopt5c_code': set_adopt5c_code,
+        'adopt6e_status': set_adopt6e_label,
     }
+    # subscribe before reading, so a ping during page creation cannot be missed
+    api.base_adoption_changed.subscribe(on_adopt6e_status_refresh)
     with ui.footer(fixed=True, bordered=True).classes('p-0').style(
         'background-color: var(--app-bg); color: inherit; '
         'padding-bottom: env(safe-area-inset-bottom);'
@@ -603,6 +625,7 @@ def setup(client: Client, subd: str):
                 on_path_change=lambda path: db.set_setup_ui_path(base.id, path),
             )
             restoring_step = False
+            on_adopt6e_status_refresh(base.id)
         with ui.tab_panel('status'):
             with ui.card().classes('w-full max-w-5xl mb-4'):
                 ui.label('UPnP discovery').classes('text-lg font-medium')

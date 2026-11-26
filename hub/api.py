@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # will be throttled by handler log level (file, console)
 active_long_polls = 0
 active_long_polls_lock = asyncio.Lock()
+base_adoption_changed = nicegui.Event[int]()  # the API and UI must run in the same worker process
 
 adopt5l_route = '/5l/{subd}'  # download adopt5p.sh  (list of adopt stages in class Base())
 log_err_route = '/er/{subd}'  # errors from base router
@@ -315,6 +316,9 @@ def adopt6c(
             raise Berror("B99756 auth_pubkey too small")
         # store public keys
         db.store_adopt6c_pubkey(base.id, auth_pubkey)
+        loop = nicegui.core.loop  # dispatch UI callbacks from this worker onto the main loop
+        if loop is not None:
+            loop.call_soon_threadsafe(base_adoption_changed.emit, base.id)
     except (Berror, db.CredentialsError) as e:
         logger.warning(f"{e} (base {subd} at {ip})")
         raise BaseError("B87908 invalid adopt6c request")  # for security, give generic API response
@@ -548,6 +552,7 @@ async def ping(
         except (Berror, db.CredentialsError) as e:
             logger.warning(util.front_berror_code(e, subd, ip))
             raise BaseError("B23086 invalid ping request")  # generic API response for security
+        first_ping = base.ott_id is not None or base.last_handshake is None
         if base.ott_id is not None:
             db.log_out(base.ott_id)
             cleared = f"(OTT {base.ott_id} cleared)"
@@ -556,6 +561,8 @@ async def ping(
         base.last_handshake = int(ping_now.timestamp())
         wait_seconds = base.long_poll_probe or base.long_poll_safe
         base_id = base.id
+    if first_ping:  # notify only after the authenticated handshake has been committed
+        base_adoption_changed.emit(base_id)
     if base.last_endpoint != ip:
         try:
             await run_in_threadpool(db.update_base_endpoint, base_id, ip)

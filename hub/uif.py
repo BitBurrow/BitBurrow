@@ -294,6 +294,10 @@ def input(
     return obj
 
 
+def label(text: str, align='left'):
+    return markdown(text).classes(f'w-full text-{align} max-w-xl')
+
+
 def headline(text: str, align='center'):
     return markdown(text).classes(f'w-full text-{align} text-3xl')
 
@@ -349,6 +353,7 @@ def comment(text=''):  # for adding author comments within the .md file
 
 elements_available = {
     'input': input,
+    'label': label,
     'headline': headline,
     'image': image,
     'button': button,
@@ -785,4 +790,5 @@ def render_stepper(stage: str, idelem_lambdas=None, initial_path='', on_path_cha
         build_steps_down(path_map[''])
         set_contents(initial_step['id'])
     idelem['dialogs'] = data.get('dialogs', dict())
+    idelem['messages'] = data.get('messages', dict())
     return idelem
