@@ -41,31 +41,6 @@ messages:
     missing: This base router could not be found.
 steps:
 - path: ''
-  title: Choose how to connect
-  md: |-
-    * ( ) **Automatic**: Install an app on an Android phone or tablet.
-    * ( ) **Manual**: Sign in to the router's web interface using a web browser.
-
-    You can return to this step and choose again later.
-  id: adopt0n
-- path: /Automatic
-  title: Before you start
-  md: |-
-    * **Important**: continuing means this BitBurrow hub will control the new
-      base router (settings, updates, and access). Only continue if you trust
-      this hub.
-    * Stay within WiFi range of the new base router during the set-up process.
-    * *Your device* is the phone, tablet, or laptop you are using to view this
-      website.
-    * The *existing router* is the router that already provides internet at
-      this location.
-  id: adopt1d
-- path: /Automatic/Next
-  title: Under construction
-  md: |-
-    Automatic connection is not yet implemented. Please use the Manual option.
-  id: adopt1g
-- path: /Manual
   title: Before you start
   md: |-
     * **Important**: Continuing means this BitBurrow hub will control the new
@@ -77,8 +52,8 @@ steps:
     * The *existing router* is the router that already provides internet at
       this location.
   id: adopt2d
-- path: /Manual/Next
-  title: Plugging in
+- path: /Next
+  title: Plug in
   md: |-
     1. Locate an Ethernet cable. One should have been included with the new base router.
     1. Plug one end of the Ethernet cable into the the "WAN" port on the new base router.
@@ -86,24 +61,24 @@ steps:
        existing router.
     1. Plug the new base router into wall power.
   id: adopt2g
-- path: /Manual/Next/Next
-  title: Connecting WiFi
+- path: /Next/Next
+  title: Connect WiFi
   md: |-
     1. On your device, open WiFi settings.
     1. Connect to the new base router's WiFi. The WiFi name is usually in the form
        `GL-SFT1200-xxx` where `SFT1200` is the model and `xxx` is a 3-digit number.
        The default WiFi password is **`goodlife`**.
   id: adopt2j
-- path: /Manual/Next/Next/Next
-  title: Opening router web interface
+- path: /Next/Next/Next
+  title: Open router web interface
   md: |-
     1. On your device, open a web browser.
     1. Go to [http://192.168.8.1](http://192.168.8.1). If this doesn't bring up a
        page, check the bottom of the router or the manual for the address of the
        router admin page.
   id: adopt2m
-- path: /Manual/Next/Next/Next/Next
-  title: Signing in to the base router
+- path: /Next/Next/Next/Next
+  title: Sign in to the base router
   md: |-
     1. If the base router is new, follow the on-screen directions:
         * Choose a language.
@@ -117,8 +92,8 @@ steps:
        * YouTube tutorial: [How to Reset GL.iNet Router to Factory Default
          2022](https://www.youtube.com/watch?v=ON6PtGH_HJw)
   id: adopt2p
-- path: /Manual/Next/Next/Next/Next/Next
-  title: Navigating to LuCI
+- path: /Next/Next/Next/Next/Next
+  title: Navigate to LuCI
   md: |-
     1. Ignore any warnings on the router's main page, such as:
        * "The interface is connected, but the internet can't be accessed."
@@ -130,12 +105,12 @@ steps:
         * **192.168.8.1/cgi-bin/luci**
         * **Install Now** → **Go To LuCI**
   id: adopt2s
-- path: /Manual/Next/Next/Next/Next/Next/Next
-  title: Signing in to LuCI
+- path: /Next/Next/Next/Next/Next/Next
+  title: Sign in to LuCI
   md: |-
     Log in with the username **`root`** and the password you created earlier.
   id: adopt2u
-- path: /Manual/Next/Next/Next/Next/Next/Next/Next
+- path: /Next/Next/Next/Next/Next/Next/Next
   title: Navigating to Local Startup
   md: |-
     1. Choose **System** → **Startup**. Alternatively, use this [direct
@@ -147,8 +122,8 @@ steps:
           page.
   id: adopt2x
 # note: adopt3* and adopt4* are reserved for possible future adoption methods
-- path: /Manual/Next/Next/Next/Next/Next/Next/Next/Next
-  title: Copying startup code
+- path: /Next/Next/Next/Next/Next/Next/Next/Next
+  title: Copy startup code
   md: |-
     Copy the text from the block of code below. You can use the button in the top-
     right corner of the code box for this. **Note: this code is only valid for
@@ -157,28 +132,51 @@ steps:
 
     {{ code_block(id='adopt5c_code', text='', language='sh') }}
   id: adopt5c
-- path: /Manual/Next/Next/Next/Next/Next/Next/Next/Next/Next
-  title: Pasting startup code
+- path: /Next/Next/Next/Next/Next/Next/Next/Next/Next
+  title: Paste startup code
   md: |-
     1. Paste this text at the *very beginning* of the existing text in the **Local
        Startup** text box.
     1. Choose **Submit**.
   id: adopt5f
-- path: /Manual/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
-  title: Rebooting the router
+- path: /Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
+  title: Reboot the router
   md: |-
     1. Choose **System** → **Reboot** → **Perform reboot**.
     1. Wait a couple of minutes for the reboot.
     1. If your device automatically reconnects to the existing router's WiFi,
        reconnect to the new base router's WiFi to continue.
   id: adopt5i
-- path: /Manual/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
-  title: Waiting for router to connect
+- path: /Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
+  title: Wait for router to connect
   md: |-
     {{ label(id='adopt6e_status', text='') }}
   id: adopt6e
-- path: /Manual/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
-  title: Choosing how to enable access
+- path: /Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
+  title: Choose an external access method
   md: |-
-    Work-in-progress ...
+    Choose how you want to enable trusted devices elsewhere on the internet to connect
+    to this base router.
+
+    * ( ) **UPnP**: If available, this is the easiest.
+    * ( ) **Manual**: Configure UDP port forwarding manually on the upstream router.
+    * ( ) **Swap routers**: Remove your existing router and use this new base router as your
+      primary router.
+    * ( ) **Skip**: Don't enable other devcies to connect at this time.
   id: inbound_udp_method
+- path: /Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/UPnP
+  title: Work-in-progress
+  md: Work in progress ...
+  id: inbound_udp_upnp
+- path: /Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Manual
+  title: Work-in-progress
+  md: Work in progress ...
+  id: inbound_udp_manual
+- path: /Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Swap routers
+  title: Work-in-progress
+  md: Work in progress ...
+  id: inbound_udp_public_ip
+- path: /Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Skip
+  title: Work-in-progress
+  md: Work in progress ...
+  id: inbound_udp_skip
