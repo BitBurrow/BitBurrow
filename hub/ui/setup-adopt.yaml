@@ -4,41 +4,43 @@ pre_md: |-
 dialogs:
   adopt5c_regenerate:
     message: >-
-      This base router is currently connected to this hub. Generating and using a
+      This base router is registered with this hub. Generate a new code only if the
+      current base router is not working, disconnected, or has been factory reset. Using a
       new code on a different base router will either fail or disconnect the
-      current base router. Proceed only if the current base router is not working,
-      disconnected, or has been factory-reset.
+      existing base router.
     cancel: Cancel
-    confirm: Regenerate code now
+    confirm: Regenerate new code
 messages:
   adopt6e_status:
     adopt0c: |-
       Current status: **⏻ base created**
 
-      Please return to "Copying startup code", above, to generate a startup code.
+      Choose the "Copy startup code" step, above, to generate a startup code, then follow
+      the subsequent steps.
     adopt5a: |-
       Current status: **⌛ startup code created**
 
-      The hub is waiting for the startup code to be copied to the base router and the router
-      to reboot. This can take a few minutes. The above status will be updated
-      automatically.
-      
-      If there is no change after rebooting and waiting 5 minutes,
-      try the following:
+      Waiting for the base router to start connecting. If you have saved the startup
+      code and rebooted the router, keep this page open and wait up to 5 minutes
+      for the base router to reboot, install software, and connect to the hub. As long
+      as you are connected to the internet, the above status will update automatically.
 
-      * Check that the base router has power and internet.
-      * Retry the above "Copying startup code" and following steps.
-      * Disconnect the base router from power for 5 seconds, reconnect, and wait
-        5 minutes again.
+      If the router has not connected after 5 minutes, open "If the router has not
+      connected" below.
     adopt6c: |-
       Current status: **⌛ base router has contacted the hub**
 
-      The hub is waiting for one final step.
+      Waiting for the router to finish connecting. Keep this page open. As long
+      as you are connected to the internet, the above status will update automatically.
+
+      If the router has not connected after 5 minutes, open "If the router has not
+      connected" below.
     adopt6e: |-
       Current status: **✅ base router has connected**
 
-      The base is connected and ready. Tap Next to continue.
-    missing: This base router could not be found.
+      Your base router has connected to the BitBurrow hub. Choose "Next", below.
+    missing: |-
+      This base router could not be found.
 steps:
 - path: ''
   title: Before you start
@@ -56,49 +58,101 @@ steps:
   title: Plug in
   md: |-
     1. Locate an Ethernet cable. One should have been included with the new base router.
-    1. Plug one end of the Ethernet cable into the the "WAN" port on the new base router.
+    1. Plug one end of the Ethernet cable into the "WAN" port on the new base router.
     1. Plug the other end of the Ethernet cable into one of the unused "LAN" ports on the
        existing router.
     1. Plug the new base router into wall power.
   id: adopt2g
 - path: /Next/Next
-  title: Connect WiFi
+  title: Connect to WiFi
   md: |-
+    Keep this BitBurrow page open. You will use another browser tab for the router's
+    settings, and will need to switch between tabs many times.
+
+    Before changing WiFi, open "If your internet connection is lost" below so those
+    instructions will be visible if you lose internet connectivity.
+
+    1. As a backup, it can be helpful to connect to a celluar internet connection in
+       addition to WiFi. However, this is not required.
     1. On your device, open WiFi settings.
-    1. Connect to the new base router's WiFi. The WiFi name is usually in the form
-       `GL-SFT1200-xxx` where `SFT1200` is the model and `xxx` is a 3-digit number.
-       The default WiFi password is **`goodlife`**.
+    1. If you haven't changed them, find the new base router's WiFi name and password
+       on its label, and use those to connect. Older GL.iNet routers' default password
+       is **`goodlife`**.
+    1. Return to this BitBurrow page and choose **Next**. If **Next** doesn't respond,
+       see below.
+  help:
+    title: If your internet connection is lost
+    md: |-
+      These instructions help restore internet access through the new base router
+      so you can return to the BitBurrow setup page.
+
+      1. Check that the Ethernet cable connects the new base router's "WAN" port to a
+         "LAN" port on the existing router.
+      1. If your device says that the new base router's WiFi does not provide internet but you
+         have a backup internet connection such as cellular, stay connected to the new base
+         router's WiFi as well as your backup internet, choose **Next** below, and continue
+         setting up your new base router.
+      1. If your device says that the new base router's WiFi does not provide internet and you
+         do not have a backup internet connection, you will need to fix the base router's WiFi
+         before continuing.
+      1. Once internet access works, return to the BitBurrow tab. If it remains
+         disconnected, reload it to reopen your setup step.
+
+      GL.iNet connection instructions:
+      [https://docs.gl-inet.com/router/en/4/faq/first_time_setup/](https://docs.gl-inet.com/router/en/4/faq/first_time_setup/)
+
+      GL.iNet subnet conflict instructions:
+      [https://docs.gl-inet.com/router/en/4/faq/how_to_resolve_a_subnet_conflict/](https://docs.gl-inet.com/router/en/4/faq/how_to_resolve_a_subnet_conflict/)
   id: adopt2j
 - path: /Next/Next/Next
   title: Open router web interface
   md: |-
-    1. On your device, open a web browser.
-    1. Go to [http://192.168.8.1](http://192.168.8.1). If this doesn't bring up a
-       page, check the bottom of the router or the manual for the address of the
-       router admin page.
+    1. Keep this BitBurrow tab. In a new browser tab, open
+       [http://192.168.8.1](http://192.168.8.1).
+    1. Keep the router admin tab open, return to this BitBurrow tab, and
+       choose **Next**.
+  help:
+    title: If the router's page does not open
+    md: |-
+      1. In your device's WiFi settings, check that your device is connected to the new
+         base router's WiFi.
+      1. Enter `192.168.8.1` in the browser's address bar rather than a search box.
+      1. Check the router's label or manual for the address of the
+       router admin page. It may not be [http://192.168.8.1](http://192.168.8.1).
   id: adopt2m
 - path: /Next/Next/Next/Next
   title: Sign in to the base router
   md: |-
-    1. If the base router is new, follow the on-screen directions:
+    1. If the base router is new, follow the on-screen directions (the steps here may
+       not be accurate for your router):
         * Choose a language.
         * Create a new admin password and write it down. You will need it below.
-    1. If you are asked to sign in but don't know the password, you will need to
-       factory-reset the router and start over.
+    1. If you are asked to sign in but don't know the password, see "How to
+       factory-reset the router", below.
+    1. Keep the router admin tab open, return to this BitBurrow tab, and choose
+       **Next**.
+  help:
+    title: How to factory-reset the router
+    md: |-
+      If you are asked to sign in but don't know the password, you will need to
+      factory-reset the new base router and start over. A factory reset erases
+      any settings and passwords you have changed.
 
-       Factory reset instructions:
-       * GL.iNet docs: [How to repair network or factory
-         reset?](https://docs.gl-inet.com/router/en/4/faq/repair_network_or_reset_firmware/)
-       * YouTube tutorial: [How to Reset GL.iNet Router to Factory Default
-         2022](https://www.youtube.com/watch?v=ON6PtGH_HJw)
+      Factory reset instructions:
+      * GL.iNet docs: [How to repair network or factory
+        reset?](https://docs.gl-inet.com/router/en/4/faq/repair_network_or_reset_firmware/)
+      * YouTube tutorial: [How to Reset GL.iNet Router to Factory Default
+        2022](https://www.youtube.com/watch?v=ON6PtGH_HJw)
+
+      After the factory reset, return to the "Connect to WiFi" step to continue the set-up process.
   id: adopt2p
 - path: /Next/Next/Next/Next/Next
-  title: Navigate to LuCI
+  title: Open advanced settings
   md: |-
-    1. Ignore any warnings on the router's main page, such as:
+    1. Ignore warnings on the router's main page such as:
        * "The interface is connected, but the internet can't be accessed."
        * "LAN subnet is in conflict with the WAN subnet, ..."
-       This is normal before the router is rebooted in the last step, below.
+       These are normal before the router is rebooted in the last step, below.
     1. In the left menu, choose **SYSTEM** → **Advanced Settings**.
     1. Run LuCI. The label is different in different versions. Here are some examples:
         *  **Go To LuCI**
@@ -108,18 +162,20 @@ steps:
 - path: /Next/Next/Next/Next/Next/Next
   title: Sign in to LuCI
   md: |-
-    Log in with the username **`root`** and the password you created earlier.
+    On the router admin tab, log in with the username **`root`** and the admin password
+    you created for the new base router.
   id: adopt2u
 - path: /Next/Next/Next/Next/Next/Next/Next
-  title: Navigating to Local Startup
+  title: Open Local Startup
   md: |-
-    1. Choose **System** → **Startup**. Alternatively, use this [direct
+    1. On the router admin tab, choose **System** → **Startup**. Alternatively, use this [direct
        link](http://192.168.8.1/cgi-bin/luci/admin/system/startup).
     1. Find the **Local Startup** section.
-        * Frist, look for a tab near the top of the page labeled "Local Startup".
+        * First, look for a tab near the top of the page labeled "Local Startup".
           Choose this if there.
         * Otherwise, scroll down to the "Local Startup" section near the bottom of the
           page.
+    1. Keep this text box open, return to the BitBurrow tab, and choose **Next**.
   id: adopt2x
 # note: adopt3* and adopt4* are reserved for possible future adoption methods
 - path: /Next/Next/Next/Next/Next/Next/Next/Next
@@ -131,26 +187,57 @@ steps:
     {{ comment(text='if changing max time, search: tag_ott_valid_for') }}
 
     {{ code_block(id='adopt5c_code', text='', language='sh') }}
+  help:
+    title: If you need another code
+    md: |-
+      If the startup code has expired or cannot be displayed, choose
+      **Regenerate code now** and copy the new block. If the box says the code has
+      been used or processed, check "Wait for router to connect" before generating
+      another one.
   id: adopt5c
 - path: /Next/Next/Next/Next/Next/Next/Next/Next/Next
-  title: Paste startup code
+  title: Paste and save startup code
   md: |-
-    1. Paste this text at the *very beginning* of the existing text in the **Local
-       Startup** text box.
+    1. On the router admin tab, in the **Local Startup** text box, paste this
+       startup code text at the *very beginning* of the existing text.
+    1. If an older startup code appears below the new startup code, delete it.
     1. Choose **Submit**.
   id: adopt5f
 - path: /Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
   title: Reboot the router
   md: |-
-    1. Choose **System** → **Reboot** → **Perform reboot**.
-    1. Wait a couple of minutes for the reboot.
-    1. If your device automatically reconnects to the existing router's WiFi,
-       reconnect to the new base router's WiFi to continue.
+    1. On the router admin tab, choose **System** → **Reboot** → **Perform reboot**.
+    1. Switch back to this BitBurrow tab.
+    1. Wait a few minutes for the base router to reboot.
+
+    The base router's WiFi will disconnect temporarily. While watching the status,
+    your device can use any working internet connection, including the existing
+    router's WiFi.
   id: adopt5i
 - path: /Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
   title: Wait for router to connect
   md: |-
     {{ label(id='adopt6e_status', text='') }}
+  help:
+    title: If the router has not connected
+    md: |-
+      If the router has not connected within about 5 minutes after choosing
+      **Perform reboot**, try these, preferably in this order:
+
+      1. Check that your device can still reach the internet. If the count-up timer
+         above is counting, your device is connected. If it is not, restore your 
+         device's internet connection before proceeding, e.g. by checking your WiFi
+         or cellular connection.
+      1. Check that the base router has power and internet. One way to do this is to
+         reconnect your device to the base router's WiFi and confirm that internet works.
+         Additional help for this is under "Connect to WiFi".
+      1. Return to "Copy startup code" and retry the process from there. When pasting
+         the startup code, replace the old startup code with the new one. If the router's
+         settings are unresponsive, make sure you are still connected to the correct
+         WiFi network, wait a minute, and/or try again.
+      1. Disconnect power from the base router for 5 seconds, reconnect, and wait
+         5 minutes for it to power up.
+      1. Factory reset the base router; see instructions under "Sign in to the base router".
   id: adopt6e
 - path: /Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next
   title: Choose an external access method
@@ -162,7 +249,7 @@ steps:
     * ( ) **Manual**: Configure UDP port forwarding manually on the upstream router.
     * ( ) **Swap routers**: Remove your existing router and use this new base router as your
       primary router.
-    * ( ) **Skip**: Don't enable other devcies to connect at this time.
+    * ( ) **Skip**: Don't enable other devices to connect at this time.
   id: inbound_udp_method
 - path: /Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/Next/UPnP
   title: Work-in-progress

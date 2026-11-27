@@ -627,6 +627,12 @@ def load_stepper_data(yaml_path: str):
             isinstance(s.get(field), str) for field in required_fields
         ):
             raise Berror(f"B26754 invalid step in {yaml_path}")
+        help_data = s.get('help')
+        if help_data is not None and (
+            not isinstance(help_data, dict)
+            or not all(isinstance(help_data.get(field), str) for field in ('title', 'md'))
+        ):
+            raise Berror(f"B45317 invalid step help in {yaml_path}")
         path = s['path']
         step_id = s['id']
         if not step_id or step_id == 'pre_md':
@@ -754,6 +760,9 @@ def render_stepper(stage: str, idelem_lambdas=None, initial_path='', on_path_cha
                     ''',
                 )
             render_markdown_with_ctags(s['radio_after'], idelem[s['id']], None)
+            if help_data := s.get('help'):
+                with render_expansion(help_data['title']):
+                    render_markdown_with_ctags(help_data['md'], idelem[s['id']], None)
             return radio
 
         def build_steps_down(s):
